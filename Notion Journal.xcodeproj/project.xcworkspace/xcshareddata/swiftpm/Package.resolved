@@ -1,0 +1,15 @@
+{
+  "originHash" : "481bb14a7fd03471f286f6bbeaf58ac806dba7fc5a295361ec1bda5257bbc8bf",
+  "pins" : [
+    {
+      "identity" : "proton",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/rajdeep/proton",
+      "state" : {
+        "revision" : "2fa41f78731461c40a1dd12bee7de1845c310c31",
+        "version" : "0.8.35"
+      }
+    }
+  ],
+  "version" : 3
+}

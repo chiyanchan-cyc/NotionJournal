@@ -1,0 +1,1595 @@
+import SwiftUI
+import UIKit
+import Proton
+import ProtonCore
+import ObjectiveC.runtime
+
+
+enum NJListKind: String {
+    case bullet
+    case number
+}
+private var NJTextViewHandleKey: UInt8 = 0
+private var NJKeyCommandsOriginalIMP: IMP?
+
+private var NJEditorViewHandleKey: UInt8 = 0
+
+private extension EditorView {
+    var njProtonHandle: NJProtonEditorHandle? {
+        get { objc_getAssociatedObject(self, &NJEditorViewHandleKey) as? NJProtonEditorHandle }
+        set { objc_setAssociatedObject(self, &NJEditorViewHandleKey, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC) }
+    }
+}
+
+private extension NSAttributedString {
+    var fullRange: NSRange { NSRange(location: 0, length: length) }
+}
+
+private extension NSAttributedString.Key {
+    static let listItem = NSAttributedString.Key("listItem")
+}
+
+private extension UITextView {
+    var njProtonHandle: NJProtonEditorHandle? {
+        get { objc_getAssociatedObject(self, &NJTextViewHandleKey) as? NJProtonEditorHandle }
+        set { objc_setAssociatedObject(self, &NJTextViewHandleKey, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC) }
+    }
+
+    func nj_log(_ name: StaticString) {
+        let tvID = ObjectIdentifier(self)
+        let hID = self.njProtonHandle.map { ObjectIdentifier($0) }
+        NJShortcutLog.info("\(name) tv=\(String(describing: tvID)) handle=\(String(describing: hID))")
+    }
+
+    func nj_fire(_ name: StaticString, _ f: (NJProtonEditorHandle) -> Void) {
+        nj_log(name)
+        guard let h = self.njProtonHandle else { return }
+        f(h)
+        h.snapshot()
+        if !self.isFirstResponder { self.becomeFirstResponder() }
+    }
+
+    @objc func nj_tabIndent() { nj_fire("TAB INDENT") { $0.indent() } }
+    @objc func nj_tabOutdent() { nj_fire("TAB OUTDENT") { $0.outdent() } }
+
+    @objc func nj_cmdBold() { nj_fire("CMD+B") { $0.toggleBold() } }
+    @objc func nj_cmdItalic() { nj_fire("CMD+I") { $0.toggleItalic() } }
+    @objc func nj_cmdUnderline() { nj_fire("CMD+U") { $0.toggleUnderline() } }
+    @objc func nj_cmdStrike() { nj_fire("SHIFT+CMD+X") { $0.toggleStrike() } }
+
+    @objc func nj_cmdIndent() { nj_fire("CMD+]") { $0.indent() } }
+    @objc func nj_cmdOutdent() { nj_fire("CMD+[") { $0.outdent() } }
+
+    @objc func nj_cmdBullet() { nj_fire("CMD+7") { $0.toggleBullet() } }
+    @objc func nj_cmdNumber() { nj_fire("CMD+8") { $0.toggleNumber() } }
+    
+}
+
+
+import os
+
+private let NJShortcutLog = Logger(subsystem: "NotionJournal", category: "KeyCommands")
+private var NJKeyCommandsOriginalIMPByClass: [ObjectIdentifier: IMP] = [:]
+
+private func NJInstallTextViewKeyCommandHook(_ tv: UITextView) {
+    let cls: AnyClass = object_getClass(tv) ?? UITextView.self
+    let key = ObjectIdentifier(cls)
+    if NJKeyCommandsOriginalIMPByClass[key] != nil { return }
+
+    let sel = #selector(getter: UIResponder.keyCommands)
+    guard let method = class_getInstanceMethod(cls, sel) else { return }
+
+    let origIMP = method_getImplementation(method)
+    NJKeyCommandsOriginalIMPByClass[key] = origIMP
+
+    typealias OrigFn = @convention(c) (AnyObject, Selector) -> [UIKeyCommand]?
+    let newBlock: @convention(block) (UITextView) -> [UIKeyCommand]? = { t in
+        var existing: [UIKeyCommand] = []
+        if let imp = NJKeyCommandsOriginalIMPByClass[key] {
+            let f = unsafeBitCast(imp, to: OrigFn.self)
+            existing = f(t, sel) ?? []
+        }
+
+        guard t.njProtonHandle != nil else { return existing }
+
+        let mk: (String, UIKeyModifierFlags, Selector) -> UIKeyCommand = { input, flags, action in
+            let c = UIKeyCommand(input: input, modifierFlags: flags, action: action)
+            c.wantsPriorityOverSystemBehavior = true
+            return c
+        }
+
+        return existing + [
+            mk("\t", [], #selector(UITextView.nj_tabIndent)),
+            mk("\t", [.shift], #selector(UITextView.nj_tabOutdent)),
+            mk("b", .command, #selector(UITextView.nj_cmdBold)),
+            mk("i", .command, #selector(UITextView.nj_cmdItalic)),
+            mk("u", .command, #selector(UITextView.nj_cmdUnderline)),
+            mk("x", [.command, .shift], #selector(UITextView.nj_cmdStrike)),
+            mk("]", .command, #selector(UITextView.nj_cmdIndent)),
+            mk("[", .command, #selector(UITextView.nj_cmdOutdent)),
+            mk("7", .command, #selector(UITextView.nj_cmdBullet)),
+            mk("8", .command, #selector(UITextView.nj_cmdNumber))
+        ]
+
+    }
+
+    let newIMP = imp_implementationWithBlock(newBlock)
+    method_setImplementation(method, newIMP)
+}
+
+
+final class NJProtonListFormattingProvider: EditorListFormattingProvider {
+    let listLineFormatting = LineFormatting(indentation: 24, spacingBefore: 2, spacingAfter: 2)
+    private let font: UIFont = .systemFont(ofSize: 17)
+
+    func listLineMarkerFor(editor: EditorView, index: Int, level: Int, previousLevel: Int, attributeValue: Any?) -> ListLineMarker {
+        let kind: NJListKind = {
+            if let tl = attributeValue as? NSTextList {
+                return tl.markerFormat == .decimal ? .number : .bullet
+            }
+            if let tls = attributeValue as? [NSTextList], let tl = tls.first {
+                return tl.markerFormat == .decimal ? .number : .bullet
+            }
+            if let s = attributeValue as? String, let k = NJListKind(rawValue: s) {
+                return k
+            }
+
+            return .bullet
+        }()
+
+        switch kind {
+        case .bullet:
+            return .string(NSAttributedString(string: "•", attributes: [.font: font]))
+        case .number:
+            return .string(NSAttributedString(string: "\(index + 1).", attributes: [.font: font]))
+        }
+    }
+}
+
+
+final class NJProtonRoundTripDebugVC: UIViewController {
+    private let jsonView = UITextView()
+    private let previewHost: UIViewController
+
+    init(json: String, previewAttr: NSAttributedString) {
+        let handle = NJProtonEditorHandle()
+
+        struct PreviewShell: View {
+            let attr: NSAttributedString
+            let handle: NJProtonEditorHandle
+
+            @State private var snapshotAttr: NSAttributedString
+            @State private var snapshotSel: NSRange = NSRange(location: 0, length: 0)
+            @State private var h: CGFloat = 44
+
+            init(attr: NSAttributedString, handle: NJProtonEditorHandle) {
+                self.attr = attr
+                self.handle = handle
+                _snapshotAttr = State(initialValue: attr)
+            }
+
+            var body: some View {
+                NJProtonEditorView(
+                    initialAttributedText: attr,
+                    initialSelectedRange: NSRange(location: 0, length: 0),
+                    snapshotAttributedText: $snapshotAttr,
+                    snapshotSelectedRange: $snapshotSel,
+                    measuredHeight: $h,
+                    handle: handle
+                )
+                .frame(minHeight: h)
+            }
+        }
+
+        previewHost = UIHostingController(rootView: PreviewShell(attr: previewAttr, handle: handle))
+
+        super.init(nibName: nil, bundle: nil)
+
+        jsonView.text = json
+        jsonView.font = UIFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        jsonView.isEditable = false
+        jsonView.alwaysBounceVertical = true
+    }
+
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .systemBackground
+
+        let close = UIButton(type: .system)
+        close.setTitle("Close", for: .normal)
+        close.addTarget(self, action: #selector(onClose), for: .touchUpInside)
+
+        let top = UIView()
+        top.translatesAutoresizingMaskIntoConstraints = false
+        close.translatesAutoresizingMaskIntoConstraints = false
+        top.addSubview(close)
+
+        jsonView.translatesAutoresizingMaskIntoConstraints = false
+        previewHost.view.translatesAutoresizingMaskIntoConstraints = false
+
+        addChild(previewHost)
+        view.addSubview(top)
+        view.addSubview(jsonView)
+        view.addSubview(previewHost.view)
+        previewHost.didMove(toParent: self)
+
+        NSLayoutConstraint.activate([
+            top.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            top.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            top.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            top.heightAnchor.constraint(equalToConstant: 44),
+
+            close.trailingAnchor.constraint(equalTo: top.trailingAnchor, constant: -12),
+            close.centerYAnchor.constraint(equalTo: top.centerYAnchor),
+
+            jsonView.topAnchor.constraint(equalTo: top.bottomAnchor),
+            jsonView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            jsonView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            jsonView.heightAnchor.constraint(equalTo: view.heightAnchor, multiplier: 0.55),
+
+            previewHost.view.topAnchor.constraint(equalTo: jsonView.bottomAnchor),
+            previewHost.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            previewHost.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            previewHost.view.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)
+        ])
+    }
+
+    @objc private func onClose() {
+        dismiss(animated: true)
+    }
+}
+
+private func NJPresentRoundTripDebug(json: String, previewAttr: NSAttributedString) {
+    DispatchQueue.main.async {
+        guard
+            let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+            let root = scene.windows.first(where: { $0.isKeyWindow })?.rootViewController
+        else { return }
+
+        let vc = NJProtonRoundTripDebugVC(json: json, previewAttr: previewAttr)
+        vc.modalPresentationStyle = .pageSheet
+
+        var top = root
+        while let p = top.presentedViewController { top = p }
+        top.present(vc, animated: true)
+    }
+}
+
+func NJPresentDebugPopup(title: String, body: NSAttributedString) {
+    struct ProtonPopupView: View {
+        let title: String
+        let bodyAttr: NSAttributedString
+        let handle: NJProtonEditorHandle
+
+        @Environment(\.dismiss) private var dismiss
+        @State private var sel: NSRange = NSRange(location: 0, length: 0)
+        @State private var h: CGFloat = 44
+
+        var body: some View {
+            VStack(spacing: 0) {
+                HStack {
+                    Text(title).font(.headline)
+                    Spacer()
+                    Button("Close") { dismiss() }
+                }
+                .padding(12)
+
+                Divider()
+
+                ScrollView {
+                    NJProtonEditorView(
+                        initialAttributedText: bodyAttr,
+                        initialSelectedRange: sel,
+                        snapshotAttributedText: .constant(bodyAttr),
+                        snapshotSelectedRange: $sel,
+                        measuredHeight: $h,
+                        handle: handle
+                    )
+                    .frame(minHeight: h)
+                    .padding(12)
+                }
+            }
+            .presentationDetents([.medium, .large])
+        }
+    }
+
+    let handle = NJProtonEditorHandle()
+    let vc = UIHostingController(rootView: ProtonPopupView(title: title, bodyAttr: body, handle: handle))
+    vc.modalPresentationStyle = UIModalPresentationStyle.pageSheet
+
+    guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+          let root = scene.windows.first(where: { $0.isKeyWindow })?.rootViewController else {
+        return
+    }
+
+    var top = root
+    while let p = top.presentedViewController { top = p }
+    top.present(vc, animated: true)
+}
+
+typealias NJProtonAuditJSON = [String: Any]
+
+struct NJProtonAuditJSONEncoder: EditorContentEncoder {
+    let textEncoders: [EditorContent.Name: AnyEditorTextEncoding<NJProtonAuditJSON>] = [
+        .paragraph: AnyEditorTextEncoding(NJAuditParagraphEncoder()),
+        .text: AnyEditorTextEncoding(NJAuditTextEncoder())
+    ]
+
+    let attachmentEncoders: [EditorContent.Name: AnyEditorContentAttachmentEncoding<NJProtonAuditJSON>] = [:]
+}
+
+private struct NJAuditParagraphEncoder: EditorTextEncoding {
+    func encode(name: EditorContent.Name, string: NSAttributedString) -> NJProtonAuditJSON {
+        var json: NJProtonAuditJSON = [:]
+        json["type"] = name.rawValue
+
+        let full = NSRange(location: 0, length: string.length)
+
+        var paragraphStyleJSON: NJProtonAuditJSON?
+        string.enumerateAttribute(.paragraphStyle, in: full, options: []) { value, _, stop in
+            if let ps = value as? NSParagraphStyle {
+                paragraphStyleJSON = ps.nj_auditJSONValue
+                stop.pointee = true
+            }
+        }
+        if let paragraphStyleJSON {
+            json["paragraphStyle"] = paragraphStyleJSON
+        }
+
+        var out: [NJProtonAuditJSON] = []
+        string.enumerateAttributes(in: full, options: []) { _, range, _ in
+            let sub = string.attributedSubstring(from: range)
+            let enc = NJAuditTextEncoder()
+            out.append(enc.encode(name: .text, string: sub))
+        }
+        json["contents"] = out
+
+        return json
+    }
+}
+
+private struct NJAuditTextEncoder: EditorTextEncoding {
+    func encode(name: EditorContent.Name, string: NSAttributedString) -> NJProtonAuditJSON {
+        var json: NJProtonAuditJSON = [:]
+        json["type"] = name.rawValue
+        json["text"] = string.string
+
+        let full = NSRange(location: 0, length: string.length)
+        var attributesJSON: NJProtonAuditJSON = [:]
+
+        string.enumerateAttributes(in: full, options: []) { attrs, _, stop in
+            for (k, v) in attrs {
+                if k == .font, let font = v as? UIFont {
+                    attributesJSON["font"] = font.nj_auditJSONValue
+                } else if k == .paragraphStyle, let ps = v as? NSParagraphStyle {
+                    attributesJSON["paragraphStyle"] = ps.nj_auditJSONValue
+                } else if k == .foregroundColor, let c = v as? UIColor {
+                    attributesJSON["foregroundColor"] = c.nj_auditRGBAJSONValue
+                } else if k == .backgroundColor, let c = v as? UIColor {
+                    attributesJSON["backgroundColor"] = c.nj_auditRGBAJSONValue
+                } else if k == .underlineStyle {
+                    attributesJSON["underline"] = true
+                } else if k == .strikethroughStyle {
+                    attributesJSON["strike"] = true
+                }
+            }
+            stop.pointee = true
+        }
+
+        if !attributesJSON.isEmpty {
+            json["attributes"] = attributesJSON
+        }
+
+        return json
+    }
+}
+
+private extension UIFont {
+    var nj_auditJSONValue: NJProtonAuditJSON {
+        let d = fontDescriptor
+        return [
+            "name": fontName,
+            "family": familyName,
+            "size": d.pointSize,
+            "isBold": d.symbolicTraits.contains(.traitBold),
+            "isItalics": d.symbolicTraits.contains(.traitItalic),
+            "isMonospace": d.symbolicTraits.contains(.traitMonoSpace),
+            "textStyle": d.object(forKey: .textStyle) as? String ?? "UICTFontTextStyleBody"
+        ]
+    }
+}
+
+private extension NSParagraphStyle {
+    var nj_auditJSONValue: NJProtonAuditJSON {
+        var o: NJProtonAuditJSON = [
+            "alignment": alignment.rawValue,
+            "firstLineHeadIndent": firstLineHeadIndent,
+            "headIndent": headIndent,
+            "tailIndent": tailIndent,
+            "lineSpacing": lineSpacing,
+            "paragraphSpacing": paragraphSpacing,
+            "paragraphSpacingBefore": paragraphSpacingBefore,
+            "lineHeightMultiple": lineHeightMultiple,
+            "minimumLineHeight": minimumLineHeight,
+            "maximumLineHeight": maximumLineHeight
+        ]
+
+        if !textLists.isEmpty {
+            o["textLists"] = textLists.map { tl in
+                [
+                    "markerFormat": (tl.markerFormat == .decimal) ? "decimal" : "disc",
+                    "startingItemNumber": tl.startingItemNumber
+                ]
+            }
+        }
+
+        return o
+    }
+}
+
+private extension UIColor {
+    var nj_auditRGBAJSONValue: NJProtonAuditJSON {
+        var r: CGFloat = 0
+        var g: CGFloat = 0
+        var b: CGFloat = 0
+        var a: CGFloat = 0
+        getRed(&r, green: &g, blue: &b, alpha: &a)
+        return ["r": r, "g": g, "b": b, "a": a]
+    }
+}
+
+final class NJProtonEditorHandle {
+    weak var editor: EditorView?
+    var debugName: String = ""
+    var ownerBlockUUID: UUID? = nil
+    var isEditing: Bool = false
+    
+    var onSnapshot: ((NSAttributedString, NSRange) -> Void)?
+    var onUserTyped: ((NSAttributedString, NSRange) -> Void)?
+    var onEndEditing: ((NSAttributedString, NSRange) -> Void)?
+    var onCtrlReturn: (() -> Void)?
+    
+    private var pendingHydrateProtonJSON: String? = nil
+
+    func indent() { adjustIndent(delta: 24) }
+    func outdent() { adjustIndent(delta: -24) }
+
+    
+    func exportProtonJSONString() -> String {
+        guard let editor else { return "" }
+        let attr = editor.attributedText
+        let nodes = NJProtonNodeCodecV1.encodeNodes(from: attr)
+        return NJProtonNodeCodecV1.encodeJSONString(nodes: nodes)
+    }
+
+    private struct NJProtonNodesV1Codec {
+        static let schema = "nj_proton_nodes_v1"
+        static let indentUnit: CGFloat = 24
+
+        static func decodeRoot(_ json: String) -> [[String: Any]]? {
+            guard let data = json.data(using: .utf8) else { return nil }
+            guard let rootAny = try? JSONSerialization.jsonObject(with: data, options: []) else { return nil }
+            guard let root = rootAny as? [String: Any] else { return nil }
+            guard (root["schema"] as? String) == schema else { return nil }
+            guard let nodesAny = root["nodes"] as? [Any] else { return nil }
+            let nodes = nodesAny.compactMap { $0 as? [String: Any] }
+            return nodes.isEmpty ? nil : nodes
+        }
+
+        static func buildAttributedString(nodes: [[String: Any]]) -> NSAttributedString {
+            let out = NSMutableAttributedString()
+
+            for (idx, n) in nodes.enumerated() {
+                let t = (n["type"] as? String) ?? "text"
+                var text = (n["text"] as? String) ?? ""
+                text = stripZWSP(text)
+
+                let line = NSMutableAttributedString(string: text)
+
+                if t == "list_item" {
+                    let kind = (n["kind"] as? String) ?? "bullet"
+                    let level = max(0, (n["level"] as? Int) ?? 0)
+
+                    let marker: NSTextList.MarkerFormat = (kind == "number") ? .decimal : .disc
+                    let tl = NSTextList(markerFormat: marker, options: 0)
+
+                    let ps = NSMutableParagraphStyle()
+                    ps.textLists = [tl]
+
+                    let indent = CGFloat(level) * indentUnit
+                    ps.firstLineHeadIndent = indent
+                    ps.headIndent = indent
+
+                    line.addAttribute(.paragraphStyle, value: ps, range: NSRange(location: 0, length: line.length))
+                }
+
+                out.append(line)
+                if idx != nodes.count - 1 {
+                    out.append(NSAttributedString(string: "\n"))
+                }
+            }
+
+            return out
+        }
+
+        private static func stripZWSP(_ s: String) -> String {
+            s.replacingOccurrences(of: "\u{200B}", with: "").replacingOccurrences(of: "\u{FEFF}", with: "")
+        }
+    }
+
+    private struct NJProtonNodeCodecV1 {
+
+        private static let schema = "nj_proton_nodes_v1"
+        private static let indentUnit: CGFloat = 24
+
+        static func encodeJSONString(nodes: [[String: Any]]) -> String {
+            let root: [String: Any] = ["schema": schema, "nodes": nodes]
+            guard JSONSerialization.isValidJSONObject(root) else { return "" }
+            guard let data = try? JSONSerialization.data(withJSONObject: root, options: []) else { return "" }
+            return String(data: data, encoding: .utf8) ?? ""
+        }
+
+        static func decodeNodesIfPresent(json: String) -> [[String: Any]]? {
+            guard let data = json.data(using: .utf8) else { return nil }
+            guard let rootAny = try? JSONSerialization.jsonObject(with: data, options: []) else { return nil }
+            guard let root = rootAny as? [String: Any] else { return nil }
+            guard (root["schema"] as? String) == schema else { return nil }
+            guard let nodesAny = root["nodes"] as? [Any] else { return nil }
+            return nodesAny.compactMap { $0 as? [String: Any] }
+        }
+
+        static func encodeNodes(from text: NSAttributedString) -> [[String: Any]] {
+            let s = text.string as NSString
+            if s.length == 0 {
+                return [["type": "text", "text": ""]]
+            }
+
+            var nodes: [[String: Any]] = []
+
+            var i = 0
+            while i < s.length {
+                let paraRange = s.paragraphRange(for: NSRange(location: i, length: 0))
+                let para = text.attributedSubstring(from: paraRange)
+
+                let paraString = trimTrailingNewlines(para.string)
+                let style = para.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle
+
+                let (kind, level) = listKindAndLevel(from: para, paragraphStyle: style)
+
+                if let kind {
+                    nodes.append([
+                        "type": "list_item",
+                        "kind": kind,
+                        "level": level,
+                        "text": paraString
+                    ])
+                } else {
+                    nodes.append([
+                        "type": "text",
+                        "text": paraString
+                    ])
+                }
+
+                i = paraRange.location + max(1, paraRange.length)
+            }
+
+            if nodes.isEmpty {
+                nodes.append(["type": "text", "text": ""])
+            }
+
+            return nodes
+        }
+
+        static func buildAttributedString(nodes: [[String: Any]]) -> NSAttributedString {
+            let out = NSMutableAttributedString()
+
+            for (idx, n) in nodes.enumerated() {
+                let t = (n["type"] as? String) ?? "text"
+                let text = (n["text"] as? String) ?? ""
+
+                let line = NSMutableAttributedString(string: text)
+
+                if t == "list_item" {
+                    let kind = (n["kind"] as? String) ?? "bullet"
+                    let level = max(0, (n["level"] as? Int) ?? 0)
+
+                    let tl: NSTextList = {
+                        if kind == "number" { return NSTextList(markerFormat: .decimal, options: 0) }
+                        return NSTextList(markerFormat: .disc, options: 0)
+                    }()
+
+                    let ps = NSMutableParagraphStyle()
+                    ps.textLists = [tl]
+
+                    let indent = CGFloat(level) * indentUnit
+                    ps.headIndent = indent
+                    ps.firstLineHeadIndent = indent
+
+                    line.addAttribute(.paragraphStyle, value: ps, range: line.fullRange)
+                    line.addAttribute(.listItem, value: tl, range: line.fullRange)
+                }
+
+                out.append(line)
+                if idx != nodes.count - 1 {
+                    out.append(NSAttributedString(string: "\n"))
+                }
+            }
+
+            return out
+        }
+
+        private static func listKindAndLevel(from para: NSAttributedString, paragraphStyle: NSParagraphStyle?) -> (String?, Int) {
+            let full = NSRange(location: 0, length: para.length)
+
+            var listValue: Any? = nil
+            para.enumerateAttribute(.listItem, in: full, options: []) { v, _, stop in
+                if v != nil {
+                    listValue = v
+                    stop.pointee = true
+                }
+            }
+
+            let tl: NSTextList? = {
+                if let t = listValue as? NSTextList { return t }
+                if let arr = listValue as? [NSTextList] { return arr.first }
+                if let ps = paragraphStyle, let first = ps.textLists.first { return first }
+                return nil
+            }()
+
+            guard let tl else {
+                return (nil, 0)
+            }
+
+            let kind: String = (tl.markerFormat == .decimal) ? "number" : "bullet"
+
+            let headIndent: CGFloat = {
+                if let ps = paragraphStyle { return ps.headIndent }
+                return 0
+            }()
+
+            let level = max(0, Int((headIndent / indentUnit).rounded()))
+            return (kind, level)
+        }
+
+        private static func trimTrailingNewlines(_ s: String) -> String {
+            var t = s
+            while t.hasSuffix("\n") { t.removeLast() }
+            return t
+        }
+    }
+
+    func attributedStringFromProtonJSONString(_ json: String) -> NSAttributedString {
+        let out = NSMutableAttributedString()
+
+        guard
+            let data = json.data(using: .utf8),
+            let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        else {
+            return out
+        }
+
+        for node in arr {
+            guard let type = node["type"] as? String else { continue }
+
+            if type == "_paragraph" {
+                if let contents = node["contents"] as? [[String: Any]] {
+                    for c in contents {
+                        if let t = c["text"] as? String {
+                            let a = NSMutableAttributedString(string: t)
+                            if let attrs = c["attributes"] as? [String: Any] {
+                                applyAttributes(attrs, to: a)
+                            }
+                            out.append(a)
+                        }
+                    }
+                }
+                out.append(NSAttributedString(string: "\n"))
+            }
+        }
+
+        return out
+    }
+
+    private func applyAttributes(_ attrs: [String: Any], to s: NSMutableAttributedString) {
+        let r = NSRange(location: 0, length: s.length)
+
+        if let font = attrs["font"] as? [String: Any],
+           let size = font["size"] as? CGFloat {
+            s.addAttribute(.font, value: UIFont.systemFont(ofSize: size), range: r)
+        }
+
+        if let color = attrs["foregroundColor"] as? [String: Any],
+           let rC = color["r"] as? CGFloat,
+           let gC = color["g"] as? CGFloat,
+           let bC = color["b"] as? CGFloat,
+           let aC = color["a"] as? CGFloat {
+            s.addAttribute(.foregroundColor, value: UIColor(red: rC, green: gC, blue: bC, alpha: aC), range: r)
+        }
+    }
+
+    private func adjustIndent(delta: CGFloat) {
+        guard let editor else { return }
+        guard let tv = findTextView(in: editor) else { return }
+
+        let sel = tv.selectedRange
+        let ns = tv.text as NSString
+
+        let startPara = ns.paragraphRange(for: NSRange(location: min(sel.location, ns.length), length: 0))
+        let endLoc = min(sel.location + max(sel.length, 0), ns.length)
+        let endPara = ns.paragraphRange(for: NSRange(location: endLoc, length: 0))
+
+        let range = NSRange(
+            location: startPara.location,
+            length: max(0, (endPara.location + endPara.length) - startPara.location)
+        )
+
+        tv.textStorage.beginEditing()
+        tv.textStorage.enumerateAttribute(.paragraphStyle, in: range, options: []) { value, subRange, _ in
+            let base = (value as? NSParagraphStyle) ?? NSParagraphStyle.default
+            let ps = base.mutableCopy() as! NSMutableParagraphStyle
+
+            let newHead = max(0, ps.headIndent + delta)
+            let newFirst = max(0, ps.firstLineHeadIndent + delta)
+
+            ps.headIndent = newHead
+            ps.firstLineHeadIndent = newFirst
+
+            tv.textStorage.addAttribute(.paragraphStyle, value: ps, range: subRange)
+        }
+        tv.textStorage.endEditing()
+
+        if let cur = tv.typingAttributes[.paragraphStyle] as? NSParagraphStyle {
+            let ps = cur.mutableCopy() as! NSMutableParagraphStyle
+            ps.headIndent = max(0, ps.headIndent + delta)
+            ps.firstLineHeadIndent = max(0, ps.firstLineHeadIndent + delta)
+            tv.typingAttributes[.paragraphStyle] = ps
+        }
+    }
+
+    func toggleBullet() {
+        guard let editor else { return }
+        let tl = NSTextList(markerFormat: .disc, options: 0)
+        ListCommand().execute(on: editor, attributeValue: tl)
+        snapshot()
+    }
+
+    func toggleNumber() {
+        guard let editor else { return }
+        let tl = NSTextList(markerFormat: .decimal, options: 0)
+        ListCommand().execute(on: editor, attributeValue: tl)
+        snapshot()
+    }
+    
+    func toggleUnderline() { toggleUnderlineStyle() }
+
+    func focus() {
+        if let tv = textView {
+            _ = tv.becomeFirstResponder()
+            return
+        }
+        guard let editor else { return }
+        guard let tv = findTextView(in: editor) else { return }
+        textView = tv
+        _ = tv.becomeFirstResponder()
+    }
+
+    private func toggleUnderlineStyle() {
+        guard let editor else { return }
+        guard let tv = findTextView(in: editor) else { return }
+
+        let r = tv.selectedRange
+        if r.length == 0 {
+            let v = (tv.typingAttributes[.underlineStyle] as? Int) ?? 0
+            tv.typingAttributes[.underlineStyle] = (v == 0) ? NSUnderlineStyle.single.rawValue : 0
+            return
+        }
+
+        let s = tv.textStorage
+        let has = (s.attribute(.underlineStyle, at: r.location, effectiveRange: nil) as? Int ?? 0) != 0
+        s.beginEditing()
+        s.addAttribute(.underlineStyle, value: has ? 0 : NSUnderlineStyle.single.rawValue, range: r)
+        s.endEditing()
+
+        snapshot()
+    }
+
+    var onEndEditingSimple: (() -> Void)?
+
+    func dumpProtonJSONPretty() -> String {
+        guard let editor else { return "" }
+        let obj = editor.transformContents(using: NJProtonAuditJSONEncoder())
+        guard JSONSerialization.isValidJSONObject(obj) else { return "" }
+        guard let data = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]) else { return "" }
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+
+    weak var textView: UITextView?
+
+    func owns(textView tv: UITextView) -> Bool {
+        if let t = textView { return t === tv }
+        guard let editor else { return false }
+        return findTextView(in: editor) === tv
+    }
+
+    func insertImageAttachment(_ image: UIImage, width: CGFloat = 400) {
+        guard let editor else { return }
+        guard let tv = findTextView(in: editor) else { return }
+
+        let w = max(1, width)
+        let ratio = image.size.height / max(1, image.size.width)
+        let h = max(1, w * ratio)
+
+        let att = NSTextAttachment()
+        att.image = image
+        att.bounds = CGRect(x: 0, y: 0, width: w, height: h)
+
+        let s = NSMutableAttributedString(attributedString: tv.attributedText)
+        let r = tv.selectedRange
+        let attStr = NSAttributedString(attachment: att)
+        s.replaceCharacters(in: r, with: attStr)
+
+        tv.attributedText = s
+        tv.selectedRange = NSRange(location: min(r.location + 1, s.length), length: 0)
+
+        snapshot()
+    }
+
+
+    func insertPhoto(_ image: UIImage) {
+        guard let editor else { return }
+        guard let tv = findTextView(in: editor) else { return }
+
+        let w: CGFloat = 400
+        let ratio = image.size.height / max(1, image.size.width)
+        let h = max(1, w * ratio)
+
+        let att = NSTextAttachment()
+        att.image = image
+        att.bounds = CGRect(x: 0, y: 0, width: w, height: h)
+
+        let s = NSMutableAttributedString(attributedString: tv.attributedText)
+        let r = tv.selectedRange
+
+        let attStr = NSAttributedString(attachment: att)
+        s.replaceCharacters(in: r, with: attStr)
+
+        tv.attributedText = s
+        tv.selectedRange = NSRange(location: min(r.location + 1, s.length), length: 0)
+
+        snapshot()
+    }
+
+    func insertLink(_ url: URL) {
+        guard let editor else { return }
+        guard let tv = findTextView(in: editor) else { return }
+
+        let r = tv.selectedRange
+        if r.length == 0 { return }
+
+        let s = NSMutableAttributedString(attributedString: tv.attributedText)
+        s.addAttribute(.link, value: url, range: r)
+        tv.attributedText = s
+        tv.selectedRange = NSRange(location: r.location + r.length, length: 0)
+
+        snapshot()
+    }
+
+    func insertDivider() {
+        guard let editor else { return }
+        guard let tv = findTextView(in: editor) else { return }
+
+        let m = NSMutableAttributedString(attributedString: tv.attributedText)
+        let r = tv.selectedRange
+
+        let div = NSAttributedString(string: "\n──────────\n", attributes: [
+            .font: UIFont.systemFont(ofSize: 17),
+            .foregroundColor: UIColor.secondaryLabel
+        ])
+
+        m.replaceCharacters(in: r, with: div)
+        let loc = r.location + div.length
+        tv.attributedText = m
+        tv.selectedRange = NSRange(location: min(loc, m.length), length: 0)
+
+        snapshot()
+    }
+
+    func insertTodoCheckbox() {
+        guard let editor else { return }
+        guard let tv = findTextView(in: editor) else { return }
+
+        let m = NSMutableAttributedString(attributedString: tv.attributedText)
+        let r = tv.selectedRange
+        let box = NSAttributedString(string: "☐ ", attributes: [
+            .font: UIFont.systemFont(ofSize: 17),
+            .foregroundColor: UIColor.label
+        ])
+
+        m.replaceCharacters(in: r, with: box)
+        let loc = r.location + box.length
+        tv.attributedText = m
+        tv.selectedRange = NSRange(location: min(loc, m.length), length: 0)
+
+        snapshot()
+    }
+
+    func insertTodayStamp() {
+        guard let editor else { return }
+        guard let tv = findTextView(in: editor) else { return }
+
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd"
+        let s = df.string(from: Date())
+        let stamp = NSAttributedString(string: s, attributes: [
+            .font: UIFont.systemFont(ofSize: 17),
+            .foregroundColor: UIColor.secondaryLabel
+        ])
+
+        let m = NSMutableAttributedString(attributedString: tv.attributedText)
+        let r = tv.selectedRange
+        m.replaceCharacters(in: r, with: stamp)
+        let loc = r.location + stamp.length
+        tv.attributedText = m
+        tv.selectedRange = NSRange(location: min(loc, m.length), length: 0)
+
+        snapshot()
+    }
+
+    func insertCodeFence() {
+        guard let editor else { return }
+        guard let tv = findTextView(in: editor) else { return }
+
+        let m = NSMutableAttributedString(attributedString: tv.attributedText)
+        let r = tv.selectedRange
+        let code = NSAttributedString(string: "\n```\n\n```\n", attributes: [
+            .font: UIFont.monospacedSystemFont(ofSize: 15, weight: .regular),
+            .foregroundColor: UIColor.label
+        ])
+
+        m.replaceCharacters(in: r, with: code)
+        let loc = r.location + 5
+        tv.attributedText = m
+        tv.selectedRange = NSRange(location: min(loc, m.length), length: 0)
+
+        snapshot()
+    }
+
+    func increaseFont() { adjustFontSize(delta: 1) }
+    func decreaseFont() { adjustFontSize(delta: -1) }
+
+    func toggleBold() { toggleFontTrait(.traitBold) }
+    func toggleItalic() { toggleFontTrait(.traitItalic) }
+    func toggleStrike() { toggleStrikeThrough() }
+
+    func snapshot() {
+        guard let editor else { return }
+        onSnapshot?(editor.attributedText, editor.selectedRange)
+    }
+
+    private func adjustFontSize(delta: CGFloat) {
+        guard let editor else { return }
+        guard let tv = findTextView(in: editor) else { return }
+
+        let r = tv.selectedRange
+        if r.length == 0 {
+            let old = (tv.typingAttributes[.font] as? UIFont) ?? UIFont.systemFont(ofSize: 17)
+            let newSize = max(8, min(48, old.pointSize + delta))
+            let newFont = UIFont(descriptor: old.fontDescriptor, size: newSize)
+            tv.typingAttributes[.font] = newFont
+            return
+        }
+
+        tv.textStorage.beginEditing()
+        tv.textStorage.enumerateAttribute(.font, in: r, options: []) { value, range, _ in
+            let old = (value as? UIFont) ?? UIFont.systemFont(ofSize: 17)
+            let newSize = max(8, min(48, old.pointSize + delta))
+            let newFont = UIFont(descriptor: old.fontDescriptor, size: newSize)
+            tv.textStorage.addAttribute(.font, value: newFont, range: range)
+        }
+        tv.textStorage.endEditing()
+
+        snapshot()
+    }
+
+    private func toggleFontTrait(_ trait: UIFontDescriptor.SymbolicTraits) {
+        guard let editor else { return }
+        guard let tv = findTextView(in: editor) else { return }
+
+        let r = tv.selectedRange
+        if r.length == 0 {
+            let old = (tv.typingAttributes[.font] as? UIFont) ?? UIFont.systemFont(ofSize: 17)
+            let fd = old.fontDescriptor
+            let has = fd.symbolicTraits.contains(trait)
+            var traits = fd.symbolicTraits
+            if has { traits.remove(trait) } else { traits.insert(trait) }
+            if let nfd = fd.withSymbolicTraits(traits) {
+                tv.typingAttributes[.font] = UIFont(descriptor: nfd, size: old.pointSize)
+            }
+            return
+        }
+
+        tv.textStorage.beginEditing()
+        tv.textStorage.enumerateAttribute(.font, in: r, options: []) { value, range, _ in
+            let old = (value as? UIFont) ?? UIFont.systemFont(ofSize: 17)
+            let fd = old.fontDescriptor
+            let has = fd.symbolicTraits.contains(trait)
+            var traits = fd.symbolicTraits
+            if has { traits.remove(trait) } else { traits.insert(trait) }
+            if let nfd = fd.withSymbolicTraits(traits) {
+                let nf = UIFont(descriptor: nfd, size: old.pointSize)
+                tv.textStorage.addAttribute(.font, value: nf, range: range)
+            }
+        }
+        tv.textStorage.endEditing()
+
+        snapshot()
+    }
+
+    private func toggleStrikeThrough() {
+        guard let editor else { return }
+        guard let tv = findTextView(in: editor) else { return }
+
+        let r = tv.selectedRange
+        if r.length == 0 {
+            let v = (tv.typingAttributes[.strikethroughStyle] as? Int) ?? 0
+            tv.typingAttributes[.strikethroughStyle] = (v == 0) ? NSUnderlineStyle.single.rawValue : 0
+            return
+        }
+
+        let s = tv.textStorage
+        let has = (s.attribute(.strikethroughStyle, at: r.location, effectiveRange: nil) as? Int ?? 0) != 0
+        s.beginEditing()
+        s.addAttribute(.strikethroughStyle, value: has ? 0 : NSUnderlineStyle.single.rawValue, range: r)
+        s.endEditing()
+
+        snapshot()
+    }
+    
+    func hydrateFromProtonJSONString(_ json: String) {
+        if editor == nil || textView == nil {
+            pendingHydrateProtonJSON = json
+            return
+        }
+        pendingHydrateProtonJSON = nil
+        scheduleHydration(json)
+    }
+
+    private var didHydrate = false
+
+    func applyPendingHydrateIfNeeded() {
+        guard !didHydrate else { return }
+        guard let json = pendingHydrateProtonJSON else { return }
+        guard editor != nil, textView != nil else { return }
+        didHydrate = true
+        pendingHydrateProtonJSON = nil
+        scheduleHydration(json)
+    }
+
+    private var hydrationScheduled = false
+    private var pendingJSON: String?
+
+    private func buildParagraphStyle(from json: [String: Any]) -> NSMutableParagraphStyle {
+        let ps = NSMutableParagraphStyle()
+
+        if let a = json["alignment"] as? Int { ps.alignment = NSTextAlignment(rawValue: a) ?? .natural }
+        if let v = json["firstLineHeadIndent"] as? Double { ps.firstLineHeadIndent = CGFloat(v) }
+        if let v = json["headIndent"] as? Double { ps.headIndent = CGFloat(v) }
+        if let v = json["tailIndent"] as? Double { ps.tailIndent = CGFloat(v) }
+        if let v = json["lineSpacing"] as? Double { ps.lineSpacing = CGFloat(v) }
+        if let v = json["paragraphSpacing"] as? Double { ps.paragraphSpacing = CGFloat(v) }
+        if let v = json["paragraphSpacingBefore"] as? Double { ps.paragraphSpacingBefore = CGFloat(v) }
+        if let v = json["lineHeightMultiple"] as? Double { ps.lineHeightMultiple = CGFloat(v) }
+        if let v = json["minimumLineHeight"] as? Double { ps.minimumLineHeight = CGFloat(v) }
+        if let v = json["maximumLineHeight"] as? Double { ps.maximumLineHeight = CGFloat(v) }
+
+        if let tls = json["textLists"] as? [[String: Any]], !tls.isEmpty {
+            var lists: [NSTextList] = []
+            for tl in tls {
+                let mf = (tl["markerFormat"] as? String) ?? "disc"
+                let marker: NSTextList.MarkerFormat = (mf == "decimal") ? .decimal : .disc
+                let l = NSTextList(markerFormat: marker, options: 0)
+                if let n = tl["startingItemNumber"] as? Int { l.startingItemNumber = n }
+                lists.append(l)
+            }
+            ps.textLists = lists
+        }
+
+        return ps
+    }
+
+    func scheduleHydration(_ json: String) {
+        if didHydrate { return }
+        pendingJSON = json
+        guard !hydrationScheduled else { return }
+        hydrationScheduled = true
+
+        let run: () -> Void = { [weak self] in
+            guard let self else { return }
+            self.hydrationScheduled = false
+            guard let json = self.pendingJSON else { return }
+            self.pendingJSON = nil
+            self.applyHydrateJSON(json)
+        }
+
+        if Thread.isMainThread {
+            run()
+        } else {
+            DispatchQueue.main.async(execute: run)
+        }
+    }
+
+    private func applyHydrateJSON(_ json: String) {
+        guard let tv = textView else { return }
+
+        if let nodes = NJProtonNodeCodecV1.decodeNodesIfPresent(json: json) {
+            guard let editor else { return }
+            let decoded = NJProtonNodeCodecV1.buildAttributedString(nodes: nodes)
+
+            let r = editor.selectedRange
+            editor.attributedText = decoded
+            editor.selectedRange = NSRange(location: min(r.location, decoded.length), length: 0)
+
+            didHydrate = true
+            return
+        }
+
+        guard let data = json.data(using: .utf8) else { return }
+        guard let rootAny = try? JSONSerialization.jsonObject(with: data, options: []) else { return }
+        guard let paras = rootAny as? [[String: Any]] else { return }
+
+        let mode = njDefaultContentMode()
+        let maxSize = CGSize(width: 4096, height: 4096)
+
+        let decoded: NSAttributedString = {
+            let out = NSMutableAttributedString()
+            for (i, p) in paras.enumerated() {
+                let wrapper: [String: Any] = ["contents": [p]]
+                let one: NSAttributedString = (try? NJProtonAuditCodec.decoder.decode(mode: mode, maxSize: maxSize, value: wrapper, context: nil)) ?? NSAttributedString(string: "")
+                out.append(one)
+                if i != paras.count - 1 {
+                    out.append(NSAttributedString(string: "\n"))
+                }
+            }
+            return out
+        }()
+
+        let r = tv.selectedRange
+        tv.textStorage.beginEditing()
+        tv.textStorage.setAttributedString(decoded)
+        tv.textStorage.endEditing()
+        tv.selectedRange = NSRange(location: min(r.location, decoded.length), length: 0)
+        didHydrate = true
+    }
+
+    private func njDefaultContentMode() -> EditorContentMode {
+        var z = [UInt8](repeating: 0, count: MemoryLayout<EditorContentMode>.size)
+        return z.withUnsafeBytes { $0.load(as: EditorContentMode.self) }
+    }
+
+
+    private func findTextView(in root: UIView) -> UITextView? {
+        if let tv = root as? UITextView { return tv }
+        for v in root.subviews {
+            if let tv = findTextView(in: v) { return tv }
+        }
+        return nil
+    }
+}
+
+final class NJKeyCommandEditorView: EditorView {
+    weak var njHandle: NJProtonEditorHandle?
+
+    override var canBecomeFirstResponder: Bool { true }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+    }
+
+    override var keyCommands: [UIKeyCommand]? {
+        [
+            UIKeyCommand(input: "\r", modifierFlags: [.control], action: #selector(ctrlReturn)),
+
+            UIKeyCommand(input: "b", modifierFlags: [.command], action: #selector(cmdBold)),
+            UIKeyCommand(input: "i", modifierFlags: [.command], action: #selector(cmdItalic)),
+            UIKeyCommand(input: "u", modifierFlags: [.command], action: #selector(cmdUnderline)),
+            UIKeyCommand(input: "x", modifierFlags: [.command, .shift], action: #selector(cmdStrike)),
+            
+
+            UIKeyCommand(input: "\t", modifierFlags: [], action: #selector(tabIndent)),
+            UIKeyCommand(input: "\t", modifierFlags: [.shift], action: #selector(tabOutdent))
+        ]
+    }
+
+    @objc private func cmdUnderline() {
+        njHandle?.toggleUnderline()
+        njHandle?.snapshot()
+    }
+
+    @objc private func ctrlReturn() {
+        njHandle?.onCtrlReturn?()
+    }
+
+    @objc private func cmdBold() {
+        njHandle?.toggleBold()
+        njHandle?.snapshot()
+    }
+
+    @objc private func cmdItalic() {
+        njHandle?.toggleItalic()
+        njHandle?.snapshot()
+    }
+
+    @objc private func cmdStrike() {
+        njHandle?.toggleStrike()
+        njHandle?.snapshot()
+    }
+
+    @objc private func tabIndent() {
+        njHandle?.indent()
+        njHandle?.snapshot()
+    }
+
+    @objc private func tabOutdent() {
+        njHandle?.outdent()
+        njHandle?.snapshot()
+    }
+}
+
+struct NJProtonEditorView: UIViewRepresentable {
+    let initialAttributedText: NSAttributedString
+    let initialSelectedRange: NSRange
+
+    @Binding var snapshotAttributedText: NSAttributedString
+    @Binding var snapshotSelectedRange: NSRange
+    @Binding var measuredHeight: CGFloat
+
+    let handle: NJProtonEditorHandle
+
+    private let listProvider = NJProtonListFormattingProvider()
+
+    func makeUIView(context: Context) -> EditorView {
+        let v = NJKeyCommandEditorView()
+        v.listFormattingProvider = listProvider
+        v.registerProcessor(ListTextProcessor())
+        v.delegate = context.coordinator
+        v.isScrollEnabled = false
+        v.backgroundColor = .clear
+        v.isEditable = true
+        v.isUserInteractionEnabled = true
+
+        context.coordinator.beginProgrammatic()
+        v.attributedText = initialAttributedText
+        v.selectedRange = initialSelectedRange
+        context.coordinator.endProgrammatic()
+
+        normalizeTypingAttributesIfNeeded(v)
+
+        if let tv = findTextView(in: v) {
+            NJInstallTextViewKeyCommandHook(tv)
+            if tv.njProtonHandle == nil || handle.owns(textView: tv) {
+                tv.njProtonHandle = handle
+                handle.textView = tv
+            }
+
+            tv.isScrollEnabled = false
+            tv.backgroundColor = .clear
+            tv.textContainerInset = .zero
+            tv.textContainer.lineFragmentPadding = 0
+
+            context.coordinator.attachTextView(tv)
+        }
+
+
+        v.njProtonHandle = handle
+        handle.editor = v
+        (v as? NJKeyCommandEditorView)?.njHandle = handle
+
+        handle.onEndEditingSimple = nil
+
+        handle.onSnapshot = { a, r in
+            snapshotAttributedText = a
+            snapshotSelectedRange = r
+            context.coordinator.updateMeasuredHeight(from: v)
+        }
+
+        let pinch = UIPinchGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.onPinch(_:)))
+        pinch.cancelsTouchesInView = false
+        v.addGestureRecognizer(pinch)
+
+        DispatchQueue.main.async {
+            if let tv = findTextView(in: v) {
+                NJInstallTextViewKeyCommandHook(tv)
+                if tv.njProtonHandle == nil || handle.owns(textView: tv) {
+                    tv.njProtonHandle = handle
+                    handle.textView = tv
+                }
+            }
+            normalizeTypingAttributesIfNeeded(v)
+            context.coordinator.updateMeasuredHeight(from: v)
+        }
+
+        return v
+    }
+
+    func updateUIView(_ uiView: EditorView, context: Context) {
+        if let existing = uiView.njProtonHandle, existing !== handle {
+            return
+        }
+        uiView.njProtonHandle = handle
+        handle.editor = uiView
+        (uiView as? NJKeyCommandEditorView)?.njHandle = handle
+
+        if let tv = findTextView(in: uiView) {
+            NJInstallTextViewKeyCommandHook(tv)
+            if tv.njProtonHandle == nil || handle.owns(textView: tv) {
+                tv.njProtonHandle = handle
+                handle.textView = tv
+            }
+
+            tv.isScrollEnabled = false
+            tv.backgroundColor = .clear
+            tv.textContainerInset = .zero
+            tv.textContainer.lineFragmentPadding = 0
+            context.coordinator.attachTextView(tv)
+
+            context.coordinator.beginProgrammatic()
+            handle.applyPendingHydrateIfNeeded()
+            context.coordinator.endProgrammatic()
+        }
+
+        context.coordinator.updateMeasuredHeight(from: uiView)
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(measuredHeight: $measuredHeight, handle: handle)
+    }
+
+    private func findTextView(in root: UIView) -> UITextView? {
+        if let tv = root as? UITextView { return tv }
+        for v in root.subviews {
+            if let tv = findTextView(in: v) { return tv }
+        }
+        return nil
+    }
+
+    private func normalizeTypingAttributesIfNeeded(_ editor: EditorView) {
+        guard let tv = findTextView(in: editor) else { return }
+        var ta = tv.typingAttributes
+        if ta[.font] == nil {
+            ta[.font] = UIFont.systemFont(ofSize: 17)
+        }
+        if ta[.foregroundColor] == nil {
+            ta[.foregroundColor] = UIColor.label
+        }
+        tv.typingAttributes = ta
+    }
+
+    final class Coordinator: NSObject, EditorViewDelegate, UITextViewDelegate {
+        @Binding private var measuredHeight: CGFloat
+        private weak var editor: EditorView?
+        private weak var textView: UITextView?
+        private var textDidChangeObs: NSObjectProtocol?
+        var textDidBeginObs: NSObjectProtocol? = nil
+        private var textDidEndObs: NSObjectProtocol?
+        private let handle: NJProtonEditorHandle
+        private var isProgrammatic = false
+        var typingIdleWork: DispatchWorkItem? = nil
+        let typingIdleMs: Int = 1500
+
+
+        private weak var activeAttachment: NSTextAttachment?
+        private var activeInitialBounds: CGRect = .zero
+
+        init(measuredHeight: Binding<CGFloat>, handle: NJProtonEditorHandle) {
+            _measuredHeight = measuredHeight
+            self.handle = handle
+        }
+
+        deinit {
+            if let o = textDidChangeObs {
+                NotificationCenter.default.removeObserver(o)
+            }
+        }
+
+        func textViewDidBeginEditing(_ tv: UITextView) {
+            if isProgrammatic { return }
+            handle.isEditing = true
+        }
+
+        func textViewDidEndEditing(_ tv: UITextView) {
+            if isProgrammatic { return }
+            handle.isEditing = false
+        }
+
+        func beginProgrammatic() { isProgrammatic = true }
+        func endProgrammatic() { isProgrammatic = false }
+
+        func attachTextView(_ tv: UITextView) {
+            if textView === tv { return }
+
+            if let o = textDidChangeObs { NotificationCenter.default.removeObserver(o); textDidChangeObs = nil }
+            if let o = textDidBeginObs { NotificationCenter.default.removeObserver(o); textDidBeginObs = nil }
+            if let o = textDidEndObs { NotificationCenter.default.removeObserver(o); textDidEndObs = nil }
+
+            textView = tv
+
+            textDidChangeObs = NotificationCenter.default.addObserver(
+                forName: UITextView.textDidChangeNotification,
+                object: tv,
+                queue: .main
+            ) { [weak self] _ in
+                guard let self else { return }
+                if self.isProgrammatic { return }
+                guard let ev = self.handle.editor else { return }
+
+                self.handle.isEditing = true
+                self.typingIdleWork?.cancel()
+                let w = DispatchWorkItem { [weak self] in
+                    guard let self else { return }
+                    self.handle.isEditing = false
+                }
+                self.typingIdleWork = w
+                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(self.typingIdleMs), execute: w)
+
+                self.handle.onSnapshot?(ev.attributedText, ev.selectedRange)
+                self.handle.onUserTyped?(ev.attributedText, ev.selectedRange)
+                self.updateMeasuredHeight(from: ev)
+
+            }
+
+            textDidEndObs = NotificationCenter.default.addObserver(
+                forName: UITextView.textDidEndEditingNotification,
+                object: tv,
+                queue: .main
+            ) { [weak self] _ in
+                guard let self else { return }
+                if self.isProgrammatic { return }
+                self.typingIdleWork?.cancel()
+                self.typingIdleWork = nil
+                self.handle.isEditing = false
+
+                guard let ev = self.handle.editor else { return }
+
+                self.handle.onSnapshot?(ev.attributedText, ev.selectedRange)
+                self.handle.onEndEditing?(ev.attributedText, ev.selectedRange)
+                self.handle.onEndEditingSimple?()
+            }
+        }
+
+        private var snapshotWorkItem: DispatchWorkItem?
+        private let snapshotDebounceMs: Int = 200
+
+        func textViewDidChange(_ tv: UITextView) {
+            if isProgrammatic { return }
+
+            let sel = tv.selectedRange
+            handle.onUserTyped?(tv.attributedText ?? NSAttributedString(string: ""), sel)
+
+            snapshotWorkItem?.cancel()
+            let ev = editor ?? (tv.superview as? EditorView)
+
+            let wi = DispatchWorkItem { [weak self, weak tv] in
+                guard let self else { return }
+                if self.isProgrammatic { return }
+                guard let tv else { return }
+
+                let attr = tv.attributedText ?? NSAttributedString(string: "")
+                let sel2 = tv.selectedRange
+
+                self.handle.onSnapshot?(attr, sel2)
+
+                if let ev { self.updateMeasuredHeight(from: ev) }
+            }
+
+            snapshotWorkItem = wi
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(snapshotDebounceMs), execute: wi)
+        }
+
+
+        func editorViewDidEndEditing(_ editorView: EditorView) {
+            editor = editorView
+            if isProgrammatic { return }
+            handle.onSnapshot?(editorView.attributedText, editorView.selectedRange)
+            handle.onEndEditing?(editorView.attributedText, editorView.selectedRange)
+            handle.onEndEditingSimple?()
+        }
+
+        func editorViewDidChange(_ editorView: EditorView) {
+            editor = editorView
+            updateMeasuredHeight(from: editorView)
+        }
+
+        func editorViewDidChangeSelection(_ editorView: EditorView) {
+            editor = editorView
+            updateMeasuredHeight(from: editorView)
+        }
+
+        func updateMeasuredHeight(from editorView: EditorView) {
+            editor = editorView
+
+            guard let tv = findTextView(in: editorView) else { return }
+
+            tv.isScrollEnabled = false
+            tv.layoutIfNeeded()
+
+            let targetW: CGFloat
+            if tv.bounds.width > 1 {
+                targetW = tv.bounds.width
+            } else {
+                targetW = UIScreen.main.bounds.width - 32
+            }
+
+            tv.textContainer.size = CGSize(width: targetW, height: .greatestFiniteMagnitude)
+            tv.layoutIfNeeded()
+
+            let fit = tv.sizeThatFits(CGSize(width: targetW, height: .greatestFiniteMagnitude))
+            let h = max(44, ceil(fit.height))
+
+            if abs(measuredHeight - h) > 0.5 {
+                DispatchQueue.main.async { self.measuredHeight = h }
+            }
+        }
+
+        @objc func onPinch(_ gr: UIPinchGestureRecognizer) {
+            guard let ev = editor ?? (gr.view as? EditorView) else { return }
+            editor = ev
+            guard let tv = findTextView(in: ev) else { return }
+
+            let point = gr.location(in: tv)
+            let idx = characterIndex(at: point, in: tv)
+
+            switch gr.state {
+            case .began:
+                activeAttachment = attachment(at: idx, in: tv)
+                activeInitialBounds = activeAttachment?.bounds ?? .zero
+            case .changed:
+                guard let att = activeAttachment else { return }
+                let scale = clamp(gr.scale, 0.2, 4.0)
+                let b = activeInitialBounds == .zero ? defaultBounds(for: att) : activeInitialBounds
+                att.bounds = CGRect(x: b.origin.x, y: b.origin.y, width: max(20, b.size.width * scale), height: max(20, b.size.height * scale))
+                handle.snapshot()
+                updateMeasuredHeight(from: ev)
+            default:
+                activeAttachment = nil
+                activeInitialBounds = .zero
+            }
+        }
+
+        private func findTextView(in root: UIView) -> UITextView? {
+            if let tv = root as? UITextView { return tv }
+            for v in root.subviews {
+                if let tv = findTextView(in: v) { return tv }
+            }
+            return nil
+        }
+
+        private func characterIndex(at point: CGPoint, in tv: UITextView) -> Int {
+            let layout = tv.layoutManager
+            let container = tv.textContainer
+            let p = CGPoint(x: point.x - tv.textContainerInset.left, y: point.y - tv.textContainerInset.top)
+            let idx = layout.characterIndex(for: p, in: container, fractionOfDistanceBetweenInsertionPoints: nil)
+            return idx
+        }
+
+        private func attachment(at idx: Int, in tv: UITextView) -> NSTextAttachment? {
+            if idx < 0 || idx >= tv.attributedText.length { return nil }
+            return tv.attributedText.attribute(.attachment, at: idx, effectiveRange: nil) as? NSTextAttachment
+        }
+
+        private func clamp(_ v: CGFloat, _ lo: CGFloat, _ hi: CGFloat) -> CGFloat {
+            min(max(v, lo), hi)
+        }
+
+        private func defaultBounds(for att: NSTextAttachment) -> CGRect {
+            if let img = att.image {
+                let w: CGFloat = 400
+                let ratio = img.size.height / max(1, img.size.width)
+                return CGRect(x: 0, y: 0, width: w, height: max(1, w * ratio))
+            }
+            return CGRect(x: 0, y: 0, width: 400, height: 300)
+        }
+    }
+}

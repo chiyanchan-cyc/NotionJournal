@@ -1,17 +1,21 @@
-//
-//  Notion_JournalApp.swift
-//  Notion Journal
-//
-//  Created by Mac on 2025/12/30.
-//
-
 import SwiftUI
 
 @main
 struct Notion_JournalApp: App {
+    @StateObject private var store = AppStore()
+    @StateObject private var clipPDFWindowState = ClipPDFWindowState()
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RootView()
+                .environmentObject(store)
+                .environmentObject(clipPDFWindowState)
+        }
+
+        WindowGroup(id: "clip-pdf") {
+            NJClipPDFWindowPage()
+                .environmentObject(store)
+                .environmentObject(clipPDFWindowState)
         }
     }
 }

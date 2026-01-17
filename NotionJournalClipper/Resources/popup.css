@@ -1,0 +1,37 @@
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 300px;
+  height: auto;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+#nj_root {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-sizing: border-box;
+}
+
+.nj_title {
+  font-weight: 900;
+  font-size: 14px;
+  line-height: 1.2;
+}
+
+.nj_btn {
+  width: 100%;
+  padding: 10px 12px;
+  font-size: 14px;
+  font-weight: 800;
+  border-radius: 10px;
+  border: 0;
+  cursor: pointer;
+  background: #111;
+  color: #fff;
+}
+
+.nj_btn.secondary {
+  background: #2b2b2b;
+}
