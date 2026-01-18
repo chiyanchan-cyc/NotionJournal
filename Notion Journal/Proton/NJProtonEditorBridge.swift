@@ -25,10 +25,6 @@ private extension NSAttributedString {
     var fullRange: NSRange { NSRange(location: 0, length: length) }
 }
 
-private extension NSAttributedString.Key {
-    static let listItem = NSAttributedString.Key("listItem")
-}
-
 private extension UITextView {
     var njProtonHandle: NJProtonEditorHandle? {
         get { objc_getAssociatedObject(self, &NJTextViewHandleKey) as? NJProtonEditorHandle }
@@ -460,10 +456,175 @@ final class NJProtonEditorHandle {
     
     func exportProtonJSONString() -> String {
         guard let editor else { return "" }
-        let attr = editor.attributedText
-        let nodes = NJProtonNodeCodecV1.encodeNodes(from: attr)
-        return NJProtonNodeCodecV1.encodeJSONString(nodes: nodes)
+        return NJProtonDocCodecV1.encodeDocument(from: editor.attributedText)
     }
+    
+    private struct NJProtonDocCodecV1 {
+
+        private static let schema = "nj_proton_doc_v1"
+        private static let indentUnit: CGFloat = 24
+
+        static func encodeDocument(from text: NSAttributedString) -> String {
+            let doc = buildDoc(from: text)
+            let root: [String: Any] = ["schema": schema, "doc": doc]
+            guard JSONSerialization.isValidJSONObject(root) else { return "" }
+            guard let data = try? JSONSerialization.data(withJSONObject: root, options: []) else { return "" }
+            return String(data: data, encoding: .utf8) ?? ""
+        }
+
+        static func decodeIfPresent(json: String) -> [[String: Any]]? {
+            guard let data = json.data(using: .utf8) else { return nil }
+            guard let rootAny = try? JSONSerialization.jsonObject(with: data, options: []) else { return nil }
+            guard let root = rootAny as? [String: Any] else { return nil }
+            guard (root["schema"] as? String) == schema else { return nil }
+            guard let docAny = root["doc"] as? [Any] else { return nil }
+            let doc = docAny.compactMap { $0 as? [String: Any] }
+            return doc.isEmpty ? nil : doc
+        }
+
+        static func buildAttributedString(doc: [[String: Any]]) -> NSAttributedString {
+            let out = NSMutableAttributedString()
+
+            for seg in doc {
+                let t = (seg["type"] as? String) ?? ""
+
+                if t == "rich" {
+                    let b64 = (seg["rtf_base64"] as? String) ?? ""
+                    if let a = decodeRTFBase64(b64) {
+                        out.append(a)
+                    }
+                    continue
+                }
+
+                if t == "list" {
+                    let itemsAny = (seg["items"] as? [Any]) ?? []
+                    let items = itemsAny.compactMap { $0 as? [String: Any] }
+
+                    var listItems: [ListItem] = []
+                    listItems.reserveCapacity(items.count)
+
+                    for it in items {
+                        let lvl = max(0, (it["level"] as? Int) ?? 0)
+                        let kind = (it["kind"] as? String) ?? "bullet"
+                        let b64 = (it["rtf_base64"] as? String) ?? ""
+                        let text = decodeRTFBase64(b64) ?? NSAttributedString(string: "")
+                        listItems.append(ListItem(text: text, level: lvl, attributeValue: kind))
+                    }
+
+                    let a = ListParser.parse(list: listItems, indent: indentUnit)
+                    out.append(a)
+                    continue
+                }
+            }
+
+            return out
+        }
+
+        private static func buildDoc(from text: NSAttributedString) -> [[String: Any]] {
+            let fullLen = text.length
+            if fullLen == 0 {
+                return [["type": "rich", "rtf_base64": encodeRTFBase64(text) ?? ""]]
+            }
+
+            let parsed = ListParser.parse(attributedString: text, indent: indentUnit)
+            if parsed.isEmpty {
+                return [["type": "rich", "rtf_base64": encodeRTFBase64(text) ?? ""]]
+            }
+
+            struct ListBlock {
+                let start: Int
+                let end: Int
+                let listIndex: Int
+                let items: [ListItem]
+            }
+
+            let s = text.string as NSString
+
+            var byIndex: [Int: [(NSRange, ListItem)]] = [:]
+            for p in parsed {
+                let paraRange = s.paragraphRange(for: NSRange(location: p.range.location, length: 0))
+                byIndex[p.listIndex, default: []].append((paraRange, p.listItem))
+            }
+
+            var blocks: [ListBlock] = []
+            blocks.reserveCapacity(byIndex.count)
+
+            for (idx, entries) in byIndex {
+                let sorted = entries.sorted { $0.0.location < $1.0.location }
+                let start = sorted.first!.0.location
+                let end = (sorted.last!.0.location + sorted.last!.0.length)
+                let items = sorted.map { normalizeListItem($0.1) }
+                blocks.append(ListBlock(start: start, end: end, listIndex: idx, items: items))
+            }
+
+            blocks.sort { $0.start < $1.start }
+
+            var doc: [[String: Any]] = []
+            var pos = 0
+
+            for b in blocks {
+                if b.start > pos {
+                    let sub = text.attributedSubstring(from: NSRange(location: pos, length: b.start - pos))
+                    doc.append(["type": "rich", "rtf_base64": encodeRTFBase64(sub) ?? ""])
+                }
+
+                var itemsJSON: [[String: Any]] = []
+                itemsJSON.reserveCapacity(b.items.count)
+
+                for li in b.items {
+                    let kind = normalizeKind(li.attributeValue)
+                    itemsJSON.append([
+                        "level": li.level,
+                        "kind": kind,
+                        "rtf_base64": encodeRTFBase64(li.text) ?? ""
+                    ])
+                }
+
+                doc.append(["type": "list", "items": itemsJSON])
+
+                pos = b.end
+            }
+
+            if pos < fullLen {
+                let sub = text.attributedSubstring(from: NSRange(location: pos, length: fullLen - pos))
+                doc.append(["type": "rich", "rtf_base64": encodeRTFBase64(sub) ?? ""])
+            }
+
+            if doc.isEmpty {
+                doc.append(["type": "rich", "rtf_base64": encodeRTFBase64(text) ?? ""])
+            }
+
+            return doc
+        }
+
+        private static func normalizeListItem(_ li: ListItem) -> ListItem {
+            let kind = normalizeKind(li.attributeValue)
+            return ListItem(text: li.text, level: li.level, attributeValue: kind)
+        }
+
+        private static func normalizeKind(_ v: Any) -> String {
+            if let tl = v as? NSTextList { return (tl.markerFormat == .decimal) ? "number" : "bullet" }
+            if let tls = v as? [NSTextList], let tl = tls.first { return (tl.markerFormat == .decimal) ? "number" : "bullet" }
+            if let s = v as? String { return (s == "number") ? "number" : "bullet" }
+            return "bullet"
+        }
+
+        private static func encodeRTFBase64(_ s: NSAttributedString) -> String? {
+            let r = NSRange(location: 0, length: s.length)
+            guard let data = try? s.data(from: r, documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]) else { return nil }
+            return data.base64EncodedString()
+        }
+
+        private static func decodeRTFBase64(_ b64: String) -> NSAttributedString? {
+            guard let data = Data(base64Encoded: b64) else { return nil }
+            return try? NSAttributedString(
+                data: data,
+                options: [.documentType: NSAttributedString.DocumentType.rtf],
+                documentAttributes: nil
+            )
+        }
+    }
+
 
     private struct NJProtonNodesV1Codec {
         static let schema = "nj_proton_nodes_v1"
@@ -1063,10 +1224,10 @@ final class NJProtonEditorHandle {
         guard !didHydrate else { return }
         guard let json = pendingHydrateProtonJSON else { return }
         guard editor != nil, textView != nil else { return }
-        didHydrate = true
         pendingHydrateProtonJSON = nil
         scheduleHydration(json)
     }
+
 
     private var hydrationScheduled = false
     private var pendingJSON: String?
@@ -1122,10 +1283,21 @@ final class NJProtonEditorHandle {
     }
 
     private func applyHydrateJSON(_ json: String) {
-        guard let tv = textView else { return }
+        guard textView != nil else { return }
+        guard let editor else { return }
+
+        if let doc = NJProtonDocCodecV1.decodeIfPresent(json: json) {
+            let decoded = NJProtonDocCodecV1.buildAttributedString(doc: doc)
+
+            let r = editor.selectedRange
+            editor.attributedText = decoded
+            editor.selectedRange = NSRange(location: min(r.location, decoded.length), length: 0)
+
+            didHydrate = true
+            return
+        }
 
         if let nodes = NJProtonNodeCodecV1.decodeNodesIfPresent(json: json) {
-            guard let editor else { return }
             let decoded = NJProtonNodeCodecV1.buildAttributedString(nodes: nodes)
 
             let r = editor.selectedRange
@@ -1136,31 +1308,16 @@ final class NJProtonEditorHandle {
             return
         }
 
-        guard let data = json.data(using: .utf8) else { return }
-        guard let rootAny = try? JSONSerialization.jsonObject(with: data, options: []) else { return }
-        guard let paras = rootAny as? [[String: Any]] else { return }
-
         let mode = njDefaultContentMode()
         let maxSize = CGSize(width: 4096, height: 4096)
+        let decoded = (try? NJProtonAuditCodec.decoder.decodeDocument(mode: mode, maxSize: maxSize, json: json)) ?? NSAttributedString(string: "")
 
-        let decoded: NSAttributedString = {
-            let out = NSMutableAttributedString()
-            for (i, p) in paras.enumerated() {
-                let wrapper: [String: Any] = ["contents": [p]]
-                let one: NSAttributedString = (try? NJProtonAuditCodec.decoder.decode(mode: mode, maxSize: maxSize, value: wrapper, context: nil)) ?? NSAttributedString(string: "")
-                out.append(one)
-                if i != paras.count - 1 {
-                    out.append(NSAttributedString(string: "\n"))
-                }
-            }
-            return out
-        }()
+        let fixed = NJProtonListFixups.apply(decoded)
 
-        let r = tv.selectedRange
-        tv.textStorage.beginEditing()
-        tv.textStorage.setAttributedString(decoded)
-        tv.textStorage.endEditing()
-        tv.selectedRange = NSRange(location: min(r.location, decoded.length), length: 0)
+        let r = editor.selectedRange
+        editor.attributedText = fixed
+        editor.selectedRange = NSRange(location: min(r.location, fixed.length), length: 0)
+
         didHydrate = true
     }
 
@@ -1591,5 +1748,45 @@ struct NJProtonEditorView: UIViewRepresentable {
             }
             return CGRect(x: 0, y: 0, width: 400, height: 300)
         }
+    }
+}
+
+private enum NJProtonListFixups {
+    static func apply(_ input: NSAttributedString) -> NSAttributedString {
+        let m = NSMutableAttributedString(attributedString: input)
+        let s = m.string as NSString
+        let full = NSRange(location: 0, length: s.length)
+
+        var i = 0
+        while i < s.length {
+            let paraRange = s.paragraphRange(for: NSRange(location: i, length: 0))
+            let para = m.attributedSubstring(from: paraRange)
+
+            let hasList: Bool = {
+                var v: Any? = nil
+                para.enumerateAttribute(.listItem, in: NSRange(location: 0, length: para.length), options: []) { x, _, stop in
+                    if x != nil { v = x; stop.pointee = true }
+                }
+                return v != nil
+            }()
+
+            if hasList {
+                let local = para.string as NSString
+                if local.length > 0 {
+                    var j = 0
+                    while j < local.length {
+                        if local.character(at: j) == 10 {
+                            let global = paraRange.location + j
+                            m.addAttribute(.skipNextListMarker, value: true, range: NSRange(location: global, length: 1))
+                        }
+                        j += 1
+                    }
+                }
+            }
+
+            i = paraRange.location + max(1, paraRange.length)
+        }
+
+        return m
     }
 }

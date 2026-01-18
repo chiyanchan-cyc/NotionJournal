@@ -204,39 +204,6 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         }
     }
 
-//    func commitBlockNow(_ id: UUID) {
-//        guard let store, let noteID else { return }
-//        guard let i = blocks.firstIndex(where: { $0.id == id }) else { return }
-//
-//        if !blocks[i].isDirty { return }
-//
-//        if blocks[i].protonHandle.isEditing {
-//            scheduleCommit(id, debounce: 0.6)
-//            return
-//        }
-//
-//        var b = blocks[i]
-//
-//        commitNoteMetaNow()
-//
-//        let protonJSON = b.protonHandle.exportProtonJSONString()
-//        
-//        let jsonPopup = b.protonHandle.exportProtonJSONString()
-//        let jsonPersist = protonJSON
-//        let previewAttr = makeEmptyBlockAttr()
-//        NJPresentProtonJSONCompareDebug(jsonPopup: jsonPopup, jsonPersist: jsonPersist, previewAttr: previewAttr)
-//
-//        store.notes.saveSingleProtonBlock(
-//            blockID: b.blockID,
-//            protonJSON: protonJSON
-//        )
-//
-//        let now = DBNoteRepository.nowMs()
-//        b.loadedUpdatedAtMs = now
-//        b.isDirty = false
-//        blocks[i] = b
-//
-//    }
 
     func commitBlockNow(_ id: UUID) {
         guard let store, let noteID else { return }
