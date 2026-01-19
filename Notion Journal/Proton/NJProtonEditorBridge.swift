@@ -442,6 +442,7 @@ final class NJProtonEditorHandle {
     var debugName: String = ""
     var ownerBlockUUID: UUID? = nil
     var isEditing: Bool = false
+    var withProgrammatic: (((() -> Void)) -> Void)? = nil
     
     var onSnapshot: ((NSAttributedString, NSRange) -> Void)?
     var onUserTyped: ((NSAttributedString, NSRange) -> Void)?
@@ -459,6 +460,27 @@ final class NJProtonEditorHandle {
         return NJProtonDocCodecV1.encodeDocument(from: editor.attributedText)
     }
     
+    func previewFirstLineFromProtonJSON(_ json: String) -> String {
+        let decoded: NSAttributedString = {
+            if let doc = NJProtonDocCodecV1.decodeIfPresent(json: json) {
+                return NJProtonDocCodecV1.buildAttributedString(doc: doc)
+            }
+            if let nodes = NJProtonNodeCodecV1.decodeNodesIfPresent(json: json) {
+                return NJProtonNodeCodecV1.buildAttributedString(nodes: nodes)
+            }
+            let mode = njDefaultContentMode()
+            let maxSize = CGSize(width: 4096, height: 4096)
+            let a = (try? NJProtonAuditCodec.decoder.decodeDocument(mode: mode, maxSize: maxSize, json: json)) ?? NSAttributedString(string: "")
+            return NJProtonListFixups.apply(a)
+        }()
+
+        let s = decoded.string
+            .replacingOccurrences(of: "\u{2028}", with: "\n")
+            .replacingOccurrences(of: "\u{2029}", with: "\n")
+
+        return s.split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) ?? ""
+    }
+
     private struct NJProtonDocCodecV1 {
 
         private static let schema = "nj_proton_doc_v1"
@@ -1210,24 +1232,47 @@ final class NJProtonEditorHandle {
     }
     
     func hydrateFromProtonJSONString(_ json: String) {
-        if editor == nil || textView == nil {
-            pendingHydrateProtonJSON = json
-            return
-        }
-        pendingHydrateProtonJSON = nil
-        scheduleHydration(json)
+        pendingHydrateProtonJSON = json
+        applyPendingHydrateIfNeeded()
     }
 
     private var didHydrate = false
+    private var attachedEditorID: ObjectIdentifier? = nil
 
-    func applyPendingHydrateIfNeeded() {
-        guard !didHydrate else { return }
-        guard let json = pendingHydrateProtonJSON else { return }
-        guard editor != nil, textView != nil else { return }
+    func invalidateHydration() {
+        didHydrate = false
+        attachedEditorID = nil
+        hydrationScheduled = false
+        pendingJSON = nil
         pendingHydrateProtonJSON = nil
-        scheduleHydration(json)
     }
 
+    func editorDidAttach(_ ev: EditorView) {
+        let id = ObjectIdentifier(ev)
+        if attachedEditorID != id {
+            attachedEditorID = id
+            didHydrate = false
+            hydrationScheduled = false
+            pendingJSON = nil
+        }
+    }
+
+    func applyPendingHydrateIfNeeded() {
+        guard let json = pendingHydrateProtonJSON else { return }
+        guard editor != nil, textView != nil else { return }
+
+        let run = { [weak self] in
+            guard let self else { return }
+            self.pendingHydrateProtonJSON = nil
+            self.scheduleHydration(json)
+        }
+
+        if let withProgrammatic {
+            withProgrammatic(run)
+        } else {
+            run()
+        }
+    }
 
     private var hydrationScheduled = false
     private var pendingJSON: String?
@@ -1262,7 +1307,6 @@ final class NJProtonEditorHandle {
     }
 
     func scheduleHydration(_ json: String) {
-        if didHydrate { return }
         pendingJSON = json
         guard !hydrationScheduled else { return }
         hydrationScheduled = true
@@ -1294,6 +1338,7 @@ final class NJProtonEditorHandle {
             editor.selectedRange = NSRange(location: min(r.location, decoded.length), length: 0)
 
             didHydrate = true
+            onSnapshot?(editor.attributedText, editor.selectedRange)
             return
         }
 
@@ -1305,6 +1350,7 @@ final class NJProtonEditorHandle {
             editor.selectedRange = NSRange(location: min(r.location, decoded.length), length: 0)
 
             didHydrate = true
+            onSnapshot?(editor.attributedText, editor.selectedRange)
             return
         }
 
@@ -1319,6 +1365,7 @@ final class NJProtonEditorHandle {
         editor.selectedRange = NSRange(location: min(r.location, fixed.length), length: 0)
 
         didHydrate = true
+        onSnapshot?(editor.attributedText, editor.selectedRange)
     }
 
     private func njDefaultContentMode() -> EditorContentMode {
@@ -1417,10 +1464,16 @@ struct NJProtonEditorView: UIViewRepresentable {
         v.isEditable = true
         v.isUserInteractionEnabled = true
 
-        context.coordinator.beginProgrammatic()
-        v.attributedText = initialAttributedText
-        v.selectedRange = initialSelectedRange
-        context.coordinator.endProgrammatic()
+        handle.withProgrammatic = { f in
+            context.coordinator.beginProgrammatic()
+            f()
+            context.coordinator.endProgrammatic()
+        }
+
+        handle.withProgrammatic? {
+            v.attributedText = initialAttributedText
+            v.selectedRange = initialSelectedRange
+        }
 
         normalizeTypingAttributesIfNeeded(v)
 
@@ -1439,9 +1492,9 @@ struct NJProtonEditorView: UIViewRepresentable {
             context.coordinator.attachTextView(tv)
         }
 
-
         v.njProtonHandle = handle
         handle.editor = v
+        handle.editorDidAttach(v)
         (v as? NJKeyCommandEditorView)?.njHandle = handle
 
         handle.onEndEditingSimple = nil
@@ -1466,6 +1519,7 @@ struct NJProtonEditorView: UIViewRepresentable {
             }
             normalizeTypingAttributesIfNeeded(v)
             context.coordinator.updateMeasuredHeight(from: v)
+            handle.applyPendingHydrateIfNeeded()
         }
 
         return v
@@ -1477,6 +1531,7 @@ struct NJProtonEditorView: UIViewRepresentable {
         }
         uiView.njProtonHandle = handle
         handle.editor = uiView
+        handle.editorDidAttach(uiView)
         (uiView as? NJKeyCommandEditorView)?.njHandle = handle
 
         if let tv = findTextView(in: uiView) {

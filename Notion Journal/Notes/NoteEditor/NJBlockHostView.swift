@@ -103,7 +103,7 @@ struct NJBlockHostView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     if isCollapsed {
                         Text(oneLine(attr.string))
-                            .font(.body)
+                            .font(.body.weight(.semibold))
                             .foregroundStyle(.primary)
                             .lineLimit(1)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -116,9 +116,6 @@ struct NJBlockHostView: View {
                                 .foregroundStyle(.secondary)
                                 .padding(.top, 2)
                         }
-                        
-                       
-
                         
                         NJProtonEditorView(
                             initialAttributedText: attr,
@@ -136,15 +133,11 @@ struct NJBlockHostView: View {
                         }
                         
                         .onAppear {
-                        }
-                        
-                        .onAppear {
-                            if !didHydrate {
+                            if !isCollapsed && !didHydrate {
                                 didHydrate = true
-                                onHydrateProton()
+                                DispatchQueue.main.async { onHydrateProton() }
                             }
                         }
-
                         HStack {
                             Spacer(minLength: 0)
                             if let raw = domainPreview {
@@ -219,9 +212,16 @@ struct NJBlockHostView: View {
         .padding(.vertical, isCollapsed ? 2 : 6)
         
         .onChange(of: isCollapsed) { v in
-            if v { didHydrate = false }
+            if v {
+                didHydrate = false
+                protonHandle.invalidateHydration()
+            } else {
+                if !didHydrate {
+                    didHydrate = true
+                    DispatchQueue.main.async { onHydrateProton() }
+                }
+            }
         }
-
     }
 
     private func dateLine(_ ms: Int64) -> String {

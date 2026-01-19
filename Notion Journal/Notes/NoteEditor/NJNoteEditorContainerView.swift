@@ -51,17 +51,25 @@ struct NJNoteEditorContainerView: View {
                     let id = persistence.blocks[i].id
                     let h = persistence.blocks[i].protonHandle
 
+                    let collapsedBinding = Binding(
+                        get: { persistence.blocks[i].isCollapsed },
+                        set: { v in
+                            persistence.blocks[i].isCollapsed = v
+                            persistence.saveCollapsed(blockID: persistence.blocks[i].blockID, collapsed: v)
+                        }
+                    )
+
                     NJBlockHostView(
                         index: i + 1,
-                        createdAtMs: 0,
-                        domainPreview: "",
+                        createdAtMs: persistence.blocks[i].createdAtMs,
+                        domainPreview: persistence.blocks[i].domainPreview,
                         onEditTags: { },
                         goalPreview: nil,
                         onAddGoal: { },
                         hasClipPDF: false,
                         onOpenClipPDF: { },
                         protonHandle: h,
-                        isCollapsed: $persistence.blocks[i].isCollapsed,
+                        isCollapsed: collapsedBinding,
                         isFocused: id == persistence.focusedBlockID,
                         attr: $persistence.blocks[i].attr,
                         sel: $persistence.blocks[i].sel,
@@ -153,18 +161,6 @@ struct NJNoteEditorContainerView: View {
     private func focusedHandle() -> NJProtonEditorHandle? {
         guard let id = persistence.focusedBlockID else { return nil }
         return persistence.blocks.first(where: { $0.id == id })?.protonHandle
-    }
-
-
-    func bindingCollapsed(_ id: UUID) -> Binding<Bool> {
-        Binding(
-            get: { persistence.blocks.first(where: { $0.id == id })?.isCollapsed ?? false },
-            set: { v in
-                if let i = persistence.blocks.firstIndex(where: { $0.id == id }) {
-                    persistence.blocks[i].isCollapsed = v
-                }
-            }
-        )
     }
 
     func bindingAttr(_ id: UUID) -> Binding<NSAttributedString> {

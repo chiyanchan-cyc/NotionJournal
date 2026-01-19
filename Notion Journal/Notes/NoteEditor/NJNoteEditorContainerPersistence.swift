@@ -9,6 +9,8 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         var blockID: String
         var instanceID: String
         var orderKey: Double
+        var createdAtMs: Int64
+        var domainPreview: String
         var attr: NSAttributedString
         var sel: NSRange
         var isCollapsed: Bool
@@ -23,6 +25,8 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             blockID: String,
             instanceID: String,
             orderKey: Double,
+            createdAtMs: Int64 = 0,
+            domainPreview: String = "",
             attr: NSAttributedString,
             sel: NSRange = NSRange(location: 0, length: 0),
             isCollapsed: Bool = false,
@@ -36,6 +40,8 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             self.blockID = blockID
             self.instanceID = instanceID
             self.orderKey = orderKey
+            self.createdAtMs = createdAtMs
+            self.domainPreview = domainPreview
             self.attr = attr
             self.sel = sel
             self.isCollapsed = isCollapsed
@@ -51,6 +57,8 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             lhs.blockID == rhs.blockID &&
             lhs.instanceID == rhs.instanceID &&
             lhs.orderKey == rhs.orderKey &&
+            lhs.createdAtMs == rhs.createdAtMs &&
+            lhs.domainPreview == rhs.domainPreview &&
             lhs.attr.isEqual(to: rhs.attr) &&
             NSEqualRanges(lhs.sel, rhs.sel) &&
             lhs.isCollapsed == rhs.isCollapsed &&
@@ -79,6 +87,21 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         self.noteID = noteID
         self.didConfigure = true
     }
+
+    private func collapseKey(blockID: String) -> String {
+        let n = noteID?.raw ?? "no_note"
+        return "nj.note.collapse.\(n).\(blockID)"
+    }
+
+    func loadCollapsed(blockID: String) -> Bool {
+        UserDefaults.standard.bool(forKey: collapseKey(blockID: blockID))
+    }
+
+    func saveCollapsed(blockID: String, collapsed: Bool) {
+        UserDefaults.standard.set(collapsed, forKey: collapseKey(blockID: blockID))
+    }
+
+
 
     func reload(makeHandle: @escaping () -> NJProtonEditorHandle) {
             guard let store, let noteID else { return }
@@ -110,6 +133,7 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                 let h = makeHandle()
                 h.ownerBlockUUID = id
 
+                let newBlockID = UUID().uuidString
                 let b = BlockState(
                     id: id,
                     blockID: UUID().uuidString,
@@ -117,6 +141,7 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                     orderKey: 1000,
                     attr: makeEmptyBlockAttr(),
                     sel: NSRange(location: 0, length: 0),
+                    isCollapsed: loadCollapsed(blockID: newBlockID),
                     protonHandle: h,
                     isDirty: false,
                     loadedUpdatedAtMs: 0,
@@ -140,7 +165,8 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
 
                 let attr: NSAttributedString = {
                     if !protonJSON.isEmpty {
-                        return makeEmptyBlockAttr()
+                        let first = h.previewFirstLineFromProtonJSON(protonJSON)
+                        return ensureNonEmptyTyped(stripZWSP(NSAttributedString(string: first)))
                     }
                     let s = (try? NSAttributedString(
                         data: row.rtfData,
@@ -158,6 +184,7 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                         orderKey: row.orderKey,
                         attr: attr,
                         sel: NSRange(location: 0, length: 0),
+                        isCollapsed: loadCollapsed(blockID: row.blockID),
                         protonHandle: h,
                         isDirty: false,
                         loadedUpdatedAtMs: 0,
@@ -165,6 +192,7 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                         protonJSON: protonJSON
                     )
                 )
+
             }
 
             blocks = out
@@ -234,3 +262,4 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
     }
     
 }
+#imageLiteral(resourceName: "20260105_Compressed_Word_A9D3BB12.pdf")
