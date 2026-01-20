@@ -96,7 +96,7 @@ struct Sidebar: View {
                 selectedID: store.selectedNotebookID,
                 onSelect: { nbID in
                     store.selectNotebook(nbID)
-//                    NJLocalBLRunner(db: store.db).run(.deriveBlockTagIndexAndDomainV1)
+                    NJLocalBLRunner(db: store.db).run(.deriveBlockTagIndexAndDomainV1)
                     selectedNoteID = nil
                     noteListResetKey = UUID()
                 }

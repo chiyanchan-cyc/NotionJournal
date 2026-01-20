@@ -553,30 +553,46 @@ final class NJProtonEditorHandle {
                 return [["type": "rich", "rtf_base64": encodeRTFBase64(text) ?? ""]]
             }
 
+            struct CapturedItem {
+                let paraRange: NSRange
+                let level: Int
+                let kind: String
+                let rich: NSAttributedString
+            }
+
             struct ListBlock {
                 let start: Int
                 let end: Int
                 let listIndex: Int
-                let items: [ListItem]
+                let items: [CapturedItem]
             }
 
             let s = text.string as NSString
 
-            var byIndex: [Int: [(NSRange, ListItem)]] = [:]
+            var byIndex: [Int: [CapturedItem]] = [:]
+
             for p in parsed {
                 let paraRange = s.paragraphRange(for: NSRange(location: p.range.location, length: 0))
-                byIndex[p.listIndex, default: []].append((paraRange, p.listItem))
+
+                let kind = normalizeKind(p.listItem.attributeValue)
+                let level = max(0, p.listItem.level)
+
+                let paraAttr = text.attributedSubstring(from: paraRange)
+                let rich = trimTrailingNewlinesAttributed(paraAttr)
+
+                byIndex[p.listIndex, default: []].append(
+                    CapturedItem(paraRange: paraRange, level: level, kind: kind, rich: rich)
+                )
             }
 
             var blocks: [ListBlock] = []
             blocks.reserveCapacity(byIndex.count)
 
-            for (idx, entries) in byIndex {
-                let sorted = entries.sorted { $0.0.location < $1.0.location }
-                let start = sorted.first!.0.location
-                let end = (sorted.last!.0.location + sorted.last!.0.length)
-                let items = sorted.map { normalizeListItem($0.1) }
-                blocks.append(ListBlock(start: start, end: end, listIndex: idx, items: items))
+            for (idx, items) in byIndex {
+                let sorted = items.sorted { $0.paraRange.location < $1.paraRange.location }
+                let start = sorted.first!.paraRange.location
+                let end = sorted.last!.paraRange.location + sorted.last!.paraRange.length
+                blocks.append(ListBlock(start: start, end: end, listIndex: idx, items: sorted))
             }
 
             blocks.sort { $0.start < $1.start }
@@ -593,12 +609,11 @@ final class NJProtonEditorHandle {
                 var itemsJSON: [[String: Any]] = []
                 itemsJSON.reserveCapacity(b.items.count)
 
-                for li in b.items {
-                    let kind = normalizeKind(li.attributeValue)
+                for it in b.items {
                     itemsJSON.append([
-                        "level": li.level,
-                        "kind": kind,
-                        "rtf_base64": encodeRTFBase64(li.text) ?? ""
+                        "level": it.level,
+                        "kind": it.kind,
+                        "rtf_base64": encodeRTFBase64(it.rich) ?? ""
                     ])
                 }
 
@@ -617,6 +632,21 @@ final class NJProtonEditorHandle {
             }
 
             return doc
+        }
+
+        private static func trimTrailingNewlinesAttributed(_ a: NSAttributedString) -> NSAttributedString {
+            if a.length == 0 { return a }
+            var end = a.length
+            while end > 0 {
+                let ch = (a.string as NSString).character(at: end - 1)
+                if ch == 10 || ch == 13 {
+                    end -= 1
+                    continue
+                }
+                break
+            }
+            if end == a.length { return a }
+            return a.attributedSubstring(from: NSRange(location: 0, length: max(0, end)))
         }
 
         private static func normalizeListItem(_ li: ListItem) -> ListItem {

@@ -46,7 +46,7 @@ struct Rail: View {
                         colorHex: t.colorHex
                     ) {
                         store.selectTab(t.tabID)
-//                        NJLocalBLRunner(db: store.db).run(.deriveBlockTagIndexAndDomainV1)
+                        NJLocalBLRunner(db: store.db).run(.deriveBlockTagIndexAndDomainV1)
                         onChanged()
                     }
                 }
@@ -56,7 +56,7 @@ struct Rail: View {
             .onAppear {
                 if didRunBLOnce { return }
                 didRunBLOnce = true
-//                NJLocalBLRunner(db: store.db).run(.deriveBlockTagIndexAndDomainV1)
+                NJLocalBLRunner(db: store.db).run(.deriveBlockTagIndexAndDomainV1)
                 onChanged()
             }
             .padding(.vertical, 12)

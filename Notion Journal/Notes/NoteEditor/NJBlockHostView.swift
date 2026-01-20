@@ -154,7 +154,17 @@ struct NJBlockHostView: View {
                     }
                 }
                 .padding(.trailing, 44)
-                
+                .overlay(alignment: .bottomTrailing) {
+                    let s = (domainPreview ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !s.isEmpty {
+                        Text(s)
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .baselineOffset(-3)
+                            .offset(x: -40, y: 10)
+                            .padding(.bottom, 6)
+                    }
+                }
 
                 VStack {
                     Spacer()

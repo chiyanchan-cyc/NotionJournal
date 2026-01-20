@@ -74,6 +74,10 @@ struct NJNoteEditorContainerView: View {
                         attr: $persistence.blocks[i].attr,
                         sel: $persistence.blocks[i].sel,
                         onFocus: {
+                            let prev = persistence.focusedBlockID
+                            if let prev, prev != id {
+                                persistence.forceEndEditingAndCommitNow(prev)
+                            }
                             persistence.focusedBlockID = id
                             h.focus()
                             blockBus.focus(id)
@@ -85,8 +89,8 @@ struct NJNoteEditorContainerView: View {
                         },
                         onCommitProton: {
                             persistence.markDirty(id)
-                            persistence.scheduleCommit(id)
-                        }
+                            persistence.commitBlockNow(id, force: true)
+                        },
                     )
                     .id(id)
                     .listRowInsets(EdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 12))

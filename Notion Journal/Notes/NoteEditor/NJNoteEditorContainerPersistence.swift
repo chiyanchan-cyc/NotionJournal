@@ -1,6 +1,7 @@
 import SwiftUI
 import Combine
 import UIKit
+import Proton
 
 final class NJNoteEditorContainerPersistence: ObservableObject {
 
@@ -19,6 +20,7 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         var loadedUpdatedAtMs: Int64
         var loadedPayloadHash: String
         var protonJSON: String
+        var tagJSON: String
 
         init(
             id: UUID = UUID(),
@@ -34,7 +36,8 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             isDirty: Bool = false,
             loadedUpdatedAtMs: Int64 = 0,
             loadedPayloadHash: String = "",
-            protonJSON: String = ""
+            protonJSON: String = "",
+            tagJSON: String = ""
         ) {
             self.id = id
             self.blockID = blockID
@@ -50,6 +53,7 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             self.loadedUpdatedAtMs = loadedUpdatedAtMs
             self.loadedPayloadHash = loadedPayloadHash
             self.protonJSON = protonJSON
+            self.tagJSON = tagJSON
         }
 
         static func == (lhs: BlockState, rhs: BlockState) -> Bool {
@@ -65,7 +69,8 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             lhs.isDirty == rhs.isDirty &&
             lhs.loadedUpdatedAtMs == rhs.loadedUpdatedAtMs &&
             lhs.loadedPayloadHash == rhs.loadedPayloadHash &&
-            lhs.protonJSON == rhs.protonJSON
+            lhs.protonJSON == rhs.protonJSON &&
+            lhs.tagJSON == rhs.tagJSON
         }
     }
 
@@ -101,8 +106,6 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         UserDefaults.standard.set(collapsed, forKey: collapseKey(blockID: blockID))
     }
 
-
-
     func reload(makeHandle: @escaping () -> NJProtonEditorHandle) {
             guard let store, let noteID else { return }
 
@@ -134,9 +137,10 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                 h.ownerBlockUUID = id
 
                 let newBlockID = UUID().uuidString
+
                 let b = BlockState(
                     id: id,
-                    blockID: UUID().uuidString,
+                    blockID: newBlockID,
                     instanceID: "",
                     orderKey: 1000,
                     attr: makeEmptyBlockAttr(),
@@ -146,10 +150,11 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                     isDirty: false,
                     loadedUpdatedAtMs: 0,
                     loadedPayloadHash: "",
-                    protonJSON: ""
+                    protonJSON: "",
+                    tagJSON: ""
                 )
+
                 blocks = [b]
-                focusedBlockID = b.id
                 return
             }
 
@@ -231,15 +236,24 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             store.notes.upsertNote(n)
         }
     }
+    func forceEndEditingAndCommitNow(_ id: UUID) {
+        guard let i = blocks.firstIndex(where: { $0.id == id }) else { return }
+        blocks[i].protonHandle.isEditing = false
+        markDirty(id)
+        commitBlockNow(id, force: true)
+    }
 
 
     func commitBlockNow(_ id: UUID) {
+        commitBlockNow(id, force: false)
+    }
+
+    func commitBlockNow(_ id: UUID, force: Bool = false) {
         guard let store, let noteID else { return }
         guard let i = blocks.firstIndex(where: { $0.id == id }) else { return }
-
         if !blocks[i].isDirty { return }
 
-        if blocks[i].protonHandle.isEditing {
+        if !force && blocks[i].protonHandle.isEditing {
             scheduleCommit(id, debounce: 0.6)
             return
         }
@@ -248,11 +262,49 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
 
         commitNoteMetaNow()
 
+        let liveAttr = b.protonHandle.editor?.attributedText ?? b.attr
+
+        var tags: [String] = []
+        if let tagRes = NJTagExtraction.extract(from: liveAttr) {
+            tags = tagRes.tags
+
+            b.attr = tagRes.cleaned
+            blocks[i].attr = tagRes.cleaned
+
+            if let editor = b.protonHandle.editor {
+                editor.attributedText = tagRes.cleaned
+            }
+
+            NotificationCenter.default.post(
+                name: Notification.Name("NJ_BLOCK_TAGS_EXTRACTED"),
+                object: nil,
+                userInfo: [
+                    "block_id": b.blockID,
+                    "tags": tagRes.tags
+                ]
+            )
+        }
+
+        let tagJSON: String = {
+            if tags.isEmpty { return "" }
+            if let data = try? JSONSerialization.data(withJSONObject: tags, options: []),
+               let s = String(data: data, encoding: .utf8) {
+                return s
+            }
+            return ""
+        }()
+
+        b.tagJSON = tagJSON
+        blocks[i].tagJSON = tagJSON
+
         let protonJSON = b.protonHandle.exportProtonJSONString()
+        b.protonJSON = protonJSON
+        blocks[i].protonJSON = protonJSON
 
         store.notes.saveSingleProtonBlock(
             blockID: b.blockID,
-            protonJSON: protonJSON
+            protonJSON: protonJSON,
+            tagJSON: tagJSON
         )
 
         let now = DBNoteRepository.nowMs()
@@ -260,6 +312,5 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         b.isDirty = false
         blocks[i] = b
     }
-    
+
 }
-#imageLiteral(resourceName: "20260105_Compressed_Word_A9D3BB12.pdf")

@@ -23,6 +23,33 @@ final class NJLocalBLRunner {
         self.db = db
     }
 
+    
+    func loadDomainPreview3FromBlockTag(blockID: String) -> String {
+        if blockID.isEmpty { return "" }
+        return db.withDB { dbp in
+            var out: [String] = []
+            var stmt: OpaquePointer?
+            let rc = sqlite3_prepare_v2(dbp, """
+            SELECT tag
+            FROM nj_block_tag
+            WHERE block_id=? AND instr(tag, '.')>0
+            ORDER BY tag ASC
+            LIMIT 3;
+            """, -1, &stmt, nil)
+            if rc != SQLITE_OK { return "" }
+            defer { sqlite3_finalize(stmt) }
+
+            sqlite3_bind_text(stmt, 1, blockID, -1, SQLITE_TRANSIENT)
+
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let t = sqlite3_column_text(stmt, 0).flatMap { String(cString: $0) } ?? ""
+                if !t.isEmpty { out.append(t) }
+            }
+
+            return out.joined(separator: ", ")
+        }
+    }
+
     func run(_ kind: Kind, limit: Int = 300) {
         switch kind {
         case .deriveBlockTagIndexAndDomainV1:

@@ -119,11 +119,13 @@ extension DBNoteRepository {
         return found
     }
     
-    func saveSingleProtonBlock(blockID: String, protonJSON: String) {
+    func saveSingleProtonBlock(blockID: String, protonJSON: String, tagJSON: String) {
         let now = DBNoteRepository.nowMs()
 
         print("NJ_SAVE_SINGLE_PROTON_BLOCK block_id=\(blockID) proton_json_bytes=\(protonJSON.utf8.count)")
         print("NJ_SAVE_SINGLE_PROTON_BLOCK proton_json_preview=\(String(protonJSON.prefix(240)))")
+        print("NJ_SAVE_SINGLE_PROTON_BLOCK tag_json_bytes=\(tagJSON.utf8.count)")
+        print("NJ_SAVE_SINGLE_PROTON_BLOCK tag_json_preview=\(String(tagJSON.prefix(240)))")
 
         let oldPayload = loadPayloadJSON(blockID: blockID)
         let normalized = normalizeToV1PayloadJSON(oldPayload)
@@ -152,9 +154,15 @@ extension DBNoteRepository {
         db.withDB { dbp in
             var stmt: OpaquePointer?
             let sql = """
-            UPDATE nj_block
-            SET payload_json = ?, updated_at_ms = ?, deleted = 0
-            WHERE block_id = ?;
+            INSERT INTO nj_block
+            (block_id, block_type, payload_json, domain_tag, tag_json, lineage_id, parent_block_id, created_at_ms, updated_at_ms, deleted, dirty_bl)
+            VALUES (?, 'text', ?, '', ?, '', '', ?, ?, 0, 1)
+            ON CONFLICT(block_id) DO UPDATE SET
+                payload_json = excluded.payload_json,
+                tag_json = excluded.tag_json,
+                updated_at_ms = excluded.updated_at_ms,
+                deleted = 0,
+                dirty_bl = 1;
             """
             let rc0 = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
             if rc0 != SQLITE_OK {
@@ -164,28 +172,29 @@ extension DBNoteRepository {
                 return
             }
 
-            newPayload.withCString { cPayload in
-                blockID.withCString { cBlockID in
-                    let b0 = sqlite3_bind_text(stmt, 1, cPayload, -1, SQLITE_TRANSIENT)
-                    let b1 = sqlite3_bind_int64(stmt, 2, now)
-                    let b2 = sqlite3_bind_text(stmt, 3, cBlockID, -1, SQLITE_TRANSIENT)
+            blockID.withCString { cBlockID in
+                newPayload.withCString { cPayload in
+                    tagJSON.withCString { cTagJSON in
+                        let b0 = sqlite3_bind_text(stmt, 1, cBlockID, -1, SQLITE_TRANSIENT)
+                        let b1 = sqlite3_bind_text(stmt, 2, cPayload, -1, SQLITE_TRANSIENT)
+                        let b2 = sqlite3_bind_text(stmt, 3, cTagJSON, -1, SQLITE_TRANSIENT)
+                        let b3 = sqlite3_bind_int64(stmt, 4, now)
+                        let b4 = sqlite3_bind_int64(stmt, 5, now)
 
-                    if b0 != SQLITE_OK || b1 != SQLITE_OK || b2 != SQLITE_OK {
-                        let msg = String(cString: sqlite3_errmsg(dbp))
-                        print("NJ_SAVE_SINGLE_PROTON_BLOCK SQL_BIND_FAIL b0=\(b0) b1=\(b1) b2=\(b2) msg=\(msg)")
-                        sqlite3_finalize(stmt)
-                        return
-                    }
+                        if b0 != SQLITE_OK || b1 != SQLITE_OK || b2 != SQLITE_OK || b3 != SQLITE_OK || b4 != SQLITE_OK {
+                            let msg = String(cString: sqlite3_errmsg(dbp))
+                            print("NJ_SAVE_SINGLE_PROTON_BLOCK SQL_BIND_FAIL b0=\(b0) b1=\(b1) b2=\(b2) b3=\(b3) b4=\(b4) msg=\(msg)")
+                            sqlite3_finalize(stmt)
+                            return
+                        }
 
-                    let rc1 = sqlite3_step(stmt)
-                    if rc1 != SQLITE_DONE {
-                        let msg = String(cString: sqlite3_errmsg(dbp))
-                        print("NJ_SAVE_SINGLE_PROTON_BLOCK SQL_STEP_FAIL rc=\(rc1) msg=\(msg)")
-                    } else {
-                        let ch = sqlite3_changes(dbp)
-                        print("NJ_SAVE_SINGLE_PROTON_BLOCK SQL_DONE changes=\(ch)")
-                        if ch == 0 {
-                            print("NJ_SAVE_SINGLE_PROTON_BLOCK SQL_DONE_BUT_NO_ROW_MATCH block_id=\(blockID)")
+                        let rc1 = sqlite3_step(stmt)
+                        if rc1 != SQLITE_DONE {
+                            let msg = String(cString: sqlite3_errmsg(dbp))
+                            print("NJ_SAVE_SINGLE_PROTON_BLOCK SQL_STEP_FAIL rc=\(rc1) msg=\(msg)")
+                        } else {
+                            let ch = sqlite3_changes(dbp)
+                            print("NJ_SAVE_SINGLE_PROTON_BLOCK SQL_DONE changes=\(ch)")
                         }
                     }
                 }
@@ -197,27 +206,29 @@ extension DBNoteRepository {
         enqueueDirty(entity: "block", entityID: blockID, op: "upsert", updatedAtMs: now)
     }
 
-    func saveSingleTextBlockRTF(blockID: String, rtfBase64: String) {
-    
-        let now = DBNoteRepository.nowMs()
-        let oldPayload = loadPayloadJSON(blockID: blockID)
-        let newPayload = mergeRTFBase64IntoPayload(existingPayloadJSON: oldPayload, rtfBase64: rtfBase64)
+    func updateNoteBlockOrderKey(instanceID: String, orderKey: Double) {
+        if instanceID.isEmpty { return }
+        let now = Self.nowMs()
 
-        let sql = """
-        UPDATE nj_block
-        SET payload_json = ?, updated_at_ms = ?, deleted = 0
-        WHERE block_id = ?;
-        """
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            UPDATE nj_note_block
+            SET order_key = ?, updated_at_ms = ?, deleted = 0
+            WHERE instance_id = ?;
+            """
+            if sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) == SQLITE_OK {
+                sqlite3_bind_double(stmt, 1, orderKey)
+                sqlite3_bind_int64(stmt, 2, now)
+                sqlite3_bind_text(stmt, 3, instanceID, -1, SQLITE_TRANSIENT)
+                _ = sqlite3_step(stmt)
+            }
+            sqlite3_finalize(stmt)
+        }
 
-        let payloadLen = newPayload.utf8.count
-        let payloadPreview = String(newPayload.prefix(220))
-
-//        print("NJ_SQL_DRYRUN saveSingleTextBlockRTF")
-//        print("SQL: \(sql.trimmingCharacters(in: .whitespacesAndNewlines))")
-//        print("BIND[1] payload_json bytes=\(payloadLen) preview=\(payloadPreview)")
-//        print("BIND[2] updated_at_ms=\(now)")
-//        print("BIND[3] block_id=\(blockID)")
+        enqueueDirty(entity: "note_block", entityID: instanceID, op: "upsert", updatedAtMs: now)
     }
+
 
     func loadAllTextBlocksRTFWithPlacement(noteID: String) -> [NJLoadedTextBlock] {
         var out: [NJLoadedTextBlock] = []

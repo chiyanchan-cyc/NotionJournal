@@ -127,10 +127,35 @@ extension NJNoteEditorContainerView {
     }
 
     func moveBlocks(from source: IndexSet, to destination: Int) {
+        let moved = source.compactMap { idx in
+            (idx >= 0 && idx < persistence.blocks.count) ? persistence.blocks[idx] : nil
+        }
+
         persistence.blocks.move(fromOffsets: source, toOffset: destination)
-        for b in persistence.blocks {
-            persistence.markDirty(b.id)
-            persistence.scheduleCommit(b.id, debounce: 0.6)
+
+        for m in moved {
+            guard let i = persistence.blocks.firstIndex(where: { $0.id == m.id }) else { continue }
+
+            let prev = (i > 0) ? persistence.blocks[i - 1].orderKey : 0
+            let next = (i + 1 < persistence.blocks.count) ? persistence.blocks[i + 1].orderKey : 0
+
+            var newKey: Double = 1000
+            if prev > 0 && next > 0 {
+                newKey = (prev + next) / 2.0
+            } else if prev > 0 {
+                newKey = prev + 1000
+            } else if next > 0 {
+                newKey = max(1000, next - 1000)
+            } else {
+                newKey = 1000
+            }
+
+            persistence.blocks[i].orderKey = newKey
+
+            let instanceID = persistence.blocks[i].instanceID
+            if !instanceID.isEmpty {
+                store.notes.updateNoteBlockOrderKey(instanceID: instanceID, orderKey: newKey)
+            }
         }
     }
 }
