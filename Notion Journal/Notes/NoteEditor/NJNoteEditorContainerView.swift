@@ -69,7 +69,7 @@ struct NJNoteEditorContainerView: View {
                         hasClipPDF: false,
                         onOpenClipPDF: { },
                         protonHandle: h,
-                        isCollapsed: $persistence.blocks[i].isCollapsed,
+                        isCollapsed: collapsedBinding,
                         isFocused: id == persistence.focusedBlockID,
                         attr: $persistence.blocks[i].attr,
                         sel: $persistence.blocks[i].sel,

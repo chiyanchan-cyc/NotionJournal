@@ -533,10 +533,45 @@ final class NJProtonEditorHandle {
                         listItems.append(ListItem(text: text, level: lvl, attributeValue: kind))
                     }
 
-                    let a = ListParser.parse(list: listItems, indent: indentUnit)
+                    let parsed = ListParser.parse(list: listItems, indent: indentUnit)
+                    let a = NSMutableAttributedString(attributedString: parsed)
+
+                    func hasStrike(_ s: NSAttributedString) -> Bool {
+                        if s.length == 0 { return false }
+                        var hit = false
+                        s.enumerateAttribute(.strikethroughStyle, in: NSRange(location: 0, length: s.length), options: []) { v, _, stop in
+                            if let i = v as? Int, i != 0 {
+                                hit = true
+                                stop.pointee = true
+                            }
+                        }
+                        return hit
+                    }
+
+                    let ns = a.string as NSString
+                    var loc = 0
+                    var itemIdx = 0
+
+                    while loc < ns.length && itemIdx < listItems.count {
+                        let pr = ns.paragraphRange(for: NSRange(location: loc, length: 0))
+                        if hasStrike(listItems[itemIdx].text) {
+                            var rr = pr
+                            if rr.length > 0 {
+                                let last = ns.character(at: rr.location + rr.length - 1)
+                                if last == 10 || last == 13 { rr.length -= 1 }
+                            }
+                            if rr.length > 0 {
+                                a.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: rr)
+                            }
+                        }
+                        loc = pr.location + pr.length
+                        itemIdx += 1
+                    }
+
                     out.append(a)
                     continue
                 }
+
             }
 
             return out
@@ -1248,19 +1283,29 @@ final class NJProtonEditorHandle {
         let r = tv.selectedRange
         if r.length == 0 {
             let v = (tv.typingAttributes[.strikethroughStyle] as? Int) ?? 0
-            tv.typingAttributes[.strikethroughStyle] = (v == 0) ? NSUnderlineStyle.single.rawValue : 0
+            if v == 0 {
+                tv.typingAttributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+            } else {
+                tv.typingAttributes.removeValue(forKey: .strikethroughStyle)
+            }
             return
         }
 
         let s = tv.textStorage
-        let has = (s.attribute(.strikethroughStyle, at: r.location, effectiveRange: nil) as? Int ?? 0) != 0
+        let v = (s.attribute(.strikethroughStyle, at: r.location, effectiveRange: nil) as? Int) ?? 0
+        let has = v != 0
+
         s.beginEditing()
-        s.addAttribute(.strikethroughStyle, value: has ? 0 : NSUnderlineStyle.single.rawValue, range: r)
+        if has {
+            s.removeAttribute(.strikethroughStyle, range: r)
+        } else {
+            s.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: r)
+        }
         s.endEditing()
 
         snapshot()
     }
-    
+
     func hydrateFromProtonJSONString(_ json: String) {
         pendingHydrateProtonJSON = json
         applyPendingHydrateIfNeeded()

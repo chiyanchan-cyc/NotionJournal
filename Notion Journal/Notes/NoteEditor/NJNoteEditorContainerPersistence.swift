@@ -283,6 +283,7 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                         domainPreview: domainPreview,
                         attr: attr,
                         sel: NSRange(location: 0, length: 0),
+                        isCollapsed: loadCollapsed(blockID: row.blockID),
                         protonHandle: h,
                         isDirty: false,
                         loadedUpdatedAtMs: 0,
@@ -342,7 +343,7 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
     }
 
     func commitBlockNow(_ id: UUID, force: Bool = false) {
-        guard let store else { return }
+        guard let store, let noteID else { return }
         guard let i = blocks.firstIndex(where: { $0.id == id }) else { return }
         if !blocks[i].isDirty { return }
 
@@ -352,6 +353,19 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         }
 
         var b = blocks[i]
+
+        if b.instanceID.isEmpty {
+            let ok = store.notes.nextAppendOrderKey(noteID: noteID.raw)
+            let instanceID = store.notes.attachExistingBlockToNote(
+                noteID: noteID.raw,
+                blockID: b.blockID,
+                orderKey: ok
+            )
+            b.instanceID = instanceID
+            b.orderKey = ok
+            blocks[i].instanceID = instanceID
+            blocks[i].orderKey = ok
+        }
 
         commitNoteMetaNow()
 
@@ -396,7 +410,6 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         b.tagJSON = tagJSON
         blocks[i].tagJSON = tagJSON
 
-        // 🔒 ONLY MUTATION, FULLY REVERSIBLE
         let originalAttr = editor.attributedText
         let originalSel  = editor.selectedRange
 
@@ -406,7 +419,6 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
 
         let protonJSON = b.protonHandle.exportProtonJSONString()
 
-        // 🔒 restore editor EXACTLY
         editor.attributedText = originalAttr
         editor.selectedRange = originalSel
 
@@ -423,6 +435,7 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         b.isDirty = false
         blocks[i] = b
     }
+
 
 
 }

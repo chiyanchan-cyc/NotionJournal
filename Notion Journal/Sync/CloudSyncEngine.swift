@@ -47,10 +47,15 @@ final class CloudSyncEngine: ObservableObject {
             }
 
             self.schedulePush(debounceMs: 150)
+
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                await DBDirtyQueueTable.withPullScopeAsync {
+                    await self.coordinator.pullAll(forceSinceZero: false)
+                }
+            }
         }
-
     }
-
 
     func schedulePush(debounceMs: Int) {
         scheduledTask?.cancel()
