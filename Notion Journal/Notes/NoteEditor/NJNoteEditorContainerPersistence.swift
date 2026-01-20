@@ -2,6 +2,9 @@ import SwiftUI
 import Combine
 import UIKit
 import Proton
+import SQLite3
+
+private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
 final class NJNoteEditorContainerPersistence: ObservableObject {
 
@@ -115,6 +118,80 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         UserDefaults.standard.set(collapsed, forKey: collapseKey(blockID: blockID))
     }
 
+    private func dbLoadBlockCreatedAtMs(_ blockID: String) -> Int64 {
+        guard let store else { return 0 }
+        return store.notes.db.withDB { dbp in
+            var out: Int64 = 0
+            var stmt: OpaquePointer?
+            let sql = "SELECT created_at_ms FROM nj_block WHERE block_id = ? LIMIT 1;"
+            if sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) != SQLITE_OK { return 0 }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, blockID, -1, SQLITE_TRANSIENT)
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                out = sqlite3_column_int64(stmt, 0)
+            }
+            return out
+        }
+    }
+
+    private func dbLoadBlockTagJSON(_ blockID: String) -> String {
+        guard let store else { return "" }
+        return store.notes.db.withDB { dbp in
+            var out = ""
+            var stmt: OpaquePointer?
+            let sql = "SELECT tag_json FROM nj_block WHERE block_id = ? LIMIT 1;"
+            if sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) != SQLITE_OK { return "" }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, blockID, -1, SQLITE_TRANSIENT)
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                if let c = sqlite3_column_text(stmt, 0) { out = String(cString: c) }
+            }
+            return out
+        }
+    }
+
+    private func dbLoadDomainPreview3FromBlockTag(_ blockID: String) -> String {
+        guard let store else { return "" }
+        return store.notes.db.withDB { dbp in
+            var tags: [String] = []
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT tag
+            FROM nj_block_tag
+            WHERE block_id = ? COLLATE NOCASE
+            ORDER BY created_at_ms ASC
+            LIMIT 3;
+            """
+            let rc0 = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
+            if rc0 != SQLITE_OK {
+                let msg = String(cString: sqlite3_errmsg(dbp))
+                print("NJ_TAG_PREVIEW SQL_PREP_FAIL rc=\(rc0) msg=\(msg)")
+                return ""
+            }
+            defer { sqlite3_finalize(stmt) }
+
+            let b0 = sqlite3_bind_text(stmt, 1, blockID, -1, SQLITE_TRANSIENT)
+            if b0 != SQLITE_OK {
+                let msg = String(cString: sqlite3_errmsg(dbp))
+                print("NJ_TAG_PREVIEW SQL_BIND_FAIL b0=\(b0) msg=\(msg)")
+                return ""
+            }
+
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                if let c = sqlite3_column_text(stmt, 0) {
+                    let s = String(cString: c).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !s.isEmpty { tags.append(s) }
+                }
+            }
+
+            let out = tags.joined(separator: ", ")
+            if out.isEmpty {
+                print("NJ_TAG_PREVIEW EMPTY block_id=\(blockID)")
+            }
+            return out
+        }
+    }
+
     func reload(makeHandle: @escaping () -> NJProtonEditorHandle) {
             guard let store, let noteID else { return }
 
@@ -152,6 +229,8 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                     blockID: newBlockID,
                     instanceID: "",
                     orderKey: 1000,
+                    createdAtMs: DBNoteRepository.nowMs(),
+                    domainPreview: "",
                     attr: makeEmptyBlockAttr(),
                     sel: NSRange(location: 0, length: 0),
                     isCollapsed: loadCollapsed(blockID: newBlockID),
@@ -190,23 +269,28 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                     return ensureNonEmptyTyped(stripZWSP(s))
                 }()
 
+                let createdAtMs = dbLoadBlockCreatedAtMs(row.blockID)
+                let domainPreview = dbLoadDomainPreview3FromBlockTag(row.blockID)
+                let tagJSON = dbLoadBlockTagJSON(row.blockID)
+
                 out.append(
                     BlockState(
                         id: id,
                         blockID: row.blockID,
                         instanceID: row.instanceID,
                         orderKey: row.orderKey,
+                        createdAtMs: createdAtMs,
+                        domainPreview: domainPreview,
                         attr: attr,
                         sel: NSRange(location: 0, length: 0),
-                        isCollapsed: loadCollapsed(blockID: row.blockID),
                         protonHandle: h,
                         isDirty: false,
                         loadedUpdatedAtMs: 0,
                         loadedPayloadHash: "",
-                        protonJSON: protonJSON
+                        protonJSON: protonJSON,
+                        tagJSON: tagJSON
                     )
                 )
-
             }
 
             blocks = out
@@ -258,7 +342,7 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
     }
 
     func commitBlockNow(_ id: UUID, force: Bool = false) {
-        guard let store, let noteID else { return }
+        guard let store else { return }
         guard let i = blocks.firstIndex(where: { $0.id == id }) else { return }
         if !blocks[i].isDirty { return }
 
@@ -271,8 +355,22 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
 
         commitNoteMetaNow()
 
-        let liveAttr = b.protonHandle.editor?.attributedText ?? b.attr
+        guard let editor = b.protonHandle.editor else {
+            let protonJSON = b.protonHandle.exportProtonJSONString()
+            b.protonJSON = protonJSON
+            blocks[i].protonJSON = protonJSON
+            store.notes.saveSingleProtonBlock(
+                blockID: b.blockID,
+                protonJSON: protonJSON,
+                tagJSON: ""
+            )
+            b.loadedUpdatedAtMs = DBNoteRepository.nowMs()
+            b.isDirty = false
+            blocks[i] = b
+            return
+        }
 
+        let liveAttr = editor.attributedText
         let tagRes = NJTagExtraction.extract(from: liveAttr)
         let tags = tagRes?.tags ?? []
 
@@ -288,18 +386,30 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         }
 
         let tagJSON: String = {
-            if tags.isEmpty { return "" }
-            if let data = try? JSONSerialization.data(withJSONObject: tags, options: []),
-               let s = String(data: data, encoding: .utf8) {
-                return s
-            }
-            return ""
+            guard !tags.isEmpty,
+                  let data = try? JSONSerialization.data(withJSONObject: tags),
+                  let s = String(data: data, encoding: .utf8)
+            else { return "" }
+            return s
         }()
 
         b.tagJSON = tagJSON
         blocks[i].tagJSON = tagJSON
 
+        // 🔒 ONLY MUTATION, FULLY REVERSIBLE
+        let originalAttr = editor.attributedText
+        let originalSel  = editor.selectedRange
+
+        if let cleaned = tagRes?.cleaned {
+            editor.attributedText = cleaned
+        }
+
         let protonJSON = b.protonHandle.exportProtonJSONString()
+
+        // 🔒 restore editor EXACTLY
+        editor.attributedText = originalAttr
+        editor.selectedRange = originalSel
+
         b.protonJSON = protonJSON
         blocks[i].protonJSON = protonJSON
 
@@ -309,10 +419,10 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             tagJSON: tagJSON
         )
 
-        let now = DBNoteRepository.nowMs()
-        b.loadedUpdatedAtMs = now
+        b.loadedUpdatedAtMs = DBNoteRepository.nowMs()
         b.isDirty = false
         blocks[i] = b
     }
+
 
 }

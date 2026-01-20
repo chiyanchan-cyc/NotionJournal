@@ -59,12 +59,10 @@ struct NJNoteEditorContainerView: View {
                         }
                     )
 
-                    let dp = domainPreviewFromTagJSON(persistence.blocks[i].tagJSON)
-
                     NJBlockHostView(
                         index: i + 1,
                         createdAtMs: persistence.blocks[i].createdAtMs,
-                        domainPreview: dp,
+                        domainPreview: persistence.blocks[i].domainPreview,
                         onEditTags: { },
                         goalPreview: nil,
                         onAddGoal: { },

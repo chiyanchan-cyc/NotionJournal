@@ -100,70 +100,75 @@ struct NJBlockHostView: View {
             .padding(.top, 4)
 
             ZStack(alignment: .trailing) {
-                VStack(alignment: .leading, spacing: 6) {
-                    if isCollapsed {
-                        Text(oneLine(attr.string))
-                            .font(.body.weight(.semibold))
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                ZStack(alignment: .topLeading) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if isCollapsed {
+                            Text(oneLine(attr.string))
+                                .font(.body.weight(.semibold))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                                .onTapGesture { onFocus() }
+                        } else {
+                            if let ms = createdAtMs, ms > 0 {
+                                Text(dateLine(ms))
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.top, 2)
+                            }
+
+                            NJProtonEditorView(
+                                initialAttributedText: attr,
+                                initialSelectedRange: sel,
+                                snapshotAttributedText: $attr,
+                                snapshotSelectedRange: $sel,
+                                measuredHeight: $editorHeight,
+                                handle: protonHandle
+                            )
+                            .frame(minHeight: editorHeight)
                             .contentShape(Rectangle())
                             .onTapGesture { onFocus() }
-                    } else {
-                        if let ms = createdAtMs, ms > 0 {
-                            Text(dateLine(ms))
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .padding(.top, 2)
-                        }
-                        
-                        NJProtonEditorView(
-                            initialAttributedText: attr,
-                            initialSelectedRange: sel,
-                            snapshotAttributedText: $attr,
-                            snapshotSelectedRange: $sel,
-                            measuredHeight: $editorHeight,
-                            handle: protonHandle
-                        )
-                        .frame(minHeight: editorHeight)
-
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            onFocus()
-                        }
-                        
-                        .onAppear {
-                            if !isCollapsed && !didHydrate {
-                                didHydrate = true
-                                DispatchQueue.main.async { onHydrateProton() }
-                            }
-                        }
-                        HStack {
-                            Spacer(minLength: 0)
-                            if let raw = domainPreview {
-                                let s = domainBottom3(raw)
-                                if !s.isEmpty {
-                                    Text(s)
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                        .onTapGesture(count: 2) { onEditTags?() }
+                            .onAppear {
+                                if !isCollapsed && !didHydrate {
+                                    didHydrate = true
+                                    DispatchQueue.main.async { onHydrateProton() }
                                 }
                             }
+
+                            HStack {
+                                Spacer(minLength: 0)
+                                if let raw = domainPreview {
+                                    let s = domainBottom3(raw)
+                                    if !s.isEmpty {
+                                        Text(s)
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                            .onTapGesture(count: 2) { onEditTags?() }
+                                    }
+                                }
+                            }
+                            .padding(.top, 2)
                         }
-                        .padding(.top, 2)
                     }
-                }
-                .padding(.trailing, 44)
-                .overlay(alignment: .bottomTrailing) {
-                    let s = (domainPreview ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !s.isEmpty {
-                        Text(s)
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                            .baselineOffset(-3)
-                            .offset(x: -40, y: 10)
-                            .padding(.bottom, 6)
-                    }
+                    .padding(.trailing, 44)
+
+//                    VStack {
+//                        Spacer()
+//                        HStack {
+//                            Spacer(minLength: 0)
+//                            let s = (domainPreview ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+//                            if !s.isEmpty {
+//                                Text(s)
+//                                    .font(.system(size: 9, weight: .semibold))
+//                                    .foregroundStyle(.secondary)
+//                                    .baselineOffset(-3)
+//                                    .offset(x: -40, y: 10)
+//                                    .padding(.bottom, 6)
+//                            }
+//                        }
+//                    }
+//                    .allowsHitTesting(false)
                 }
 
                 VStack {
@@ -220,7 +225,6 @@ struct NJBlockHostView: View {
         .contentShape(Rectangle())
         .onTapGesture { onFocus() }
         .padding(.vertical, isCollapsed ? 2 : 6)
-        
         .onChange(of: isCollapsed) { v in
             if v {
                 didHydrate = false

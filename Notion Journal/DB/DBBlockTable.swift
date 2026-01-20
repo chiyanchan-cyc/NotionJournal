@@ -24,6 +24,60 @@ final class DBBlockTable {
         let payloadJSON: String
     }
     
+//    func loadBlockCreatedAtMs(blockID: String) -> Int64 {
+//        db.withDB { dbp in
+//            var out: Int64 = 0
+//            var stmt: OpaquePointer?
+//            let sql = "SELECT created_at_ms FROM nj_block WHERE block_id = ? LIMIT 1;"
+//            if sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) != SQLITE_OK { return 0 }
+//            defer { sqlite3_finalize(stmt) }
+//            sqlite3_bind_text(stmt, 1, blockID, -1, SQLITE_TRANSIENT)
+//            if sqlite3_step(stmt) == SQLITE_ROW {
+//                out = sqlite3_column_int64(stmt, 0)
+//            }
+//            return out
+//        }
+//    }
+//
+//    func loadBlockTagJSON(blockID: String) -> String {
+//        db.withDB { dbp in
+//            var out = ""
+//            var stmt: OpaquePointer?
+//            let sql = "SELECT tag_json FROM nj_block WHERE block_id = ? LIMIT 1;"
+//            if sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) != SQLITE_OK { return "" }
+//            defer { sqlite3_finalize(stmt) }
+//            sqlite3_bind_text(stmt, 1, blockID, -1, SQLITE_TRANSIENT)
+//            if sqlite3_step(stmt) == SQLITE_ROW {
+//                if let c = sqlite3_column_text(stmt, 0) { out = String(cString: c) }
+//            }
+//            return out
+//        }
+//    }
+//
+//    func loadDomainPreview3FromBlockTag(blockID: String) -> String {
+//        db.withDB { dbp in
+//            var tags: [String] = []
+//            var stmt: OpaquePointer?
+//            let sql = """
+//            SELECT domain
+//            FROM nj_block_tag
+//            WHERE block_id = ? AND deleted = 0
+//            ORDER BY created_at_ms ASC
+//            LIMIT 3;
+//            """
+//            if sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) != SQLITE_OK { return "" }
+//            defer { sqlite3_finalize(stmt) }
+//            sqlite3_bind_text(stmt, 1, blockID, -1, SQLITE_TRANSIENT)
+//            while sqlite3_step(stmt) == SQLITE_ROW {
+//                if let c = sqlite3_column_text(stmt, 0) {
+//                    let s = String(cString: c).trimmingCharacters(in: .whitespacesAndNewlines)
+//                    if !s.isEmpty { tags.append(s) }
+//                }
+//            }
+//            return tags.joined(separator: ", ")
+//        }
+//    }
+    
     func loadBlockPayloadJSON(blockID: String) -> String {
         db.withDB { dbp in
             var out = ""
@@ -260,4 +314,5 @@ final class DBBlockTable {
 
         enqueueDirty(entity: "block", entityID: blockID, op: "upsert", updatedAtMs: updatedAtMs)
     }
+    
 }
