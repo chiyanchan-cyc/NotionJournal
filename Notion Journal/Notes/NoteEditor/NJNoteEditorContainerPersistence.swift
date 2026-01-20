@@ -93,6 +93,15 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         self.didConfigure = true
     }
 
+    private func domainPreviewFromTagJSON(_ tagJSON: String) -> String {
+        if tagJSON.isEmpty { return "" }
+        if let data = tagJSON.data(using: .utf8),
+           let arr = try? JSONDecoder().decode([String].self, from: data) {
+            return arr.joined(separator: ", ")
+        }
+        return ""
+    }
+
     private func collapseKey(blockID: String) -> String {
         let n = noteID?.raw ?? "no_note"
         return "nj.note.collapse.\(n).\(blockID)"
@@ -290,20 +299,13 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         b.tagJSON = tagJSON
         blocks[i].tagJSON = tagJSON
 
-        let protonJSONToSave: String = {
-            if let tagRes {
-                let nodes = NJProtonNodeCodecV1.encodeNodes(from: tagRes.cleaned)
-                return NJProtonNodeCodecV1.encodeJSONString(nodes: nodes)
-            }
-            return b.protonHandle.exportProtonJSONString()
-        }()
-
-        b.protonJSON = protonJSONToSave
-        blocks[i].protonJSON = protonJSONToSave
+        let protonJSON = b.protonHandle.exportProtonJSONString()
+        b.protonJSON = protonJSON
+        blocks[i].protonJSON = protonJSON
 
         store.notes.saveSingleProtonBlock(
             blockID: b.blockID,
-            protonJSON: protonJSONToSave,
+            protonJSON: protonJSON,
             tagJSON: tagJSON
         )
 

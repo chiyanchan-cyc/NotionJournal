@@ -59,25 +59,23 @@ struct NJNoteEditorContainerView: View {
                         }
                     )
 
+                    let dp = domainPreviewFromTagJSON(persistence.blocks[i].tagJSON)
+
                     NJBlockHostView(
                         index: i + 1,
                         createdAtMs: persistence.blocks[i].createdAtMs,
-                        domainPreview: persistence.blocks[i].domainPreview,
+                        domainPreview: dp,
                         onEditTags: { },
                         goalPreview: nil,
                         onAddGoal: { },
                         hasClipPDF: false,
                         onOpenClipPDF: { },
                         protonHandle: h,
-                        isCollapsed: collapsedBinding,
+                        isCollapsed: $persistence.blocks[i].isCollapsed,
                         isFocused: id == persistence.focusedBlockID,
                         attr: $persistence.blocks[i].attr,
                         sel: $persistence.blocks[i].sel,
                         onFocus: {
-                            let prev = persistence.focusedBlockID
-                            if let prev, prev != id {
-                                persistence.forceEndEditingAndCommitNow(prev)
-                            }
                             persistence.focusedBlockID = id
                             h.focus()
                             blockBus.focus(id)
@@ -89,8 +87,8 @@ struct NJNoteEditorContainerView: View {
                         },
                         onCommitProton: {
                             persistence.markDirty(id)
-                            persistence.commitBlockNow(id, force: true)
-                        },
+                            persistence.scheduleCommit(id)
+                        }
                     )
                     .id(id)
                     .listRowInsets(EdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 12))
