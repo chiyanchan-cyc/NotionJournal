@@ -568,14 +568,19 @@ final class NJProtonEditorHandle {
                         itemIdx += 1
                     }
 
+                    let ns2 = a.string as NSString
+                    if ns2.length == 0 || ns2.character(at: ns2.length - 1) != 10 {
+                        a.append(NSAttributedString(string: "\n"))
+                    }
+
                     out.append(a)
                     continue
                 }
-
             }
 
             return out
         }
+
 
         private static func buildDoc(from text: NSAttributedString) -> [[String: Any]] {
             let fullLen = text.length
@@ -590,44 +595,56 @@ final class NJProtonEditorHandle {
 
             struct CapturedItem {
                 let paraRange: NSRange
-                let level: Int
-                let kind: String
-                let rich: NSAttributedString
+                let listItem: ListItem
             }
 
             struct ListBlock {
                 let start: Int
                 let end: Int
-                let listIndex: Int
-                let items: [CapturedItem]
+                let items: [ListItem]
             }
 
             let s = text.string as NSString
 
-            var byIndex: [Int: [CapturedItem]] = [:]
+            var captured: [CapturedItem] = []
+            captured.reserveCapacity(parsed.count)
 
             for p in parsed {
                 let paraRange = s.paragraphRange(for: NSRange(location: p.range.location, length: 0))
-
-                let kind = normalizeKind(p.listItem.attributeValue)
-                let level = max(0, p.listItem.level)
-
-                let paraAttr = text.attributedSubstring(from: paraRange)
-                let rich = trimTrailingNewlinesAttributed(paraAttr)
-
-                byIndex[p.listIndex, default: []].append(
-                    CapturedItem(paraRange: paraRange, level: level, kind: kind, rich: rich)
-                )
+                captured.append(CapturedItem(paraRange: paraRange, listItem: normalizeListItem(p.listItem)))
             }
 
-            var blocks: [ListBlock] = []
-            blocks.reserveCapacity(byIndex.count)
+            captured.sort { $0.paraRange.location < $1.paraRange.location }
 
-            for (idx, items) in byIndex {
-                let sorted = items.sorted { $0.paraRange.location < $1.paraRange.location }
-                let start = sorted.first!.paraRange.location
-                let end = sorted.last!.paraRange.location + sorted.last!.paraRange.length
-                blocks.append(ListBlock(start: start, end: end, listIndex: idx, items: sorted))
+            var blocks: [ListBlock] = []
+            blocks.reserveCapacity(captured.count)
+
+            var curItems: [ListItem] = []
+            var curStart = 0
+            var curEnd = 0
+
+            for it in captured {
+                if curItems.isEmpty {
+                    curItems = [it.listItem]
+                    curStart = it.paraRange.location
+                    curEnd = it.paraRange.location + it.paraRange.length
+                    continue
+                }
+
+                if it.paraRange.location > curEnd {
+                    blocks.append(ListBlock(start: curStart, end: curEnd, items: curItems))
+                    curItems = [it.listItem]
+                    curStart = it.paraRange.location
+                    curEnd = it.paraRange.location + it.paraRange.length
+                    continue
+                }
+
+                curItems.append(it.listItem)
+                curEnd = max(curEnd, it.paraRange.location + it.paraRange.length)
+            }
+
+            if !curItems.isEmpty {
+                blocks.append(ListBlock(start: curStart, end: curEnd, items: curItems))
             }
 
             blocks.sort { $0.start < $1.start }
@@ -644,16 +661,16 @@ final class NJProtonEditorHandle {
                 var itemsJSON: [[String: Any]] = []
                 itemsJSON.reserveCapacity(b.items.count)
 
-                for it in b.items {
+                for li in b.items {
+                    let kind = normalizeKind(li.attributeValue)
                     itemsJSON.append([
-                        "level": it.level,
-                        "kind": it.kind,
-                        "rtf_base64": encodeRTFBase64(it.rich) ?? ""
+                        "level": li.level,
+                        "kind": kind,
+                        "rtf_base64": encodeRTFBase64(li.text) ?? ""
                     ])
                 }
 
                 doc.append(["type": "list", "items": itemsJSON])
-
                 pos = b.end
             }
 
@@ -668,6 +685,7 @@ final class NJProtonEditorHandle {
 
             return doc
         }
+
 
         private static func trimTrailingNewlinesAttributed(_ a: NSAttributedString) -> NSAttributedString {
             if a.length == 0 { return a }

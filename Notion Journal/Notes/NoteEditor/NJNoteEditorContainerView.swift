@@ -109,6 +109,10 @@ struct NJNoteEditorContainerView: View {
             .environment(\.editMode, $editMode)
         }
         .overlay(NJHiddenShortcuts(getHandle: { focusedHandle() }))
+//        .overlay(NJContainerKeyCommands(getHandle: { focusedHandle() })
+//            .frame(width: 0, height: 0)
+//            .allowsHitTesting(false)
+//        )
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if let h = focusedHandle() {
                 NJProtonFloatingFormatBar(handle: h)
@@ -227,11 +231,14 @@ private struct NJContainerKeyCommands: UIViewControllerRepresentable {
                 mk("i", .command, #selector(cmdItalic)),
                 mk("u", .command, #selector(cmdUnderline)),
                 mk("x", [.command, .shift], #selector(cmdStrike)),
+                mk("\t", [], #selector(cmdTab)),
+                mk("\t", [.shift], #selector(cmdShiftTab)),
                 mk("]", .command, #selector(cmdIndent)),
                 mk("[", .command, #selector(cmdOutdent)),
                 mk("7", .command, #selector(cmdBullet)),
                 mk("8", .command, #selector(cmdNumber))
             ]
+
         }
 
         @objc func cmdBold() { withHandle { $0.toggleBold() } }
@@ -242,6 +249,9 @@ private struct NJContainerKeyCommands: UIViewControllerRepresentable {
         @objc func cmdOutdent() { withHandle { $0.outdent() } }
         @objc func cmdBullet() { withHandle { $0.toggleBullet() } }
         @objc func cmdNumber() { withHandle { $0.toggleNumber() } }
+        @objc func cmdTab() { withHandle { $0.indent() } }
+        @objc func cmdShiftTab() { withHandle { $0.outdent() } }
+
 
         private func withHandle(_ f: (NJProtonEditorHandle) -> Void) {
             guard let h = getHandle?() else { return }

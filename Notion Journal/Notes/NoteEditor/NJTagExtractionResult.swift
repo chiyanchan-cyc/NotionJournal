@@ -16,23 +16,28 @@ enum NJTagExtraction {
             .replacingOccurrences(of: "\u{200B}", with: "")
 
         let lines = normalized.components(separatedBy: "\n")
-
         guard let idx = lines.firstIndex(where: isValidTagLine) else { return nil }
 
         let tags = parseTags(from: lines[idx])
         if tags.isEmpty { return nil }
 
-        var remaining = lines
-        remaining.remove(at: idx)
-
-        let cleanedString = remaining.joined(separator: "\n")
+        let ns = normalized as NSString
+        var start = 0
+        for _ in 0..<idx {
+            let r = ns.lineRange(for: NSRange(location: start, length: 0))
+            start = r.location + r.length
+        }
+        let removeRange = ns.lineRange(for: NSRange(location: start, length: 0))
 
         let cleanedAttr = NSMutableAttributedString(attributedString: attr)
-        cleanedAttr.mutableString.setString(cleanedString)
+        if removeRange.location != NSNotFound, removeRange.location + removeRange.length <= cleanedAttr.length {
+            cleanedAttr.deleteCharacters(in: removeRange)
+        }
 
         let unique = Array(Set(tags)).sorted()
         return NJTagExtractionResult(tags: unique, cleaned: cleanedAttr)
     }
+
 
     private static func isValidTagLine(_ line: String) -> Bool {
         let l = line.replacingOccurrences(of: "\u{200B}", with: "")

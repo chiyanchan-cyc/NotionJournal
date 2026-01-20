@@ -156,13 +156,20 @@ extension DBNoteRepository {
             let sql = """
             INSERT INTO nj_block
             (block_id, block_type, payload_json, domain_tag, tag_json, lineage_id, parent_block_id, created_at_ms, updated_at_ms, deleted, dirty_bl)
-            VALUES (?, 'text', ?, '', ?, '', '', ?, ?, 0, 1)
+            VALUES (?, 'text', ?, '', ?, '', '', ?, ?, 0, 0)
             ON CONFLICT(block_id) DO UPDATE SET
                 payload_json = excluded.payload_json,
-                tag_json = excluded.tag_json,
+                tag_json = CASE
+                    WHEN excluded.tag_json = '' THEN nj_block.tag_json
+                    ELSE excluded.tag_json
+                END,
                 updated_at_ms = excluded.updated_at_ms,
                 deleted = 0,
-                dirty_bl = 1;
+                dirty_bl = CASE
+                    WHEN excluded.tag_json = '' THEN nj_block.dirty_bl
+                    WHEN excluded.tag_json = nj_block.tag_json THEN nj_block.dirty_bl
+                    ELSE 1
+                END;
             """
             let rc0 = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
             if rc0 != SQLITE_OK {

@@ -407,8 +407,10 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             return s
         }()
 
-        b.tagJSON = tagJSON
-        blocks[i].tagJSON = tagJSON
+        if !tagJSON.isEmpty {
+            b.tagJSON = tagJSON
+            blocks[i].tagJSON = tagJSON
+        }
 
         let originalAttr = editor.attributedText
         let originalSel  = editor.selectedRange
