@@ -264,17 +264,10 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
 
         let liveAttr = b.protonHandle.editor?.attributedText ?? b.attr
 
-        var tags: [String] = []
-        if let tagRes = NJTagExtraction.extract(from: liveAttr) {
-            tags = tagRes.tags
+        let tagRes = NJTagExtraction.extract(from: liveAttr)
+        let tags = tagRes?.tags ?? []
 
-            b.attr = tagRes.cleaned
-            blocks[i].attr = tagRes.cleaned
-
-            if let editor = b.protonHandle.editor {
-                editor.attributedText = tagRes.cleaned
-            }
-
+        if let tagRes {
             NotificationCenter.default.post(
                 name: Notification.Name("NJ_BLOCK_TAGS_EXTRACTED"),
                 object: nil,
@@ -297,13 +290,20 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         b.tagJSON = tagJSON
         blocks[i].tagJSON = tagJSON
 
-        let protonJSON = b.protonHandle.exportProtonJSONString()
-        b.protonJSON = protonJSON
-        blocks[i].protonJSON = protonJSON
+        let protonJSONToSave: String = {
+            if let tagRes {
+                let nodes = NJProtonNodeCodecV1.encodeNodes(from: tagRes.cleaned)
+                return NJProtonNodeCodecV1.encodeJSONString(nodes: nodes)
+            }
+            return b.protonHandle.exportProtonJSONString()
+        }()
+
+        b.protonJSON = protonJSONToSave
+        blocks[i].protonJSON = protonJSONToSave
 
         store.notes.saveSingleProtonBlock(
             blockID: b.blockID,
-            protonJSON: protonJSON,
+            protonJSON: protonJSONToSave,
             tagJSON: tagJSON
         )
 
