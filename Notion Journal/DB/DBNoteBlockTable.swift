@@ -93,7 +93,11 @@ final class DBNoteBlockTable {
     }
 
     func applyNJNoteBlock(_ f: [String: Any]) {
-        let instanceID = (f["instance_id"] as? String) ?? (f["instanceID"] as? String) ?? ""
+        let instanceID =
+          (f["instance_id"] as? String) ??
+          (f["instanceID"] as? String) ??
+          (f["id"] as? String) ??
+          ""
         if instanceID.isEmpty { return }
 
         let noteID = (f["note_id"] as? String) ?? ""

@@ -33,7 +33,7 @@ final class CloudSyncEngine: ObservableObject {
             guard let self else { return }
 
             await DBDirtyQueueTable.withPullScopeAsync {
-                await self.coordinator.pullAll(forceSinceZero: false)
+                await self.coordinator.pullAll(forceSinceZero: true)
             }
 
             self.initialPullCompleted = true
