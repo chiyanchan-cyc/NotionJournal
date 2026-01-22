@@ -40,12 +40,21 @@ struct RootView: View {
                 }
                 .onAppear {
                     store.runClipIngestIfNeeded()
+                    NJLocalBLRunner(db: store.db).run(.deriveBlockTagIndexAndDomainV1)
                 }
                 .onChange(of: scenePhase) { ph in
                     if ph == .active {
                         store.runClipIngestIfNeeded()
+                        NJLocalBLRunner(db: store.db).run(.deriveBlockTagIndexAndDomainV1)
                     }
                 }
+                .onChange(of: store.selectedNotebookID) { _ in
+                    NJLocalBLRunner(db: store.db).run(.deriveBlockTagIndexAndDomainV1)
+                }
+                .onChange(of: store.selectedTabID) { _ in
+                    NJLocalBLRunner(db: store.db).run(.deriveBlockTagIndexAndDomainV1)
+                }
+
             } else {
                 VStack(spacing: 12) {
                     ProgressView()

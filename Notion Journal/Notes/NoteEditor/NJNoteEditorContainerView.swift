@@ -47,22 +47,26 @@ struct NJNoteEditorContainerView: View {
             Divider()
 
             List {
-                ForEach(persistence.blocks.indices, id: \.self) { i in
-                    let id = persistence.blocks[i].id
-                    let h = persistence.blocks[i].protonHandle
+                ForEach(persistence.blocks, id: \.id) { b in
+                    let id = b.id
+                    let h = b.protonHandle
 
                     let collapsedBinding = Binding(
-                        get: { persistence.blocks[i].isCollapsed },
+                        get: { persistence.blocks.first(where: { $0.id == id })?.isCollapsed ?? false },
                         set: { v in
-                            persistence.blocks[i].isCollapsed = v
-                            persistence.saveCollapsed(blockID: persistence.blocks[i].blockID, collapsed: v)
+                            if let i = persistence.blocks.firstIndex(where: { $0.id == id }) {
+                                persistence.blocks[i].isCollapsed = v
+                                persistence.saveCollapsed(blockID: persistence.blocks[i].blockID, collapsed: v)
+                            }
                         }
                     )
 
+                    let rowIndex = (persistence.blocks.firstIndex(where: { $0.id == id }) ?? 0) + 1
+
                     NJBlockHostView(
-                        index: i + 1,
-                        createdAtMs: persistence.blocks[i].createdAtMs,
-                        domainPreview: persistence.blocks[i].domainPreview,
+                        index: rowIndex,
+                        createdAtMs: b.createdAtMs,
+                        domainPreview: b.domainPreview,
                         onEditTags: { },
                         goalPreview: nil,
                         onAddGoal: { },
@@ -71,8 +75,8 @@ struct NJNoteEditorContainerView: View {
                         protonHandle: h,
                         isCollapsed: collapsedBinding,
                         isFocused: id == persistence.focusedBlockID,
-                        attr: $persistence.blocks[i].attr,
-                        sel: $persistence.blocks[i].sel,
+                        attr: bindingAttr(id),
+                        sel: bindingSel(id),
                         onFocus: {
                             let prev = persistence.focusedBlockID
                             if let prev, prev != id {
@@ -82,12 +86,9 @@ struct NJNoteEditorContainerView: View {
                             h.focus()
                             blockBus.focus(id)
                         },
-
                         onCtrlReturn: { blockBus.ctrlReturn(id) },
                         onDelete: { blockBus.delete(id) },
-                        onHydrateProton: {
-                            persistence.hydrateProton(id)
-                        },
+                        onHydrateProton: { persistence.hydrateProton(id) },
                         onCommitProton: {
                             persistence.markDirty(id)
                             persistence.scheduleCommit(id)
@@ -98,7 +99,7 @@ struct NJNoteEditorContainerView: View {
                     .listRowSeparator(.hidden)
                     .onAppear {
                         if pendingFocusID == id {
-                            if pendingFocusToStart {
+                            if pendingFocusToStart, let i = persistence.blocks.firstIndex(where: { $0.id == id }) {
                                 persistence.blocks[i].sel = NSRange(location: 0, length: 0)
                             }
                             persistence.focusedBlockID = id

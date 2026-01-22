@@ -40,17 +40,14 @@ final class NJCloudKitTransport {
         return 0
     }
 
-    private func updatedMs(for entity: String, record: CKRecord) -> Int64 {
+    func updatedMs(for entity: String, record: CKRecord) -> Int64 {
         let fieldMs = toMs(record["updated_at_ms"])
-        let modMs: Int64 = {
-            if let md = record.modificationDate { return Int64(md.timeIntervalSince1970 * 1000.0) }
+        if fieldMs == 0 {
+            print("NJ_CK_MISSING_UPDATED_AT entity=\(entity) id=\(record.recordID.recordName)")
             return 0
-        }()
-        if fieldMs == 0 { return modMs }
-        if modMs == 0 { return fieldMs }
-        return max(fieldMs, modMs)
+        }
+        return fieldMs
     }
-
 
     private func recordToFields(entity: String, record: CKRecord) -> [String: Any] {
         var f: [String: Any] = [:]
@@ -112,7 +109,15 @@ final class NJCloudKitTransport {
             if let c = cursor {
                 op = CKQueryOperation(cursor: c)
             } else {
-                let q = CKQuery(recordType: recordType, predicate: NSPredicate(value: true))
+                let pred: NSPredicate
+                if sinceMs > 0 {
+                    pred = NSPredicate(format: "updated_at_ms > %@", NSNumber(value: sinceMs))
+                } else {
+                    pred = NSPredicate(value: true)
+                }
+
+                let q = CKQuery(recordType: recordType, predicate: pred)
+                q.sortDescriptors = [NSSortDescriptor(key: "updated_at_ms", ascending: true)]
                 op = CKQueryOperation(query: q)
             }
 
@@ -161,6 +166,7 @@ final class NJCloudKitTransport {
 
         return (rows, newMax)
     }
+
 
     func pushEntity(entity: String, recordType: String, rows: [(String, [String: Any])]) async -> [String] {
         let lock = NSLock()

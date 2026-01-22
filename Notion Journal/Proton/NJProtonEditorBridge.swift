@@ -1593,9 +1593,11 @@ struct NJProtonEditorView: UIViewRepresentable {
         handle.onEndEditingSimple = nil
 
         handle.onSnapshot = { a, r in
-            snapshotAttributedText = a
-            snapshotSelectedRange = r
-            context.coordinator.updateMeasuredHeight(from: v)
+            DispatchQueue.main.async {
+                snapshotAttributedText = a
+                snapshotSelectedRange = r
+                context.coordinator.updateMeasuredHeight(from: v)
+            }
         }
 
         let pinch = UIPinchGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.onPinch(_:)))
