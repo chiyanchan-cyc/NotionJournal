@@ -41,11 +41,32 @@ extension NJNoteEditorContainerView {
         let handle = makeWiredHandle()
         handle.ownerBlockUUID = newID
 
+        let insertAt: Int
+        if let id, let i = persistence.blocks.firstIndex(where: { $0.id == id }) {
+            insertAt = i + 1
+        } else {
+            insertAt = persistence.blocks.count
+        }
+
+        let prevKey: Double = (insertAt - 1 >= 0 && insertAt - 1 < persistence.blocks.count) ? persistence.blocks[insertAt - 1].orderKey : 0
+        let nextKey: Double = (insertAt >= 0 && insertAt < persistence.blocks.count) ? persistence.blocks[insertAt].orderKey : 0
+
+        var newKey: Double = 1000
+        if prevKey > 0 && nextKey > 0 {
+            newKey = (prevKey + nextKey) / 2.0
+        } else if prevKey > 0 {
+            newKey = prevKey + 1000
+        } else if nextKey > 0 {
+            newKey = max(1000, nextKey - 1000)
+        } else {
+            newKey = 1000
+        }
+
         let new = NJNoteEditorContainerPersistence.BlockState(
             id: newID,
             blockID: UUID().uuidString,
             instanceID: "",
-            orderKey: 0,
+            orderKey: newKey,
             attr: makeEmptyBlockAttr(),
             sel: NSRange(location: 0, length: 0),
             isCollapsed: false,
@@ -53,17 +74,14 @@ extension NJNoteEditorContainerView {
             isDirty: true
         )
 
-        if let id, let i = persistence.blocks.firstIndex(where: { $0.id == id }) {
-            persistence.blocks.insert(new, at: i + 1)
-        } else {
-            persistence.blocks.append(new)
-        }
+        persistence.blocks.insert(new, at: insertAt)
 
         pendingFocusID = new.id
         pendingFocusToStart = true
 
         persistence.scheduleCommit(new.id)
     }
+
 
     func deleteBlock(_ id: UUID) {
         guard let i = persistence.blocks.firstIndex(where: { $0.id == id }) else { return }

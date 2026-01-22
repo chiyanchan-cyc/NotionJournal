@@ -74,10 +74,15 @@ struct NJNoteEditorContainerView: View {
                         attr: $persistence.blocks[i].attr,
                         sel: $persistence.blocks[i].sel,
                         onFocus: {
+                            let prev = persistence.focusedBlockID
+                            if let prev, prev != id {
+                                persistence.forceEndEditingAndCommitNow(prev)
+                            }
                             persistence.focusedBlockID = id
                             h.focus()
                             blockBus.focus(id)
                         },
+
                         onCtrlReturn: { blockBus.ctrlReturn(id) },
                         onDelete: { blockBus.delete(id) },
                         onHydrateProton: {
@@ -157,7 +162,7 @@ struct NJNoteEditorContainerView: View {
         }
         .onDisappear {
             if let id = persistence.focusedBlockID {
-                persistence.commitBlockNow(id)
+                persistence.forceEndEditingAndCommitNow(id)
             }
         }
     }

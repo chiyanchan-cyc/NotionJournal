@@ -131,38 +131,38 @@ final class DBDirtyQueueTable {
         }
     }
 
-    func housekeepDirty(maxKeepMs: Int64, maxRows: Int) {
-        let now = Int64(Date().timeIntervalSince1970 * 1000)
-        let cutoff = now - maxKeepMs
-
-        db.withDB { dbp in
-            var s1: OpaquePointer?
-            let rc0 = sqlite3_prepare_v2(dbp, """
-            DELETE FROM nj_dirty
-            WHERE ignore=1 AND updated_at_ms < ?;
-            """, -1, &s1, nil)
-            if rc0 == SQLITE_OK, let s1 {
-                defer { sqlite3_finalize(s1) }
-                sqlite3_bind_int64(s1, 1, cutoff)
-                _ = sqlite3_step(s1)
-            }
-
-            var s2: OpaquePointer?
-            let rc1 = sqlite3_prepare_v2(dbp, """
-            DELETE FROM nj_dirty
-            WHERE rowid IN (
-                SELECT rowid FROM nj_dirty
-                ORDER BY updated_at_ms DESC
-                LIMIT -1 OFFSET ?
-            );
-            """, -1, &s2, nil)
-            if rc1 == SQLITE_OK, let s2 {
-                defer { sqlite3_finalize(s2) }
-                sqlite3_bind_int(s2, 1, Int32(maxRows))
-                _ = sqlite3_step(s2)
-            }
-        }
-    }
+//    func housekeepDirty(maxKeepMs: Int64, maxRows: Int) {
+//        let now = Int64(Date().timeIntervalSince1970 * 1000)
+//        let cutoff = now - maxKeepMs
+//
+//        db.withDB { dbp in
+//            var s1: OpaquePointer?
+//            let rc0 = sqlite3_prepare_v2(dbp, """
+//            DELETE FROM nj_dirty
+//            WHERE ignore=1 AND updated_at_ms < ?;
+//            """, -1, &s1, nil)
+//            if rc0 == SQLITE_OK, let s1 {
+//                defer { sqlite3_finalize(s1) }
+//                sqlite3_bind_int64(s1, 1, cutoff)
+//                _ = sqlite3_step(s1)
+//            }
+//
+//            var s2: OpaquePointer?
+//            let rc1 = sqlite3_prepare_v2(dbp, """
+//            DELETE FROM nj_dirty
+//            WHERE rowid IN (
+//                SELECT rowid FROM nj_dirty
+//                ORDER BY updated_at_ms DESC
+//                LIMIT -1 OFFSET ?
+//            );
+//            """, -1, &s2, nil)
+//            if rc1 == SQLITE_OK, let s2 {
+//                defer { sqlite3_finalize(s2) }
+//                sqlite3_bind_int(s2, 1, Int32(maxRows))
+//                _ = sqlite3_step(s2)
+//            }
+//        }
+//    }
 
     func takeDirtyBatch(limit: Int) -> [NJDirtyItem] {
 

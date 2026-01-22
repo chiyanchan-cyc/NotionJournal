@@ -330,7 +330,11 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             store.notes.upsertNote(n)
         }
     }
+
     func forceEndEditingAndCommitNow(_ id: UUID) {
+        commitWork[id]?.cancel()
+        commitWork[id] = nil
+
         guard let i = blocks.firstIndex(where: { $0.id == id }) else { return }
         blocks[i].protonHandle.isEditing = false
         markDirty(id)
@@ -338,10 +342,11 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
     }
 
 
+
     func commitBlockNow(_ id: UUID) {
         commitBlockNow(id, force: false)
     }
-
+    
     func commitBlockNow(_ id: UUID, force: Bool = false) {
         guard let store, let noteID else { return }
         guard let i = blocks.firstIndex(where: { $0.id == id }) else { return }
@@ -376,7 +381,7 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             store.notes.saveSingleProtonBlock(
                 blockID: b.blockID,
                 protonJSON: protonJSON,
-                tagJSON: ""
+                tagJSON: b.tagJSON
             )
             b.loadedUpdatedAtMs = DBNoteRepository.nowMs()
             b.isDirty = false
@@ -427,17 +432,16 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         b.protonJSON = protonJSON
         blocks[i].protonJSON = protonJSON
 
+        let tagJSONToSave = tagJSON.isEmpty ? b.tagJSON : tagJSON
+
         store.notes.saveSingleProtonBlock(
             blockID: b.blockID,
             protonJSON: protonJSON,
-            tagJSON: tagJSON
+            tagJSON: tagJSONToSave
         )
 
         b.loadedUpdatedAtMs = DBNoteRepository.nowMs()
         b.isDirty = false
         blocks[i] = b
     }
-
-
-
 }

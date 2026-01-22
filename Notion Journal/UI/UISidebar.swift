@@ -2,7 +2,7 @@
 //  Sidebar.swift
 //  Notion Journal
 //
-//  Created by Mac on 2026/1/6.
+//  Created by ...
 //
 
 import SwiftUI
@@ -23,6 +23,8 @@ struct Sidebar: View {
     @State private var newTabColor = Color.blue
 
     @State private var noteListResetKey = UUID()
+
+    @State private var showCKNoteBlockDebug = false
 
     private var notesInScope: [NJNote] {
         guard
@@ -161,7 +163,14 @@ struct Sidebar: View {
                         addMenu()
                     }
 
-#if DEBUG
+                #if DEBUG
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Button {
+                            showCKNoteBlockDebug = true
+                        } label: {
+                            Image(systemName: "icloud.and.arrow.down")
+                        }
+                    }
                     ToolbarItem(placement: .navigationBarTrailing) {
                         Button {
                             store.showDBDebugPanel = true
@@ -169,7 +178,7 @@ struct Sidebar: View {
                             Image(systemName: "terminal")
                         }
                     }
-#endif
+                #endif
                 }
             }
         }
@@ -233,6 +242,14 @@ struct Sidebar: View {
             }
         }
 
+#if DEBUG
+.sheet(isPresented: $showCKNoteBlockDebug) {
+    NJDebugCKNoteBlockView(
+        recordType: "NJNoteBlock",
+        db: store.db
+    )
+}
+#endif
 #if DEBUG
         .sheet(isPresented: $store.showDBDebugPanel) {
             NJDebugSQLConsole(db: store.db)
