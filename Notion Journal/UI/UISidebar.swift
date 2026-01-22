@@ -1,10 +1,3 @@
-//
-//  Sidebar.swift
-//  Notion Journal
-//
-//  Created by ...
-//
-
 import SwiftUI
 import UIKit
 
@@ -93,16 +86,42 @@ struct Sidebar: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            NotebookTopBar(
-                notebooks: store.notebooks,
-                selectedID: store.selectedNotebookID,
-                onSelect: { nbID in
-                    store.selectNotebook(nbID)
-                    NJLocalBLRunner(db: store.db).run(.deriveBlockTagIndexAndDomainV1)
-                    selectedNoteID = nil
-                    noteListResetKey = UUID()
+            ZStack(alignment: .topTrailing) {
+                NotebookTopBar(
+                    notebooks: store.notebooks,
+                    selectedID: store.selectedNotebookID,
+                    onSelect: { nbID in
+                        store.selectNotebook(nbID)
+                        NJLocalBLRunner(db: store.db).run(.deriveBlockTagIndexAndDomainV1)
+                        selectedNoteID = nil
+                        noteListResetKey = UUID()
+                    }
+                )
+                .padding(.top, 34)
+
+                HStack(spacing: 10) {
+                    Button(action: createNote) { Image(systemName: "plus") }
+                        .disabled(store.selectedTabID == nil || store.selectedNotebookID == nil)
+
+                    addMenu()
+
+            #if DEBUG
+                    Button {
+                        showCKNoteBlockDebug = true
+                    } label: {
+                        Image(systemName: "icloud.and.arrow.down")
+                    }
+
+                    Button {
+                        store.showDBDebugPanel = true
+                    } label: {
+                        Image(systemName: "terminal")
+                    }
+            #endif
                 }
-            )
+                .padding(.trailing, 10)
+                .padding(.top, 8)
+            }
 
             Divider()
 
@@ -154,32 +173,6 @@ struct Sidebar: View {
                     noteListResetKey = UUID()
                 }
                 .listStyle(.sidebar)
-                .toolbar {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button(action: createNote) { Image(systemName: "plus") }
-                            .disabled(store.selectedTabID == nil || store.selectedNotebookID == nil)
-                    }
-                    ToolbarItem(placement: .topBarTrailing) {
-                        addMenu()
-                    }
-
-                #if DEBUG
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        Button {
-                            showCKNoteBlockDebug = true
-                        } label: {
-                            Image(systemName: "icloud.and.arrow.down")
-                        }
-                    }
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        Button {
-                            store.showDBDebugPanel = true
-                        } label: {
-                            Image(systemName: "terminal")
-                        }
-                    }
-                #endif
-                }
             }
         }
         .sheet(isPresented: $showNewNotebook) {
@@ -243,12 +236,12 @@ struct Sidebar: View {
         }
 
 #if DEBUG
-.sheet(isPresented: $showCKNoteBlockDebug) {
-    NJDebugCKNoteBlockView(
-        recordType: "NJNoteBlock",
-        db: store.db
-    )
-}
+        .sheet(isPresented: $showCKNoteBlockDebug) {
+            NJDebugCKNoteBlockView(
+                recordType: "NJNoteBlock",
+                db: store.db
+            )
+        }
 #endif
 #if DEBUG
         .sheet(isPresented: $store.showDBDebugPanel) {
