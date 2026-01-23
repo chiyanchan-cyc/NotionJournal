@@ -18,6 +18,7 @@ struct Sidebar: View {
     @State private var noteListResetKey = UUID()
 
     @State private var showCKNoteBlockDebug = false
+    @State private var showWeeklyReconstructed = false
 
     private var notesInScope: [NJNote] {
         guard
@@ -110,6 +111,12 @@ struct Sidebar: View {
                         showCKNoteBlockDebug = true
                     } label: {
                         Image(systemName: "icloud.and.arrow.down")
+                    }
+
+                    Button {
+                        showWeeklyReconstructed = true
+                    } label: {
+                        Image(systemName: "calendar")
                     }
 
                     Button {
@@ -243,6 +250,17 @@ struct Sidebar: View {
             )
         }
 #endif
+
+#if DEBUG
+        .sheet(isPresented: $showWeeklyReconstructed) {
+            NavigationStack {
+                NJReconstructedNoteView(spec: .weekly())
+                    .environmentObject(store)
+            }
+        }
+#endif
+
+        
 #if DEBUG
         .sheet(isPresented: $store.showDBDebugPanel) {
             NJDebugSQLConsole(db: store.db)

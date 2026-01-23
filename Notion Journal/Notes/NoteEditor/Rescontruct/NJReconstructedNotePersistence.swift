@@ -1,5 +1,14 @@
+//
+//  NJReconstructedNotePersistence.swift
+//  Notion Journal
+//
+//  Created by Mac on 2026/1/23.
+//
+
 import SwiftUI
+import Combine
 import UIKit
+import Proton
 import SQLite3
 
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
@@ -9,6 +18,7 @@ final class NJReconstructedNotePersistence: ObservableObject {
     @Published var tab: String = ""
     @Published var blocks: [NJNoteEditorContainerPersistence.BlockState] = []
     @Published var focusedBlockID: UUID? = nil
+    @Published var blockMainDomainByBlockID: [String: String] = [:]
 
     private var store: AppStore? = nil
     private var commitWork: [UUID: DispatchWorkItem] = [:]
@@ -32,6 +42,76 @@ final class NJReconstructedNotePersistence: ObservableObject {
         self.spec = spec
         self.title = spec.title
         self.tab = spec.tab
+    }
+
+    private func mainDomainKey(_ s: String) -> String {
+        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.isEmpty { return "" }
+        let parts = t.split(separator: ".")
+        if parts.count == 0 { return "" }
+        if parts.first == "zz", parts.count >= 2 {
+            return "\(parts[0]).\(parts[1])"
+        }
+        return String(parts[0])
+    }
+
+    private func pastelColorForMainDomain(_ key: String) -> Color {
+        let baseHue: [String: Double] = [
+            "me": 55,
+            "zz.edu": 330,
+            "zz.adhd": 28
+        ]
+
+        let hueDeg: Double = {
+            if let h = baseHue[key] { return h }
+            let v = abs(key.hashValue) % 360
+            return Double(v)
+        }()
+
+        return Color(hue: hueDeg / 360.0, saturation: 0.30, brightness: 0.97)
+    }
+
+    func rowBackgroundColor(blockID: String) -> Color? {
+        guard let key = blockMainDomainByBlockID[blockID], !key.isEmpty else { return nil }
+        return pastelColorForMainDomain(key).opacity(0.22)
+    }
+
+    private func dbLoadNoteDomainForBlockID(_ blockID: String) -> String {
+        guard let store else { return "" }
+        return store.notes.db.withDB { dbp in
+            let candidates = [
+                "tab_domain",
+                "domain",
+                "domain_tag"
+            ]
+
+            for col in candidates {
+                var stmt: OpaquePointer?
+                let sql = """
+                SELECT n.\(col)
+                FROM nj_note n
+                JOIN nj_note_block nb
+                  ON nb.note_id = n.note_id
+                WHERE nb.block_id = ? COLLATE NOCASE
+                  AND (n.deleted IS NULL OR n.deleted = 0)
+                ORDER BY n.updated_at_ms DESC
+                LIMIT 1;
+                """
+                let rc0 = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
+                if rc0 != SQLITE_OK { continue }
+                defer { sqlite3_finalize(stmt) }
+
+                sqlite3_bind_text(stmt, 1, blockID, -1, SQLITE_TRANSIENT)
+                if sqlite3_step(stmt) == SQLITE_ROW {
+                    if let c = sqlite3_column_text(stmt, 0) {
+                        let s = String(cString: c).trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !s.isEmpty { return s }
+                    }
+                }
+            }
+
+            return ""
+        }
     }
 
     private func dbLoadBlockTagJSON(_ blockID: String) -> String {
@@ -145,47 +225,161 @@ final class NJReconstructedNotePersistence: ObservableObject {
         }
     }
 
-    private func dbLoadRows() -> [Row] {
+    private func dbExtractProtonJSONFromPayload(_ payload: String) -> String? {
+        guard
+            let data = payload.data(using: .utf8),
+            let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let sections = root["sections"] as? [String: Any],
+            let proton1 = sections["proton1"] as? [String: Any],
+            let dataNode = proton1["data"] as? [String: Any],
+            let pj = dataNode["proton_json"] as? String
+        else { return nil }
+        return pj
+    }
+
+    private func dbLoadProtonJSONAny(_ blockID: String) -> String {
+        guard let store else { return "" }
+        return store.notes.db.withDB { dbp in
+            let candidates = [
+                "proton_json",
+                "protonJSON",
+                "proton_json_str",
+                "proton_json_text",
+                "payload_json",
+                "payload_json_str",
+                "payload",
+                "payload_str",
+                "payload_text",
+                "rtf_payload",
+                "content_json",
+                "content"
+            ]
+
+            for col in candidates {
+                var stmt: OpaquePointer?
+                let sql = "SELECT \(col) FROM nj_block WHERE block_id = ? LIMIT 1;"
+                let rc0 = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
+                if rc0 != SQLITE_OK { continue }
+                defer { sqlite3_finalize(stmt) }
+
+                sqlite3_bind_text(stmt, 1, blockID, -1, SQLITE_TRANSIENT)
+                if sqlite3_step(stmt) != SQLITE_ROW { continue }
+
+                guard let c = sqlite3_column_text(stmt, 0) else { continue }
+                let s = String(cString: c)
+                if s.isEmpty { continue }
+
+                if s.first == "{" {
+                    if let extracted = dbExtractProtonJSONFromPayload(s) {
+                        return extracted
+                    }
+                }
+
+                return s
+            }
+
+            let msg = String(cString: sqlite3_errmsg(dbp))
+            print("NJ_RECON PROTON_NOT_FOUND block_id=\(blockID) msg=\(msg)")
+            return ""
+        }
+    }
+
+    private func dbLoadCreatedAtMs(_ blockID: String) -> Int64 {
+        guard let store else { return 0 }
+        return store.notes.db.withDB { dbp in
+            var out: Int64 = 0
+            var stmt: OpaquePointer?
+            let sql = "SELECT created_at_ms FROM nj_block WHERE block_id = ? LIMIT 1;"
+            let rc0 = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
+            if rc0 != SQLITE_OK {
+                let msg = String(cString: sqlite3_errmsg(dbp))
+                print("NJ_RECON CREATED_PREP_FAIL rc=\(rc0) msg=\(msg)")
+                return 0
+            }
+            defer { sqlite3_finalize(stmt) }
+
+            sqlite3_bind_text(stmt, 1, blockID, -1, SQLITE_TRANSIENT)
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                out = sqlite3_column_int64(stmt, 0)
+            }
+            return out
+        }
+    }
+
+    private func dbLoadBlockIDsBySpec() -> [String] {
         guard let store else { return [] }
         return store.notes.db.withDB { dbp in
-            var out: [Row] = []
+            var out: [String] = []
             var stmt: OpaquePointer?
 
             let (whereSQL, binder) = sqlWhereForSpec()
-
             let orderSQL = spec.newestFirst ? "DESC" : "ASC"
+
+            let timeExpr: String = {
+                switch spec.timeField {
+                case .blockCreatedAtMs: return "b.created_at_ms"
+                case .tagCreatedAtMs: return "t.created_at_ms"
+                }
+            }()
+
             let sql = """
-            SELECT b.block_id, b.proton_json, b.created_at_ms
-            FROM nj_block b
-            JOIN nj_block_tag t
-              ON t.block_id = b.block_id COLLATE NOCASE
+            SELECT t.block_id
+            FROM nj_block_tag t
+            LEFT JOIN nj_block b
+              ON b.block_id = t.block_id COLLATE NOCASE
             WHERE \(whereSQL)
-            GROUP BY b.block_id
-            ORDER BY b.created_at_ms \(orderSQL)
+            GROUP BY t.block_id
+            ORDER BY \(timeExpr) \(orderSQL)
             LIMIT ?;
             """
 
-            if sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) != SQLITE_OK { return [] }
+            let rc0 = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
+            if rc0 != SQLITE_OK {
+                let msg = String(cString: sqlite3_errmsg(dbp))
+                print("NJ_RECON IDS_PREP_FAIL rc=\(rc0) msg=\(msg)")
+                return []
+            }
             defer { sqlite3_finalize(stmt) }
 
             binder(stmt)
 
-            sqlite3_bind_int(stmt, sqlite3_bind_parameter_count(stmt), Int32(max(1, spec.limit)))
+            let n = sqlite3_bind_parameter_count(stmt)
+            sqlite3_bind_int(stmt, n, Int32(max(1, spec.limit)))
 
             while sqlite3_step(stmt) == SQLITE_ROW {
-                let blockID = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
-                let protonJSON = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
-                let createdAtMs = sqlite3_column_int64(stmt, 2)
-                if !blockID.isEmpty {
-                    out.append(Row(blockID: blockID, protonJSON: protonJSON, createdAtMs: createdAtMs))
+                if let c = sqlite3_column_text(stmt, 0) {
+                    let s = String(cString: c).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !s.isEmpty { out.append(s) }
                 }
+            }
+
+            if out.isEmpty {
+                print("NJ_RECON IDS_EMPTY spec=\(spec.id)")
             }
 
             return out
         }
     }
 
+    private func dbLoadRows() -> [Row] {
+        let ids = dbLoadBlockIDsBySpec()
+        if ids.isEmpty { return [] }
+
+        var out: [Row] = []
+        out.reserveCapacity(ids.count)
+
+        for bid in ids {
+            let createdAtMs = dbLoadCreatedAtMs(bid)
+            let protonJSON = dbLoadProtonJSONAny(bid)
+            out.append(Row(blockID: bid, protonJSON: protonJSON, createdAtMs: createdAtMs))
+        }
+
+        return out
+    }
+
     func reload(makeHandle: @escaping () -> NJProtonEditorHandle) {
+        blockMainDomainByBlockID = [:]
+
         let rows = dbLoadRows()
         if rows.isEmpty {
             blocks = []
@@ -199,6 +393,12 @@ final class NJReconstructedNotePersistence: ObservableObject {
         var ok: Double = 1000
 
         for r in rows {
+            let noteDomain = dbLoadNoteDomainForBlockID(r.blockID)
+            let mainKey = mainDomainKey(noteDomain)
+            if !mainKey.isEmpty {
+                blockMainDomainByBlockID[r.blockID] = mainKey
+            }
+
             let id = UUID()
             let h = makeHandle()
             h.ownerBlockUUID = id
