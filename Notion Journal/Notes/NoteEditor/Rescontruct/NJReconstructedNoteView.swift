@@ -36,6 +36,9 @@ struct NJReconstructedNoteView: View {
         .toolbar { toolbar() }
         .task { onLoadOnce() }
         .onDisappear { forceCommitFocusedIfAny() }
+        // Add these lines to allow it to resize/popup on iPadOS
+        .presentationDetents([.height(600), .large])
+        .presentationDragIndicator(.visible)
     }
 
     private func header() -> some View {

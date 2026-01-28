@@ -406,6 +406,10 @@
 				DEVELOPMENT_TEAM = 5LZ6X4HA3F;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Notion-Journal-Info.plist";
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Used to log approximate location in the background for geotag backup.";
+				INFOPLIST_KEY_NSLocationAlwaysUsageDescription = "Used to record approximate location for photo/video geotag backup.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Used to record approximate location for photo/video geotag backup.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -441,6 +445,10 @@
 				DEVELOPMENT_TEAM = 5LZ6X4HA3F;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Notion-Journal-Info.plist";
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Used to log approximate location in the background for geotag backup.";
+				INFOPLIST_KEY_NSLocationAlwaysUsageDescription = "Used to record approximate location for photo/video geotag backup.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Used to record approximate location for photo/video geotag backup.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

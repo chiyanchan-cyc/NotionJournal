@@ -160,10 +160,32 @@ final class NJReconstructedNotePersistence: ObservableObject {
         let protonJSON: String
         let createdAtMs: Int64
     }
+    
+    private func currentWeekRangeMs() -> (start: Int64, end: Int64) {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "Asia/Hong_Kong") ?? .current
+        let now = Date()
+        let comps = cal.dateComponents([.yearForWeekOfYear, .weekOfYear], from: now)
+        let startDate = cal.date(from: comps) ?? now
+        let endDate = cal.date(byAdding: .day, value: 7, to: startDate) ?? now
+        return (Int64(startDate.timeIntervalSince1970 * 1000), Int64(endDate.timeIntervalSince1970 * 1000) - 1)
+    }
+
 
     private func sqlWhereForSpec() -> (whereSQL: String, binder: (OpaquePointer?) -> Void) {
-        let startMs = spec.startMs
-        let endMs = spec.endMs
+        var startMs = spec.startMs
+        var endMs = spec.endMs
+
+        if startMs == nil && endMs == nil {
+            if case .exact(let tagRaw) = spec.match {
+                let t = tagRaw.lowercased()
+                if t == "#weekly" || t == "weekly" {
+                    let r = currentWeekRangeMs()
+                    startMs = r.start
+                    endMs = r.end
+                }
+            }
+        }
 
         let timeExpr: String = {
             switch spec.timeField {

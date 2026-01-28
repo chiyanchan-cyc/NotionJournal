@@ -1,14 +1,8 @@
-//
-//  NJGPSLogger.swift
-//  Notion Journal
-//
-//  Created by Mac on 2026/1/28.
-//
-
-
 import Foundation
+import Combine
 import CoreLocation
 import UIKit
+import MapKit
 
 final class NJGPSLogger: NSObject, ObservableObject, CLLocationManagerDelegate {
     static let shared = NJGPSLogger()
@@ -23,19 +17,22 @@ final class NJGPSLogger: NSObject, ObservableObject, CLLocationManagerDelegate {
     private let mgr = CLLocationManager()
     private let defaultsKey = "NJGPSLogger.enabled.v1"
 
-    private let containerID = "iCloud.com.CYC.HomeLLMJournal"
+    private let containerID = "iCloud.com.CYC.NotionJournal"
     private let lockRel = "GPS/gps_logger_lock.json"
     private let lockTTLms: Int64 = 36 * 60 * 60 * 1000
+
+    private var didStartContinuous = false
 
     private override init() {
         self.enabled = UserDefaults.standard.bool(forKey: defaultsKey)
         super.init()
         mgr.delegate = self
         mgr.desiredAccuracy = kCLLocationAccuracyHundredMeters
-        mgr.distanceFilter = kCLDistanceFilterNone
+        mgr.distanceFilter = 50
         mgr.pausesLocationUpdatesAutomatically = true
-        mgr.allowsBackgroundLocationUpdates = true
-        auth = CLLocationManager.authorizationStatus()
+        mgr.activityType = .fitness
+        mgr.showsBackgroundLocationIndicator = false
+        auth = mgr.authorizationStatus
         Task { @MainActor in
             await refreshAuthority()
             if enabled { startIfPossible() }
@@ -53,6 +50,10 @@ final class NJGPSLogger: NSObject, ObservableObject, CLLocationManagerDelegate {
         mgr.requestAlwaysAuthorization()
     }
 
+    func requestWhenInUse() {
+        mgr.requestWhenInUseAuthorization()
+    }
+
     func refreshAuthorityUI() {
         Task { @MainActor in
             await refreshAuthority()
@@ -61,7 +62,7 @@ final class NJGPSLogger: NSObject, ObservableObject, CLLocationManagerDelegate {
     }
 
     private func startIfPossible() {
-        auth = CLLocationManager.authorizationStatus()
+        auth = mgr.authorizationStatus
         guard enabled else { return }
         guard auth == .authorizedAlways || auth == .authorizedWhenInUse else { return }
         Task { @MainActor in
@@ -76,13 +77,38 @@ final class NJGPSLogger: NSObject, ObservableObject, CLLocationManagerDelegate {
 
     private func startMonitors() {
         stopMonitors()
+
+        if mgr.authorizationStatus == .authorizedAlways {
+            mgr.allowsBackgroundLocationUpdates = true
+        } else {
+            mgr.allowsBackgroundLocationUpdates = false
+        }
+
         mgr.startMonitoringSignificantLocationChanges()
         mgr.startMonitoringVisits()
+
+        mgr.desiredAccuracy = kCLLocationAccuracyHundredMeters
+        mgr.distanceFilter = 25
+        mgr.activityType = .fitness
+        mgr.pausesLocationUpdatesAutomatically = true
+
+        mgr.startUpdatingLocation()
+        didStartContinuous = true
+
+        if CLLocationManager.deferredLocationUpdatesAvailable() {
+            mgr.allowDeferredLocationUpdates(untilTraveled: 500, timeout: 300)
+        }
     }
 
     private func stopMonitors() {
         mgr.stopMonitoringSignificantLocationChanges()
         mgr.stopMonitoringVisits()
+
+        if didStartContinuous {
+            mgr.disallowDeferredLocationUpdates()
+            mgr.stopUpdatingLocation()
+            didStartContinuous = false
+        }
     }
 
     private func stopAll() {
@@ -225,28 +251,35 @@ final class NJGPSLogger: NSObject, ObservableObject, CLLocationManagerDelegate {
     }
 
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        auth = CLLocationManager.authorizationStatus()
+        auth = mgr.authorizationStatus
         if enabled { startIfPossible() }
     }
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard enabled, isWriter else { return }
         guard let loc = locations.last else { return }
+        let acc = loc.horizontalAccuracy
+        if acc < 0 { return }
+        if acc > 300 { return }
+
         appendLine(
             encode(
                 tsMs: Int64(loc.timestamp.timeIntervalSince1970 * 1000.0),
                 lat: loc.coordinate.latitude,
                 lon: loc.coordinate.longitude,
-                hacc: loc.horizontalAccuracy,
-                src: "sig_change"
+                hacc: acc,
+                src: "loc"
             )
         )
+
+        if CLLocationManager.deferredLocationUpdatesAvailable() {
+            mgr.allowDeferredLocationUpdates(untilTraveled: 500, timeout: 300)
+        }
     }
 
     func locationManager(_ manager: CLLocationManager, didVisit visit: CLVisit) {
         guard enabled, isWriter else { return }
         guard visit.coordinate.latitude != 0 || visit.coordinate.longitude != 0 else { return }
-
         let ts = (visit.arrivalDate == Date.distantPast) ? visit.departureDate : visit.arrivalDate
         appendLine(
             encode(
@@ -261,5 +294,14 @@ final class NJGPSLogger: NSObject, ObservableObject, CLLocationManagerDelegate {
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         lastError = String(describing: error)
+    }
+}
+
+extension NJGPSLogger {
+    func docsRootForViewer() -> URL? {
+        if let u = FileManager.default.url(forUbiquityContainerIdentifier: "iCloud.com.CYC.NotionJournal") {
+            return u.appendingPathComponent("Documents", isDirectory: true)
+        }
+        return FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
     }
 }

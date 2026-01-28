@@ -24,7 +24,7 @@ struct NJGPSLogViewerPage: View {
         }
         .navigationTitle("GPS Tracks")
         .onAppear { loadSelectedDay() }
-        .onChange(of: selectedDate) { _ in loadSelectedDay() }
+        .onChange(of: selectedDate) { _, _ in loadSelectedDay() }
     }
 
     private func loadSelectedDay() {
@@ -42,10 +42,32 @@ struct NJGPSLogViewerPage: View {
         }
 
         let url = root.appendingPathComponent(rel)
+        let fm = FileManager.default
+
+        var tried: [String] = []
+        tried.append("rel=\(rel)")
+        tried.append("url=\(url.path)")
+
+        if fm.fileExists(atPath: url.path) == false {
+            let isUbiq = (try? url.resourceValues(forKeys: [.isUbiquitousItemKey]).isUbiquitousItem) ?? false
+            if isUbiq {
+                _ = try? fm.startDownloadingUbiquitousItem(at: url)
+                status = "Downloading iCloud file…\n" + tried.joined(separator: "\n")
+                points = []
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                    loadSelectedDay()
+                }
+                return
+            } else {
+                status = "No file\n" + tried.joined(separator: "\n")
+                points = []
+                return
+            }
+        }
 
         guard let data = try? Data(contentsOf: url),
               let s = String(data: data, encoding: .utf8) else {
-            status = "No file: \(rel)"
+            status = "Failed to read file\n" + tried.joined(separator: "\n")
             points = []
             return
         }
@@ -57,8 +79,16 @@ struct NJGPSLogViewerPage: View {
             }
         }
 
-        points = dedup(out)
-        status = "Loaded \(points.count) points"
+        let dd = dedup(out)
+        points = dd
+
+        if dd.count >= 2 {
+            status = "Loaded \(dd.count) points (polyline)\n" + tried.joined(separator: "\n")
+        } else if dd.count == 1 {
+            status = "Loaded 1 point (pin only)\n" + tried.joined(separator: "\n")
+        } else {
+            status = "Loaded 0 points\n" + tried.joined(separator: "\n")
+        }
     }
 
     private func parseLine(_ line: String) -> CLLocationCoordinate2D? {
@@ -94,23 +124,35 @@ struct NJMapPolylineView: UIViewRepresentable {
 
     func updateUIView(_ uiView: MKMapView, context: Context) {
         uiView.removeOverlays(uiView.overlays)
+        uiView.removeAnnotations(uiView.annotations)
 
-        guard points.count >= 2 else {
-            if let p = points.first {
-                uiView.setRegion(
-                    MKCoordinateRegion(center: p, latitudinalMeters: 1500, longitudinalMeters: 1500),
-                    animated: true
-                )
-            }
+        if points.isEmpty { return }
+
+        if points.count == 1 {
+            let p = points[0]
+            let ann = MKPointAnnotation()
+            ann.coordinate = p
+            uiView.addAnnotation(ann)
+            uiView.setRegion(
+                MKCoordinateRegion(center: p, latitudinalMeters: 1500, longitudinalMeters: 1500),
+                animated: true
+            )
             return
         }
+
+        let start = MKPointAnnotation()
+        start.coordinate = points.first!
+        uiView.addAnnotation(start)
+
+        let end = MKPointAnnotation()
+        end.coordinate = points.last!
+        uiView.addAnnotation(end)
 
         let poly = MKPolyline(coordinates: points, count: points.count)
         uiView.addOverlay(poly)
 
-        let rect = poly.boundingMapRect
         uiView.setVisibleMapRect(
-            rect,
+            poly.boundingMapRect,
             edgePadding: UIEdgeInsets(top: 40, left: 20, bottom: 40, right: 20),
             animated: true
         )
@@ -120,9 +162,15 @@ struct NJMapPolylineView: UIViewRepresentable {
 
     final class Coordinator: NSObject, MKMapViewDelegate {
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
-            let r = MKPolylineRenderer(overlay: overlay)
-            r.lineWidth = 4
-            return r
+            if let poly = overlay as? MKPolyline {
+                let r = MKPolylineRenderer(polyline: poly)
+                r.strokeColor = UIColor.systemBlue
+                r.lineWidth = 5
+                r.lineJoin = .round
+                r.lineCap = .round
+                return r
+            }
+            return MKOverlayRenderer(overlay: overlay)
         }
     }
 }

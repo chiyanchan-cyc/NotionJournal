@@ -1,30 +1,39 @@
-//
-//  NJGPSLoggerPage.swift
-//  Notion Journal
-//
-//  Created by Mac on 2026/1/28.
-//
-
-
 import SwiftUI
 import CoreLocation
+import UIKit
 
 struct NJGPSLoggerPage: View {
     @ObservedObject private var logger = NJGPSLogger.shared
 
     var body: some View {
         Form {
+            Section("Permission") {
+                Button("Request While Using") {
+                    NJGPSLogger.shared.requestWhenInUse()
+                }
+
+                Button("Request Always") {
+                    NJGPSLogger.shared.requestAlways()
+                }
+
+                Button("Open Settings") {
+                    if let u = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(u)
+                    }
+                }
+            }
+
             Section("GPS Logger") {
-                Toggle(isOn: Binding(get: { logger.enabled }, set: { logger.setEnabled($0) })) {
+                Toggle(isOn: Binding(get: { logger.enabled }, set: { NJGPSLogger.shared.setEnabled($0) })) {
                     Text("Enable on this device")
                 }
 
-                Button("Request Always Location") {
-                    logger.requestAlways()
+                Button("Refresh Authority") {
+                    NJGPSLogger.shared.refreshAuthorityUI()
                 }
 
-                Button("Refresh Authority") {
-                    logger.refreshAuthorityUI()
+                NavigationLink("View Tracks") {
+                    NJGPSLogViewerPage()
                 }
             }
 
@@ -40,12 +49,6 @@ struct NJGPSLoggerPage: View {
                 if !logger.lastError.isEmpty {
                     Text(logger.lastError).font(.footnote).foregroundStyle(.secondary)
                 }
-            }
-
-            Section("Log") {
-                Text("iCloud: Documents/GPS/YYYY/MM/YYYY-MM-DD.ndjson")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
             }
         }
         .navigationTitle("GPS Logger")

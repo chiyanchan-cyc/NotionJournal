@@ -19,6 +19,8 @@ struct Sidebar: View {
 
     @State private var showCKNoteBlockDebug = false
     @State private var showWeeklyReconstructed = false
+    @State private var showManualReconstructed = false // <-- ADD THIS
+    @State private var showGPSLogger = false
 
     private var notesInScope: [NJNote] {
         guard
@@ -106,12 +108,16 @@ struct Sidebar: View {
 
                     addMenu()
 
-            #if DEBUG
                     Button {
-                        showCKNoteBlockDebug = true
+                        showGPSLogger = true
                     } label: {
-                        Image(systemName: "icloud.and.arrow.down")
+                        Image(systemName: "location.circle")
                     }
+//                    Button {
+//                        showCKNoteBlockDebug = true
+//                    } label: {
+//                        Image(systemName: "icloud.and.arrow.down")
+//                    }
 
                     Button {
                         showWeeklyReconstructed = true
@@ -120,11 +126,16 @@ struct Sidebar: View {
                     }
 
                     Button {
+                        showManualReconstructed = true
+                    } label: {
+                        Image(systemName: "line.3.horizontal.decrease.circle")
+                    }
+                    
+                    Button {
                         store.showDBDebugPanel = true
                     } label: {
                         Image(systemName: "terminal")
                     }
-            #endif
                 }
                 .padding(.trailing, 10)
                 .padding(.top, 8)
@@ -242,30 +253,37 @@ struct Sidebar: View {
             }
         }
 
-#if DEBUG
-        .sheet(isPresented: $showCKNoteBlockDebug) {
-            NJDebugCKNoteBlockView(
-                recordType: "NJNoteBlock",
-                db: store.db
-            )
-        }
-#endif
+//#if DEBUG
+//        .sheet(isPresented: $showCKNoteBlockDebug) {
+//            NJDebugCKNoteBlockView(
+//                recordType: "NJNoteBlock",
+//                db: store.db
+//            )
+//        }
+//#endif
 
-#if DEBUG
+        .sheet(isPresented: $showGPSLogger) {
+            NavigationStack {
+                NJGPSLoggerPage()
+            }
+        }
+
         .sheet(isPresented: $showWeeklyReconstructed) {
             NavigationStack {
                 NJReconstructedNoteView(spec: .weekly())
                     .environmentObject(store)
             }
         }
-#endif
 
-        
-#if DEBUG
+        .sheet(isPresented: $showManualReconstructed) {
+            NavigationStack {
+                NJReconstructedManualView() // Initialize the new manual view
+                    .environmentObject(store)
+            }
+        }
         .sheet(isPresented: $store.showDBDebugPanel) {
             NJDebugSQLConsole(db: store.db)
         }
-#endif
     }
 }
 

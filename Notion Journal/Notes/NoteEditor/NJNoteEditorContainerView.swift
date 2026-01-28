@@ -27,6 +27,8 @@ struct NJNoteEditorContainerView: View {
     @State var lastSplitSig: (UUID, Int, Int, Int)? = nil
     @State var lastSplitSigAtMs: Int64 = 0
     @State var blockBus = NJBlockEventBus()
+    @State private var showClipboardInbox = false
+
 
     var body: some View {
         VStack(spacing: 0) {
@@ -129,6 +131,16 @@ struct NJNoteEditorContainerView: View {
         }
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
+                
+                Button {
+                    if let id = persistence.focusedBlockID {
+                        persistence.forceEndEditingAndCommitNow(id)
+                    }
+                    showClipboardInbox = true
+                } label: {
+                    Image(systemName: "doc.on.clipboard")
+                }
+
                 Button {
                     editMode = (editMode == .active) ? .inactive : .active
                 } label: {
@@ -154,6 +166,17 @@ struct NJNoteEditorContainerView: View {
                 }
             }
         }
+        
+        .sheet(isPresented: $showClipboardInbox) {
+            NJClipboardInboxView(
+                noteID: noteID.raw,
+                onImported: {
+                    persistence.reload(makeHandle: makeWiredHandle)
+                }
+            )
+            .environmentObject(store)
+        }
+
         .task {
             if loaded { return }
             loaded = true

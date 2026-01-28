@@ -20,15 +20,15 @@ struct RootView: View {
                     if let id = selectedNoteID {
                         NJNoteEditorContainerView(noteID: id)
                             .id(String(describing: id))
-                            .toolbar {
-                                ToolbarItem(placement: .topBarTrailing) {
-                                    Button {
-                                        showProtonListLab = true
-                                    } label: {
-                                        Image(systemName: "ladybug")
-                                    }
-                                }
-                            }
+//                            .toolbar {
+//                                ToolbarItem(placement: .topBarTrailing) {
+//                                    Button {
+//                                        showProtonListLab = true
+//                                    } label: {
+//                                        Image(systemName: "ladybug")
+//                                    }
+//                                }
+//                            }
                             .sheet(isPresented: $showProtonListLab) {
 //                                NavigationStack {
 //                                    NJProtonListLabView()

@@ -133,15 +133,19 @@ final class NJProtonListFormattingProvider: EditorListFormattingProvider {
             return .bullet
         }()
 
+        let markerAttrs: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: UIColor.label
+        ]
+
         switch kind {
         case .bullet:
-            return .string(NSAttributedString(string: "•", attributes: [.font: font]))
+            return .string(NSAttributedString(string: "•", attributes: markerAttrs))
         case .number:
-            return .string(NSAttributedString(string: "\(index + 1).", attributes: [.font: font]))
+            return .string(NSAttributedString(string: "\(index + 1).", attributes: markerAttrs))
         }
     }
 }
-
 
 final class NJProtonRoundTripDebugVC: UIViewController {
     private let jsonView = UITextView()
@@ -1664,15 +1668,30 @@ struct NJProtonEditorView: UIViewRepresentable {
 
     private func normalizeTypingAttributesIfNeeded(_ editor: EditorView) {
         guard let tv = findTextView(in: editor) else { return }
+
         var ta = tv.typingAttributes
-        if ta[.font] == nil {
-            ta[.font] = UIFont.systemFont(ofSize: 17)
+
+        let baseFont = UIFont.systemFont(ofSize: 17)
+
+        if let f = ta[.font] as? UIFont {
+            let fd = f.fontDescriptor
+            let traits = fd.symbolicTraits.subtracting([.traitBold, .traitItalic])
+            if let cleanFD = fd.withSymbolicTraits(traits) {
+                ta[.font] = UIFont(descriptor: cleanFD, size: f.pointSize)
+            } else {
+                ta[.font] = baseFont
+            }
+        } else {
+            ta[.font] = baseFont
         }
+
         if ta[.foregroundColor] == nil {
             ta[.foregroundColor] = UIColor.label
         }
+
         tv.typingAttributes = ta
     }
+
 
     final class Coordinator: NSObject, EditorViewDelegate, UITextViewDelegate {
         @Binding private var measuredHeight: CGFloat
