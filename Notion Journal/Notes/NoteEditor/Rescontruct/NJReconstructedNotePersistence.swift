@@ -528,8 +528,17 @@ final class NJReconstructedNotePersistence: ObservableObject {
         }
 
         let liveAttr = editor.attributedText
-        let tagRes = NJTagExtraction.extract(from: liveAttr)
-        let tags = tagRes?.tags ?? []
+
+        let existingTags: [String] = {
+            guard !b.tagJSON.isEmpty,
+                  let data = b.tagJSON.data(using: .utf8),
+                  let arr = try? JSONSerialization.jsonObject(with: data) as? [String]
+            else { return [] }
+            return arr
+        }()
+
+        let tagRes = NJTagExtraction.extract(from: liveAttr, existingTags: existingTags)
+        let mergedTags = tagRes?.tags ?? existingTags
 
         if let tagRes {
             NotificationCenter.default.post(
@@ -542,17 +551,17 @@ final class NJReconstructedNotePersistence: ObservableObject {
             )
         }
 
-        let tagJSON: String = {
-            guard !tags.isEmpty,
-                  let data = try? JSONSerialization.data(withJSONObject: tags),
+        let mergedTagJSON: String = {
+            guard !mergedTags.isEmpty,
+                  let data = try? JSONSerialization.data(withJSONObject: mergedTags),
                   let s = String(data: data, encoding: .utf8)
             else { return "" }
             return s
         }()
 
-        if !tagJSON.isEmpty {
-            b.tagJSON = tagJSON
-            blocks[i].tagJSON = tagJSON
+        if !mergedTagJSON.isEmpty {
+            b.tagJSON = mergedTagJSON
+            blocks[i].tagJSON = mergedTagJSON
         }
 
         let originalAttr = editor.attributedText
@@ -570,7 +579,7 @@ final class NJReconstructedNotePersistence: ObservableObject {
         b.protonJSON = protonJSON
         blocks[i].protonJSON = protonJSON
 
-        let tagJSONToSave = tagJSON.isEmpty ? b.tagJSON : tagJSON
+        let tagJSONToSave = b.tagJSON
 
         store.notes.saveSingleProtonBlock(
             blockID: b.blockID,
@@ -581,5 +590,6 @@ final class NJReconstructedNotePersistence: ObservableObject {
         b.loadedUpdatedAtMs = DBNoteRepository.nowMs()
         b.isDirty = false
         blocks[i] = b
+
     }
 }

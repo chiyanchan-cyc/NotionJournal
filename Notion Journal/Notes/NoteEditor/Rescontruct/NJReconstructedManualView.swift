@@ -6,6 +6,9 @@
 import SwiftUI
 import UIKit
 import Proton
+import os
+
+private let NJShortcutLog = Logger(subsystem: "NotionJournal", category: "Shortcuts")
 
 struct NJReconstructedManualView: View {
     @EnvironmentObject var store: AppStore
@@ -41,6 +44,15 @@ struct NJReconstructedManualView: View {
 
             // 2. The List (Reused from NJReconstructedNoteView)
             list()
+        }
+        .overlay(NJHiddenShortcuts(getHandle: { focusedHandle() }))
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if let h = focusedHandle() {
+                NJProtonFloatingFormatBar(handle: h)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .background(.ultraThinMaterial)
+            }
         }
         .toolbar { toolbar() }
         .onAppear {
@@ -206,4 +218,98 @@ struct NJReconstructedManualView: View {
             Button { performSearch() } label: { Image(systemName: "arrow.clockwise") }
         }
     }
+    
+    private func focusedHandle() -> NJProtonEditorHandle? {
+        guard let id = persistence.focusedBlockID else { return nil }
+        return persistence.blocks.first(where: { $0.id == id })?.protonHandle
+    }
+
+}
+
+private struct NJProtonFloatingFormatBar: View {
+    let handle: NJProtonEditorHandle
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                Button { handle.decreaseFont(); handle.snapshot() } label: { Image(systemName: "textformat.size.smaller") }
+                Button { handle.increaseFont(); handle.snapshot() } label: { Image(systemName: "textformat.size.larger") }
+
+                Divider().frame(height: 18)
+
+                Button { handle.toggleBold(); handle.snapshot() } label: { Image(systemName: "bold") }
+                Button { handle.toggleItalic(); handle.snapshot() } label: { Image(systemName: "italic") }
+                Button { handle.toggleUnderline(); handle.snapshot() } label: { Image(systemName: "underline") }
+                Button { handle.toggleStrike(); handle.snapshot() } label: { Image(systemName: "strikethrough") }
+
+                Divider().frame(height: 18)
+
+                Button { handle.toggleNumber(); handle.snapshot() } label: { Image(systemName: "list.number") }
+                Button { handle.toggleBullet(); handle.snapshot() } label: { Image(systemName: "list.bullet") }
+
+                Divider().frame(height: 18)
+
+                Button { handle.outdent(); handle.snapshot() } label: { Image(systemName: "decrease.indent") }
+                Button { handle.indent(); handle.snapshot() } label: { Image(systemName: "increase.indent") }
+            }
+            .buttonStyle(.borderless)
+            .labelStyle(.iconOnly)
+            .font(.system(size: 16, weight: .semibold))
+            .padding(.horizontal, 8)
+        }
+    }
+}
+
+private struct NJHiddenShortcuts: View {
+    let getHandle: () -> NJProtonEditorHandle?
+
+    var body: some View {
+        Group {
+            Button("") { fire { $0.toggleBold() } }
+                .keyboardShortcut("b", modifiers: .command)
+
+            Button("") { fire { $0.toggleItalic() } }
+                .keyboardShortcut("i", modifiers: .command)
+
+            Button("") { fire { $0.toggleUnderline() } }
+                .keyboardShortcut("u", modifiers: .command)
+
+            Button("") { fire { $0.toggleStrike() } }
+                .keyboardShortcut("x", modifiers: [.command, .shift])
+
+            Button("") { fire { $0.toggleBullet() } }
+                .keyboardShortcut("7", modifiers: .command)
+
+            Button("") { fire { $0.toggleNumber() } }
+                .keyboardShortcut("8", modifiers: .command)
+
+            Button("") { fire { $0.indent() } }
+                .keyboardShortcut("]", modifiers: .command)
+
+            Button("") { fire { $0.outdent() } }
+                .keyboardShortcut("[", modifiers: .command)
+            Button("") {
+                NJShortcutLog.info("SHORTCUT TEST CMD+K HIT")
+            }
+            .keyboardShortcut("k", modifiers: .command)
+
+        }
+        .opacity(0.001)
+        .frame(width: 1, height: 1)
+        .allowsHitTesting(false)
+    }
+
+    private func fire(_ f: (NJProtonEditorHandle) -> Void) {
+        NJShortcutLog.info("SHORTCUT HIT (SwiftUI layer)")
+
+        guard let h = getHandle() else {
+            NJShortcutLog.error("SHORTCUT: getHandle() returned nil")
+            return
+        }
+
+        NJShortcutLog.info("SHORTCUT: has handle owner=\(String(describing: h.ownerBlockUUID)) editor_nil=\(h.editor == nil) tv_nil=\(h.textView == nil)")
+        f(h)
+        h.snapshot()
+    }
+
 }

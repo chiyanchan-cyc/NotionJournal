@@ -44,30 +44,39 @@ struct NJClipboardInboxView: View {
                     }
                 }
 
-                List(selection: $selectedBlockID) {
+                List {
                     ForEach(rows) { r in
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack(spacing: 8) {
-                                Text(njDate(r.createdAtMs))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                Text(r.website)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
+                        Button {
+                            selectedBlockID = r.id
+                            refreshICloudDiagForSelected()
+                        } label: {
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack(spacing: 8) {
+                                    Text(njDate(r.createdAtMs))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Text(r.website)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                                Text(r.title.isEmpty ? "(untitled)" : r.title)
+                                    .font(.body)
+                                    .lineLimit(2)
                             }
-                            Text(r.title.isEmpty ? "(untitled)" : r.title)
-                                .font(.body)
-                                .lineLimit(2)
+                            .contentShape(Rectangle())
                         }
-                        .contentShape(Rectangle())
-                        .onTapGesture { selectedBlockID = r.id }
+                        .buttonStyle(.plain)
+                        .listRowBackground(
+                            (selectedBlockID == r.id) ? Color.primary.opacity(0.10) : Color.clear
+                        )
                         .simultaneousGesture(
                             TapGesture(count: 2).onEnded {
                                 selectedBlockID = r.id
+                                refreshICloudDiagForSelected()
                                 openPDF(for: r)
                             }
-                            )
+                        )
                     }
                 }
 
@@ -107,6 +116,11 @@ struct NJClipboardInboxView: View {
                     }
                 }
             }
+            
+            .onChange(of: selectedBlockID) { _ in
+                refreshICloudDiagForSelected()
+            }
+
             .onAppear {
                 reload()
                 refreshICloudDiagForSelected()
@@ -176,9 +190,40 @@ struct NJClipboardInboxView: View {
             showPDF = true
             return
         }
-        pdfURL = u
+
+        pdfURL = nil
         showPDF = true
+
+        Task {
+            let ready = await waitForICloudFile(u, maxWaitSeconds: 6.0)
+            await MainActor.run {
+                pdfURL = ready ? u : nil
+            }
+        }
     }
+
+    func waitForICloudFile(_ u: URL, maxWaitSeconds: Double) async -> Bool {
+        let fm = FileManager.default
+
+        try? fm.startDownloadingUbiquitousItem(at: u)
+
+        let deadline = Date().timeIntervalSince1970 + maxWaitSeconds
+
+        while Date().timeIntervalSince1970 < deadline {
+            if fm.fileExists(atPath: u.path) {
+                return true
+            }
+
+            if let st = try? u.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey]).ubiquitousItemDownloadingStatus {
+                if st == .current { return true }
+            }
+
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+
+        return fm.fileExists(atPath: u.path)
+    }
+
 
     func parseClipPayload(_ payload: String) -> (title: String, website: String, pdfPath: String) {
         guard
@@ -186,11 +231,27 @@ struct NJClipboardInboxView: View {
             let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return ("", "", "") }
 
+        if
+            let sections = obj["sections"] as? [String: Any],
+            let clip = sections["clip"] as? [String: Any],
+            let clipData = clip["data"] as? [String: Any]
+        {
+            let title = clipData["title"] as? String ?? ""
+            let website = clipData["website"] as? String ?? ""
+            let pdfPath =
+                (clipData["pdf_path"] as? String)
+                ?? (clipData["PDF_Path"] as? String)
+                ?? ""
+            return (title, website, pdfPath)
+        }
+
         let title = obj["title"] as? String ?? ""
         let website = obj["website"] as? String ?? ""
         let pdfPath = obj["PDF_Path"] as? String ?? ""
         return (title, website, pdfPath)
     }
+
+
 
     func resolveICloudDocumentsPath(_ relative: String) -> URL? {
         var rel = relative
@@ -200,21 +261,16 @@ struct NJClipboardInboxView: View {
         let fm = FileManager.default
 
         if let root = fm.url(forUbiquityContainerIdentifier: "iCloud.com.CYC.NotionJournal") {
-            let u = root.appendingPathComponent(rel)
-            if fm.fileExists(atPath: u.path) { return u }
-            try? fm.startDownloadingUbiquitousItem(at: u)
-            if fm.fileExists(atPath: u.path) { return u }
+            return root.appendingPathComponent(rel)
         }
 
         if let root2 = fm.url(forUbiquityContainerIdentifier: nil) {
-            let u2 = root2.appendingPathComponent(rel)
-            if fm.fileExists(atPath: u2.path) { return u2 }
-            try? fm.startDownloadingUbiquitousItem(at: u2)
-            if fm.fileExists(atPath: u2.path) { return u2 }
+            return root2.appendingPathComponent(rel)
         }
 
         return nil
     }
+
 
     func refreshICloudDiagForSelected() {
         let fm = FileManager.default

@@ -21,6 +21,8 @@ struct Sidebar: View {
     @State private var showWeeklyReconstructed = false
     @State private var showManualReconstructed = false // <-- ADD THIS
     @State private var showGPSLogger = false
+    @State private var showExport = false
+
 
     private var notesInScope: [NJNote] {
         guard
@@ -113,11 +115,6 @@ struct Sidebar: View {
                     } label: {
                         Image(systemName: "location.circle")
                     }
-//                    Button {
-//                        showCKNoteBlockDebug = true
-//                    } label: {
-//                        Image(systemName: "icloud.and.arrow.down")
-//                    }
 
                     Button {
                         showWeeklyReconstructed = true
@@ -136,6 +133,13 @@ struct Sidebar: View {
                     } label: {
                         Image(systemName: "terminal")
                     }
+                    
+                    Button {
+                        showExport = true
+                    } label: {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+
                 }
                 .padding(.trailing, 10)
                 .padding(.top, 8)
@@ -253,19 +257,14 @@ struct Sidebar: View {
             }
         }
 
-//#if DEBUG
-//        .sheet(isPresented: $showCKNoteBlockDebug) {
-//            NJDebugCKNoteBlockView(
-//                recordType: "NJNoteBlock",
-//                db: store.db
-//            )
-//        }
-//#endif
-
         .sheet(isPresented: $showGPSLogger) {
             NavigationStack {
                 NJGPSLoggerPage()
             }
+        }
+        
+        .sheet(isPresented: $showExport) {
+            NJExportView().environmentObject(store)
         }
 
         .sheet(isPresented: $showWeeklyReconstructed) {

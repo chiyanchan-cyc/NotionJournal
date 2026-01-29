@@ -9,48 +9,55 @@ struct NJTagExtractionResult {
 enum NJTagExtraction {
 
     static func extract(from attr: NSAttributedString) -> NJTagExtractionResult? {
-        let s0 = attr.string
-        let normalized = s0
-            .replacingOccurrences(of: "\r\n", with: "\n")
-            .replacingOccurrences(of: "\r", with: "\n")
-            .replacingOccurrences(of: "\u{200B}", with: "")
+        extract(from: attr, existingTags: [])
+    }
 
-        let lines = normalized.components(separatedBy: "\n")
-        guard let idx = lines.firstIndex(where: isValidTagLine) else { return nil }
+    static func extract(from attr: NSAttributedString, existingTags: [String]) -> NJTagExtractionResult? {
+        let s0 = attr.string as NSString
+        let full = NSRange(location: 0, length: s0.length)
 
-        let tags = parseTags(from: lines[idx])
-        if tags.isEmpty { return nil }
+        var foundLine: String? = nil
+        var foundEnclosingRange: NSRange? = nil
 
-        let ns = normalized as NSString
-        var start = 0
-        for _ in 0..<idx {
-            let r = ns.lineRange(for: NSRange(location: start, length: 0))
-            start = r.location + r.length
+        s0.enumerateSubstrings(in: full, options: [.byLines]) { substring, range, enclosingRange, stop in
+            guard var line = substring else { return }
+
+            line = line.replacingOccurrences(of: "\u{200B}", with: "")
+            if line.hasSuffix("\r") { line.removeLast() }
+
+            if isValidTagLine(line) {
+                foundLine = line
+                foundEnclosingRange = enclosingRange
+                stop.pointee = true
+            }
         }
-        let removeRange = ns.lineRange(for: NSRange(location: start, length: 0))
+
+        guard let tagLine = foundLine, let removeRange = foundEnclosingRange else { return nil }
+
+        let incoming = parseTags(from: tagLine)
+        if incoming.isEmpty { return nil }
+
+        let merged = Array(Set(existingTags).union(incoming)).sorted()
 
         let cleanedAttr = NSMutableAttributedString(attributedString: attr)
         if removeRange.location != NSNotFound, removeRange.location + removeRange.length <= cleanedAttr.length {
             cleanedAttr.deleteCharacters(in: removeRange)
         }
 
-        let unique = Array(Set(tags)).sorted()
-        return NJTagExtractionResult(tags: unique, cleaned: cleanedAttr)
+        return NJTagExtractionResult(tags: merged, cleaned: cleanedAttr)
     }
 
-
     private static func isValidTagLine(_ line: String) -> Bool {
-        let l = line.replacingOccurrences(of: "\u{200B}", with: "")
-        if l.hasPrefix(" ") { return false }
-        if l.hasPrefix("\t") { return false }
-        return l.hasPrefix("@tag:")
+        if line.hasPrefix(" ") { return false }
+        if line.hasPrefix("\t") { return false }
+        return line.hasPrefix("@tag:")
     }
 
     private static func parseTags(from line: String) -> [String] {
         let raw = line.dropFirst(5)
         return raw
             .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
     }
 }

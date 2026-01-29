@@ -1,12 +1,6 @@
-//
-//  NJExportView.swift
-//  Notion Journal
-//
-//  Created by Mac on 2026/1/29.
-//
-
-
 import SwiftUI
+import Foundation
+import UIKit
 
 struct NJExportView: View {
     @Environment(\.dismiss) private var dismiss
@@ -16,9 +10,12 @@ struct NJExportView: View {
     @State private var toDate: Date = Date()
     @State private var tagFilter: String = ""
     @State private var lastError: String = ""
-    @State private var shareData: Data? = nil
-    @State private var shareName: String = "nj_export.json"
+
+    @State private var exportURL: URL? = nil
+    @State private var showingExporter = false
     @State private var showingShare = false
+    @State private var showErrorAlert = false
+    @State private var lastCount: Int = 0
 
     var body: some View {
         NavigationView {
@@ -29,19 +26,22 @@ struct NJExportView: View {
                 }
 
                 Section(header: Text("Tag Filter (optional)")) {
-                    TextField("#REMIND", text: $tagFilter)
+                    TextField("e.g. zz.* or #REMIND", text: $tagFilter)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                 }
 
                 Section {
                     Button("Export JSON") { exportNow() }
+                    Button("Copy JSON to Clipboard") { copyNow() }
+                }
+
+                Section(header: Text("Last Export")) {
+                    Text("Blocks: \(lastCount)")
                 }
 
                 if !lastError.isEmpty {
-                    Section {
-                        Text(lastError).foregroundColor(.red)
-                    }
+                    Section { Text(lastError).foregroundColor(.red) }
                 }
             }
             .navigationTitle("Export")
@@ -50,10 +50,20 @@ struct NJExportView: View {
                     Button("Close") { dismiss() }
                 }
             }
-            .sheet(isPresented: $showingShare) {
-                if let shareData {
-                    NJShareSheet(items: [NJShareItem(data: shareData, filename: shareName)])
+            .sheet(isPresented: $showingExporter) {
+                if let url = exportURL {
+                    NJDocumentExporter(url: url)
                 }
+            }
+            .sheet(isPresented: $showingShare) {
+                if let url = exportURL {
+                    NJShareSheet(items: [url])
+                }
+            }
+            .alert("Export failed", isPresented: $showErrorAlert) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(lastError)
             }
         }
     }
@@ -61,25 +71,61 @@ struct NJExportView: View {
     private func exportNow() {
         lastError = ""
         do {
-            let tzID = "Asia/Hong_Kong"
-            let tag = tagFilter.trimmingCharacters(in: .whitespacesAndNewlines)
-            let tagOpt: String? = tag.isEmpty ? nil : tag
+            let (url, count) = try buildExportFileAndCount()
+            exportURL = url
+            lastCount = count
 
-            let data = try NJBlockExporter.exportJSON(
-                tzID: tzID,
-                fromDate: fromDate,
-                toDate: toDate,
-                tagFilter: tagOpt,
-                fetchRows: {
-                    try store.notes.exportBlockRows(fromDate: fromDate, toDate: toDate, tagFilter: tagOpt)
-                }
-            )
-
-            shareData = data
-            shareName = "nj_export_\(Int(Date().timeIntervalSince1970)).json"
-            showingShare = true
+            if ProcessInfo.processInfo.isMacCatalystApp {
+                showingExporter = true
+            } else {
+                showingShare = true
+            }
         } catch {
             lastError = "\(error)"
+            showErrorAlert = true
         }
+    }
+
+    private func copyNow() {
+        lastError = ""
+        do {
+            let (data, count) = try buildExportDataAndCount()
+            lastCount = count
+            UIPasteboard.general.string = String(data: data, encoding: .utf8) ?? ""
+        } catch {
+            lastError = "\(error)"
+            showErrorAlert = true
+        }
+    }
+
+    private func buildExportDataAndCount() throws -> (Data, Int) {
+        let tzID = "Asia/Hong_Kong"
+        let tag = tagFilter.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tagOpt: String? = tag.isEmpty ? nil : tag
+
+        var rowsCount = 0
+
+        let data = try NJBlockExporter.exportJSON(
+            tzID: tzID,
+            fromDate: fromDate,
+            toDate: toDate,
+            tagFilter: tagOpt,
+            fetchRows: {
+                let rows = try store.notes.exportBlockRows(fromDate: fromDate, toDate: toDate, tagFilter: tagOpt)
+                rowsCount = rows.count
+                return rows
+            }
+        )
+
+        return (data, rowsCount)
+    }
+
+    private func buildExportFileAndCount() throws -> (URL, Int) {
+        let (data, count) = try buildExportDataAndCount()
+        let filename = "nj_export_\(Int(Date().timeIntervalSince1970)).json"
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+        try? FileManager.default.removeItem(at: url)
+        try data.write(to: url, options: [.atomic])
+        return (url, count)
     }
 }

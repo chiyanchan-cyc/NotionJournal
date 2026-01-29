@@ -96,7 +96,8 @@ struct NJNoteEditorContainerView: View {
                             persistence.scheduleCommit(id)
                         }
                     )
-                    .id(id)
+                    .id("\(id.uuidString)-\(collapsedBinding.wrappedValue ? "c" : "e")")
+                    .fixedSize(horizontal: false, vertical: true)
                     .listRowInsets(EdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 12))
                     .listRowSeparator(.hidden)
                     .onAppear {

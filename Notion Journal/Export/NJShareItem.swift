@@ -1,37 +1,33 @@
-//
-//  NJShareItem.swift
-//  Notion Journal
-//
-//  Created by Mac on 2026/1/29.
-//
-
-
-import SwiftUI
+import Foundation
 import UIKit
 
-struct NJShareItem: NSObject, UIActivityItemSource {
-    let data: Data
-    let filename: String
+final class NJShareItem: NSObject, UIActivityItemSource {
+    private let data: Data
+    private let filename: String
+    private let fileURL: URL
+
+    init(data: Data, filename: String) {
+        self.data = data
+        self.filename = filename
+
+        let dir = FileManager.default.temporaryDirectory
+        self.fileURL = dir.appendingPathComponent(filename)
+
+        try? FileManager.default.removeItem(at: fileURL)
+        try? data.write(to: fileURL, options: [.atomic])
+
+        super.init()
+    }
 
     func activityViewControllerPlaceholderItem(_ activityViewController: UIActivityViewController) -> Any {
-        data
+        fileURL
     }
 
     func activityViewController(_ activityViewController: UIActivityViewController, itemForActivityType activityType: UIActivity.ActivityType?) -> Any? {
-        data
+        fileURL
     }
 
     func activityViewController(_ activityViewController: UIActivityViewController, subjectForActivityType activityType: UIActivity.ActivityType?) -> String {
         filename
     }
-}
-
-struct NJShareSheet: UIViewControllerRepresentable {
-    let items: [Any]
-
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: items, applicationActivities: nil)
-    }
-
-    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }

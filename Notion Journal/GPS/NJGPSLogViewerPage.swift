@@ -96,7 +96,48 @@ struct NJGPSLogViewerPage: View {
         guard let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return nil }
         guard let lat = obj["lat"] as? Double, let lon = obj["lon"] as? Double else { return nil }
         if abs(lat) < 0.000001 && abs(lon) < 0.000001 { return nil }
-        return CLLocationCoordinate2D(latitude: lat, longitude: lon)
+
+        let (clat, clon) = wgs84ToGcj02(lat: lat, lon: lon)
+        return CLLocationCoordinate2D(latitude: clat, longitude: clon)
+    }
+
+    private func isInMainlandChina(_ lat: Double, _ lon: Double) -> Bool {
+        if lon < 72.004 || lon > 137.8347 { return false }
+        if lat < 0.8293 || lat > 55.8271 { return false }
+        return true
+    }
+
+    private func wgs84ToGcj02(lat: Double, lon: Double) -> (Double, Double) {
+        if !isInMainlandChina(lat, lon) { return (lat, lon) }
+
+        let a = 6378245.0
+        let ee = 0.00669342162296594323
+
+        func transformLat(_ x: Double, _ y: Double) -> Double {
+            var ret = -100.0 + 2.0*x + 3.0*y + 0.2*y*y + 0.1*x*y + 0.2*sqrt(abs(x))
+            ret += (20.0*sin(6.0*x*Double.pi) + 20.0*sin(2.0*x*Double.pi)) * 2.0/3.0
+            ret += (20.0*sin(y*Double.pi) + 40.0*sin(y/3.0*Double.pi)) * 2.0/3.0
+            ret += (160.0*sin(y/12.0*Double.pi) + 320.0*sin(y*Double.pi/30.0)) * 2.0/3.0
+            return ret
+        }
+
+        func transformLon(_ x: Double, _ y: Double) -> Double {
+            var ret = 300.0 + x + 2.0*y + 0.1*x*x + 0.1*x*y + 0.1*sqrt(abs(x))
+            ret += (20.0*sin(6.0*x*Double.pi) + 20.0*sin(2.0*x*Double.pi)) * 2.0/3.0
+            ret += (20.0*sin(x*Double.pi) + 40.0*sin(x/3.0*Double.pi)) * 2.0/3.0
+            ret += (150.0*sin(x/12.0*Double.pi) + 300.0*sin(x/30.0*Double.pi)) * 2.0/3.0
+            return ret
+        }
+
+        let dLat = transformLat(lon - 105.0, lat - 35.0)
+        let dLon = transformLon(lon - 105.0, lat - 35.0)
+        let radLat = lat / 180.0 * Double.pi
+        var magic = sin(radLat)
+        magic = 1 - ee*magic*magic
+        let sqrtMagic = sqrt(magic)
+        let mgLat = lat + (dLat * 180.0) / ((a * (1 - ee)) / (magic * sqrtMagic) * Double.pi)
+        let mgLon = lon + (dLon * 180.0) / (a / sqrtMagic * cos(radLat) * Double.pi)
+        return (mgLat, mgLon)
     }
 
     private func dedup(_ pts: [CLLocationCoordinate2D]) -> [CLLocationCoordinate2D] {

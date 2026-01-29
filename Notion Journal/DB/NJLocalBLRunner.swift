@@ -65,17 +65,19 @@ final class NJLocalBLRunner {
             let blockID = r.blockID
             if blockID.isEmpty { continue }
 
-            let tags = parseTagJSON(r.tagJSON)
-            rebuildBlockTagIndex(blockID: blockID, tags: tags, nowMs: r.updatedAtMs)
+            let jsonTags = parseTagJSON(r.tagJSON)
+            let noteDomains = loadNoteDomainsForBlock(blockID: blockID)
 
-            let domain = deriveDomainFromTags(tags)
-            if domain.isEmpty {
-                continue
-            }
+            let merged = Array(Set(jsonTags + noteDomains)).filter { !$0.isEmpty }.sorted()
+
+            rebuildBlockTagIndex(blockID: blockID, tags: merged, nowMs: r.updatedAtMs)
+
+            let domain = deriveDomainPreferNote(noteDomains: noteDomains, tags: merged)
 
             setDomainAndClearDirty(blockID: blockID, domainTag: domain, nowMs: r.updatedAtMs)
         }
     }
+
 
     private struct DirtyBlockRow {
         let blockID: String
@@ -172,4 +174,38 @@ final class NJLocalBLRunner {
             _ = sqlite3_step(stmt)
         }
     }
+
+    private func loadNoteDomainsForBlock(blockID: String) -> [String] {
+        if blockID.isEmpty { return [] }
+        return db.withDB { dbp in
+            var out: [String] = []
+            var stmt: OpaquePointer?
+            let rc = sqlite3_prepare_v2(dbp, """
+            SELECT DISTINCT n.tab_domain
+            FROM nj_note_block nb
+            JOIN nj_note n ON n.note_id = nb.note_id
+            WHERE nb.block_id=? AND nb.deleted=0 AND n.deleted=0 AND n.tab_domain<>''
+            ORDER BY n.tab_domain ASC;
+            """, -1, &stmt, nil)
+            if rc != SQLITE_OK { return out }
+            defer { sqlite3_finalize(stmt) }
+
+            sqlite3_bind_text(stmt, 1, blockID, -1, SQLITE_TRANSIENT)
+
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let d = sqlite3_column_text(stmt, 0).flatMap { String(cString: $0) } ?? ""
+                if !d.isEmpty { out.append(d) }
+            }
+            return out
+        }
+    }
+
+    private func deriveDomainPreferNote(noteDomains: [String], tags: [String]) -> String {
+        if let d = noteDomains.sorted().first, !d.isEmpty { return d }
+        for t in tags {
+            if t.contains(".") { return t }
+        }
+        return ""
+    }
+
 }

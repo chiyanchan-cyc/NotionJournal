@@ -1,3 +1,11 @@
+//
+//  NJShareSheet.swift
+//  Notion Journal
+//
+//  Created by Mac on 2026/1/29.
+//
+
+
 import SwiftUI
 import UIKit
 
