@@ -16,6 +16,41 @@ final class NJGPSLogger: NSObject, ObservableObject, CLLocationManagerDelegate {
 
     private let mgr = CLLocationManager()
     private let defaultsKey = "NJGPSLogger.enabled.v1"
+    private let powerKey = "NJGPSLogger.power.v1"
+
+    enum NJGPSPower: String, CaseIterable, Identifiable {
+        case minimal
+        case low10m
+        case med5m
+        case high
+        case crazy
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .minimal: return "Minimal"
+            case .low10m: return "Low (10m)"
+            case .med5m: return "Med (5m)"
+            case .high: return "High"
+            case .crazy: return "Crazy"
+            }
+        }
+    }
+
+    @Published private(set) var power: NJGPSPower
+
+    private struct PowerConfig {
+        let continuous: Bool
+        let desiredAccuracy: CLLocationAccuracy
+        let distanceFilter: CLLocationDistance
+        let pauses: Bool
+        let activityType: CLActivityType
+        let deferUntilTraveledM: CLLocationDistance?
+        let deferTimeoutS: TimeInterval?
+        let minWriteIntervalMs: Int64
+    }
+
+    private var minWriteIntervalMs: Int64 = 0
 
     private let containerID = "iCloud.com.CYC.NotionJournal"
     private let lockRel = "GPS/gps_logger_lock.json"
@@ -25,12 +60,14 @@ final class NJGPSLogger: NSObject, ObservableObject, CLLocationManagerDelegate {
 
     private override init() {
         self.enabled = UserDefaults.standard.bool(forKey: defaultsKey)
+        if let raw = UserDefaults.standard.string(forKey: powerKey),
+           let p = NJGPSPower(rawValue: raw) {
+            self.power = p
+        } else {
+            self.power = .low10m
+        }
         super.init()
         mgr.delegate = self
-        mgr.desiredAccuracy = kCLLocationAccuracyHundredMeters
-        mgr.distanceFilter = 50
-        mgr.pausesLocationUpdatesAutomatically = true
-        mgr.activityType = .fitness
         mgr.showsBackgroundLocationIndicator = false
         auth = mgr.authorizationStatus
         Task { @MainActor in
@@ -44,6 +81,12 @@ final class NJGPSLogger: NSObject, ObservableObject, CLLocationManagerDelegate {
         enabled = on
         lastError = ""
         if on { startIfPossible() } else { stopAll() }
+    }
+    
+    func setPower(_ p: NJGPSPower) {
+        UserDefaults.standard.set(p.rawValue, forKey: powerKey)
+        power = p
+        if enabled { startIfPossible() }
     }
 
     func requestAlways() {
@@ -87,18 +130,91 @@ final class NJGPSLogger: NSObject, ObservableObject, CLLocationManagerDelegate {
         mgr.startMonitoringSignificantLocationChanges()
         mgr.startMonitoringVisits()
 
-        mgr.desiredAccuracy = kCLLocationAccuracyHundredMeters
-        mgr.distanceFilter = 25
-        mgr.activityType = .fitness
-        mgr.pausesLocationUpdatesAutomatically = true
+        let cfg = powerConfig(power)
+        mgr.desiredAccuracy = cfg.desiredAccuracy
+        mgr.distanceFilter = cfg.distanceFilter
+        mgr.activityType = cfg.activityType
+        mgr.pausesLocationUpdatesAutomatically = cfg.pauses
+        minWriteIntervalMs = cfg.minWriteIntervalMs
 
-        mgr.startUpdatingLocation()
-        didStartContinuous = true
+        if cfg.continuous {
+            mgr.startUpdatingLocation()
+            didStartContinuous = true
 
-        if CLLocationManager.deferredLocationUpdatesAvailable() {
-            mgr.allowDeferredLocationUpdates(untilTraveled: 500, timeout: 300)
+            if CLLocationManager.deferredLocationUpdatesAvailable(),
+               let ut = cfg.deferUntilTraveledM,
+               let to = cfg.deferTimeoutS {
+                mgr.allowDeferredLocationUpdates(untilTraveled: ut, timeout: to)
+            }
+        } else {
+            didStartContinuous = false
         }
     }
+
+    private func powerConfig(_ p: NJGPSPower) -> PowerConfig {
+        switch p {
+        case .minimal:
+            return PowerConfig(
+                continuous: false,
+                desiredAccuracy: kCLLocationAccuracyThreeKilometers,
+                distanceFilter: 1000,
+                pauses: true,
+                activityType: .other,
+                deferUntilTraveledM: nil,
+                deferTimeoutS: nil,
+                minWriteIntervalMs: 0
+            )
+
+        case .low10m:
+            return PowerConfig(
+                continuous: true,
+                desiredAccuracy: kCLLocationAccuracyKilometer,
+                distanceFilter: 500,
+                pauses: true,
+                activityType: .other,
+                deferUntilTraveledM: 8000,
+                deferTimeoutS: 600,
+                minWriteIntervalMs: 10 * 60 * 1000
+            )
+
+        case .med5m:
+            return PowerConfig(
+                continuous: true,
+                desiredAccuracy: kCLLocationAccuracyKilometer,
+                distanceFilter: 250,
+                pauses: true,
+                activityType: .other,
+                deferUntilTraveledM: 5000,
+                deferTimeoutS: 300,
+                minWriteIntervalMs: 5 * 60 * 1000
+            )
+
+        case .high:
+            return PowerConfig(
+                continuous: true,
+                desiredAccuracy: kCLLocationAccuracyHundredMeters,
+                distanceFilter: 50,
+                pauses: true,
+                activityType: .fitness,
+                deferUntilTraveledM: 1500,
+                deferTimeoutS: 180,
+                minWriteIntervalMs: 30 * 1000
+            )
+
+        case .crazy:
+            return PowerConfig(
+                continuous: true,
+                desiredAccuracy: kCLLocationAccuracyBest,
+                distanceFilter: 10,
+                pauses: false,
+                activityType: .fitness,
+                deferUntilTraveledM: 500,
+                deferTimeoutS: 60,
+                minWriteIntervalMs: 5 * 1000
+            )
+        }
+    }
+
 
     private func stopMonitors() {
         mgr.stopMonitoringSignificantLocationChanges()
@@ -255,6 +371,26 @@ final class NJGPSLogger: NSObject, ObservableObject, CLLocationManagerDelegate {
         if enabled { startIfPossible() }
     }
 
+    // Add this function to NJGPSLogger class (put it near other public functions)
+    func forceClearLock() {
+        guard let lu = lockURL() else { return }
+        
+        do {
+            try FileManager.default.removeItem(at: lu)
+            print("✅ Lock file deleted at: \(lu.path)")
+            lastError = "Lock cleared"
+        } catch {
+            print("❌ Failed to delete lock: \(error)")
+            lastError = "Failed to clear lock: \(error.localizedDescription)"
+        }
+        
+        // Force refresh to become writer
+        Task { @MainActor in
+            await refreshAuthority()
+            if enabled { startIfPossible() }
+        }
+    }
+    
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard enabled, isWriter else { return }
         guard let loc = locations.last else { return }
@@ -262,9 +398,14 @@ final class NJGPSLogger: NSObject, ObservableObject, CLLocationManagerDelegate {
         if acc < 0 { return }
         if acc > 300 { return }
 
+        let tsMs = Int64(loc.timestamp.timeIntervalSince1970 * 1000.0)
+        if minWriteIntervalMs > 0, lastWriteTsMs > 0, (tsMs - lastWriteTsMs) < minWriteIntervalMs {
+            return
+        }
+
         appendLine(
             encode(
-                tsMs: Int64(loc.timestamp.timeIntervalSince1970 * 1000.0),
+                tsMs: tsMs,
                 lat: loc.coordinate.latitude,
                 lon: loc.coordinate.longitude,
                 hacc: acc,
@@ -273,8 +414,12 @@ final class NJGPSLogger: NSObject, ObservableObject, CLLocationManagerDelegate {
         )
 
         if CLLocationManager.deferredLocationUpdatesAvailable() {
-            mgr.allowDeferredLocationUpdates(untilTraveled: 500, timeout: 300)
+            let cfg = powerConfig(power)
+            if let ut = cfg.deferUntilTraveledM, let to = cfg.deferTimeoutS {
+                mgr.allowDeferredLocationUpdates(untilTraveled: ut, timeout: to)
+            }
         }
+
     }
 
     func locationManager(_ manager: CLLocationManager, didVisit visit: CLVisit) {

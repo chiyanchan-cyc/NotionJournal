@@ -86,9 +86,22 @@ final class NJClipIngestor {
         let website = (dict["website"] as? String) ?? ""
         let mode = (dict["mode"] as? String) ?? ""
         let createdAtISO = (dict["created_at_iso"] as? String) ?? ""
-        let createdAtMs = (dict["created_at_ms"] as? Int64) ?? DBNoteRepository.nowMs()
+
+        let createdAtMs: Int64 = {
+            if let n = dict["created_at_ms"] as? NSNumber { return n.int64Value }
+            if let n = dict["created_at_ms"] as? Int { return Int64(n) }
+            if let s = dict["created_at_ms"] as? String, let v = Int64(s) { return v }
+            return DBNoteRepository.nowMs()
+        }()
+
         let srcTitle = (dict["title"] as? String) ?? ""
-        let body = (dict["body"] as? String) ?? ""
+
+        let body = (
+            (dict["body"] as? String) ??
+            (dict["txt"] as? String) ??
+            (dict["chat_txt"] as? String) ??
+            ""
+        )
 
         if body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             print("NJ_CLIP_INGEST skip_empty_body clipID=\(item.clipID)")

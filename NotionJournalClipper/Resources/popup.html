@@ -4,32 +4,57 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
-    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial; }
-    .wrap { padding: 14px; width: 360px; box-sizing: border-box; }
-    h1 { margin: 0 0 12px 0; font-size: 24px; font-weight: 800; }
-    .row { display: flex; gap: 14px; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; width: 100%; }
+    body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial; }
+
+    .wrap {
+      padding: 14px;
+      width: 100%;
+      max-width: 360px;
+    }
+
+    h1 { margin: 0 0 12px 0; font-size: 22px; font-weight: 800; }
+
+    .row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      width: 100%;
+    }
+
     button {
-      flex: 1;
-      height: 88px;
+      flex: 1 1 160px;
+      height: 80px;
       border: 0;
       border-radius: 14px;
       color: #fff;
-      font-size: 22px;
+      font-size: 18px;
       font-weight: 800;
       cursor: pointer;
+      min-width: 0;
     }
+
     #btnDom { background: #2f66ff; }
+    #btnUniversal { background: #10a37f; }
     #btnHtml { background: #43a047; }
-    .hint { margin-top: 12px; color: #666; font-size: 18px; line-height: 1.25; }
-    .status { margin-top: 10px; font-size: 18px; color: #111; white-space: pre-wrap; word-break: break-word; }
+
+    .hint { margin-top: 10px; color: #666; font-size: 16px; line-height: 1.25; }
+    .status { margin-top: 10px; font-size: 16px; color: #111; white-space: pre-wrap; word-break: break-word; }
   </style>
 </head>
 <body>
   <div class="wrap">
     <h1>NotionJournalClipper</h1>
     <div class="row">
-      <button id="btnDom">DOM (Chat)</button>
+      <button id="btnDom">DOM<br/>(ChatGPT)</button>
+      <button id="btnUniversal">Universal<br/>(Kimi/DS)</button>
       <button id="btnHtml">HTML<br/>(Landscape)</button>
+    </div>
+    <div class="hint">
+      ChatGPT = optimized for ChatGPT DOM.
+      Universal = works on Kimi, DeepSeek, Claude, etc.
+      HTML = page PDF with images, forced landscape.
     </div>
     <div class="hint">DOM = transcript PDF for Chat/LLM pages. HTML = page PDF with images, forced landscape.</div>
     <div id="status" class="status"></div>

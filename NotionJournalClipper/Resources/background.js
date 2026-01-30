@@ -12,23 +12,6 @@ async function sendNative(payload) {
   return await browser.runtime.sendNativeMessage(NATIVE_HOST, payload)
 }
 
-function summarizeExtracted(extracted) {
-  if (!extracted || typeof extracted !== "object") return { ok: false }
-  const items = extracted.dom_items || []
-  const roles = items.slice(0, 12).map(x => x.role)
-  const txtLen = (extracted.chat_txt || extracted.html_txt || "").length
-  return {
-    ok: !!extracted.ok,
-    method: extracted.method || "",
-    url: extracted.url || "",
-    title: extracted.title || "",
-    items_count: items.length,
-    first_roles: roles,
-    txt_len: txtLen,
-    debug: extracted.debug || null
-  }
-}
-
 browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   log("onMessage", msg)
 
@@ -36,7 +19,27 @@ browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     try {
       if (msg.type === "nj_clip") {
         const mode = msg.mode || ""
-        if (mode !== "chat_dom" && mode !== "html_landscape") return sendResponse({ ok: false, error: "invalid_mode" })
+
+        const debugInfo = {
+          received_mode: mode,
+          mode_type: typeof mode,
+          mode_length: mode.length,
+          is_chat_dom: mode === "chat_dom",
+          is_chat_universal: mode === "chat_universal",
+          is_html_landscape: mode === "html_landscape",
+          char_codes: Array.from(mode).map(c => c.charCodeAt(0))
+        }
+
+        log("DEBUG", debugInfo)
+
+        if (mode !== "chat_dom" && mode !== "chat_universal" && mode !== "html_landscape") {
+          return sendResponse({
+            ok: false,
+            error: "invalid_mode",
+            debug: debugInfo,
+            help: "Mode must be chat_dom, chat_universal, or html_landscape"
+          })
+        }
 
         const tab = await activeTab()
         if (!tab || !tab.id) return sendResponse({ ok: false, error: "no_active_tab" })
@@ -45,27 +48,37 @@ browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const captured_at_ms = Date.now()
 
         let extracted
-        if (mode === "chat_dom") extracted = await browser.tabs.sendMessage(tab.id, { type: "nj_extract_chat_dom" })
-        else extracted = await browser.tabs.sendMessage(tab.id, { type: "nj_extract_html" })
-
-        log("extracted", summarizeExtracted(extracted))
+        if (mode === "chat_dom") {
+          extracted = await browser.tabs.sendMessage(tab.id, { type: "nj_extract_chat_dom" })
+        } else if (mode === "chat_universal") {
+          extracted = await browser.tabs.sendMessage(tab.id, { type: "nj_extract_chat_universal" })
+        } else {
+          extracted = await browser.tabs.sendMessage(tab.id, { type: "nj_extract_html" })
+        }
 
         if (!extracted || extracted.ok !== true) {
-          const err = { ok: false, error: "extract_not_ok", detail: extracted || null }
-          log("extract_not_ok", err)
-          return sendResponse(err)
+          return sendResponse({
+            ok: false,
+            error: "extract_not_ok",
+            detail: extracted || null,
+            debug: { mode_used: mode }
+          })
         }
+
+        const native_mode = (mode === "chat_universal") ? "chat_dom" : mode
 
         const payload = {
           type: "clip_save",
           block_id,
-          mode,
+          mode: native_mode,
+          extractor_mode: mode,
+          extractor_method: extracted.method || "",
           url: extracted.url || tab.url || "",
           title: extracted.title || tab.title || "",
           captured_at_ms
         }
 
-        if (mode === "chat_dom") {
+        if (mode === "chat_dom" || mode === "chat_universal") {
           payload.dom_items = extracted.dom_items || []
           payload.txt = extracted.chat_txt || ""
         } else {
@@ -73,17 +86,37 @@ browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           payload.body_html = extracted.body_html || ""
           payload.txt = extracted.html_txt || ""
         }
+          
+          payload.extractor_debug = extracted.debug || null
+          payload.extractor_platform = extracted.platform || null
+
+
+        log("SENDING_NATIVE", {
+          block_id,
+          sent_mode: payload.mode,
+          extractor_mode: payload.extractor_mode,
+          host: NATIVE_HOST
+        })
 
         let native
         try {
           native = await sendNative(payload)
         } catch (e) {
-          const err = { ok: false, error: "native_throw", detail: String(e), block_id }
-          log("native_throw", err)
-          return sendResponse(err)
+          log("NATIVE_THROW", String(e))
+          return sendResponse({ ok: false, error: "native_throw", detail: String(e), block_id })
         }
 
-        log("native_response(clip_save)", native)
+        log("NATIVE_RESP", native)
+
+        if (native && native.ok === false && native.error === "invalid_mode") {
+          return sendResponse({
+            ok: false,
+            error: "native_invalid_mode",
+            native,
+            debug: { sent_mode: payload.mode, extractor_mode: payload.extractor_mode }
+          })
+        }
+
         return sendResponse(native)
       }
 
@@ -92,19 +125,14 @@ browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         try {
           native = await sendNative({ type: "debug_paths" })
         } catch (e) {
-          const err = { ok: false, error: "native_throw", detail: String(e) }
-          log("native_throw", err)
-          return sendResponse(err)
+          return sendResponse({ ok: false, error: "native_throw", detail: String(e) })
         }
-        log("native_response(debug_paths)", native)
         return sendResponse(native)
       }
 
       return sendResponse({ ok: false, error: "unknown_type", type: msg.type })
     } catch (e) {
-      const err = { ok: false, error: "bg_exception", detail: String(e) }
-      log("bg_exception", err)
-      return sendResponse(err)
+      return sendResponse({ ok: false, error: "bg_exception", detail: String(e) })
     }
   })()
 

@@ -61,10 +61,21 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
+				"Resources/universal-clipper.js",
 			);
 			target = 046E84122F0DFE1000030095 /* NotionJournalClipper */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
+		04806FDD2F2C429700297F07 /* Exceptions for "NotionJournalClipper" folder in "Compile Sources" phase from "NotionJournalClipper" target */ = {
+			isa = PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet;
+			buildPhase = 046E840F2F0DFE1000030095 /* Sources */;
+			membershipExceptions = (
+				"Resources/universal-clipper.js",
+			);
+		};
+/* End PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		046793ED2F03C62100C5221D /* Notion Journal */ = {
@@ -79,6 +90,7 @@
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
 				046E842F2F0DFE1000030095 /* Exceptions for "NotionJournalClipper" folder in "NotionJournalClipper" target */,
+				04806FDD2F2C429700297F07 /* Exceptions for "NotionJournalClipper" folder in "Compile Sources" phase from "NotionJournalClipper" target */,
 			);
 			explicitFolders = (
 				Resources/_locales,

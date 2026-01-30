@@ -28,6 +28,12 @@ struct NJGPSLoggerPage: View {
                     Text("Enable on this device")
                 }
 
+                Picker("Power", selection: Binding(get: { logger.power }, set: { NJGPSLogger.shared.setPower($0) })) {
+                    ForEach(NJGPSLogger.NJGPSPower.allCases) { p in
+                        Text(p.title).tag(p)
+                    }
+                }
+
                 Button("Refresh Authority") {
                     NJGPSLogger.shared.refreshAuthorityUI()
                 }
@@ -37,11 +43,21 @@ struct NJGPSLoggerPage: View {
                 }
             }
 
+
+            // In the Status section of NJGPSLoggerPage.swift
             Section("Status") {
                 row("Auth", authText(logger.auth))
                 row("Active writer", logger.isWriter ? "YES" : "NO")
                 if !logger.writerLabel.isEmpty {
                     row("Writer device", logger.writerLabel)
+                    
+                    // Add button only when another device is the writer
+                    if !logger.isWriter {
+                        Button("Take Over (Clear Lock)") {
+                            NJGPSLogger.shared.forceClearLock()
+                        }
+                        .foregroundColor(.orange)
+                    }
                 }
                 if logger.lastWriteTsMs > 0 {
                     row("Last write", fmtMs(logger.lastWriteTsMs))
