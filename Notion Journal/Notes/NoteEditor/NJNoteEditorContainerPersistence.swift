@@ -360,7 +360,7 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         var b = blocks[i]
 
         if b.instanceID.isEmpty {
-            let ok = store.notes.nextAppendOrderKey(noteID: noteID.raw)
+            let ok = (b.orderKey > 0) ? b.orderKey : store.notes.nextAppendOrderKey(noteID: noteID.raw)
             let instanceID = store.notes.attachExistingBlockToNote(
                 noteID: noteID.raw,
                 blockID: b.blockID,
@@ -371,6 +371,7 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             blocks[i].instanceID = instanceID
             blocks[i].orderKey = ok
         }
+
 
         commitNoteMetaNow()
 

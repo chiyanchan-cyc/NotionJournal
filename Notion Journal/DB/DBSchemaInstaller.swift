@@ -265,7 +265,46 @@ enum DBSchemaInstaller {
                 ]
             ),
 
-
+            TableSpec(
+                name: "nj_attachment",
+                createSQL: """
+                CREATE TABLE IF NOT EXISTS nj_attachment (
+                    attachment_id TEXT PRIMARY KEY,
+                    block_id TEXT NOT NULL,
+                    note_id TEXT,
+                    kind TEXT NOT NULL,
+                    thumb_path TEXT,
+                    full_photo_ref TEXT,
+                    display_w INTEGER NOT NULL DEFAULT 400,
+                    display_h INTEGER NOT NULL DEFAULT 400,
+                    created_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL,
+                    deleted INTEGER NOT NULL DEFAULT 0,
+                    dirty_bl INTEGER NOT NULL DEFAULT 1
+                );
+                """,
+                columns: [
+                    ColumnSpec(name: "attachment_id", declForAlter: "TEXT"),
+                    ColumnSpec(name: "block_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "note_id", declForAlter: "TEXT"),
+                    ColumnSpec(name: "kind", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "thumb_path", declForAlter: "TEXT"),
+                    ColumnSpec(name: "full_photo_ref", declForAlter: "TEXT"),
+                    ColumnSpec(name: "display_w", declForAlter: "INTEGER NOT NULL DEFAULT 400"),
+                    ColumnSpec(name: "display_h", declForAlter: "INTEGER NOT NULL DEFAULT 400"),
+                    ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "dirty_bl", declForAlter: "INTEGER NOT NULL DEFAULT 1")
+                ],
+                indexes: [
+                    "CREATE INDEX IF NOT EXISTS idx_nj_attachment_block_updated ON nj_attachment(block_id, deleted, updated_at_ms DESC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_attachment_note_updated ON nj_attachment(note_id, deleted, updated_at_ms DESC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_attachment_updated ON nj_attachment(updated_at_ms DESC);"
+                ]
+            ),
+            
+            
             TableSpec(
                 name: "nj_block_tag",
                 createSQL: """

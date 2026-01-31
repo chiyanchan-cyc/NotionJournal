@@ -21,6 +21,37 @@ private extension EditorView {
     }
 }
 
+private func NJStandardizeFontFamily(_ font: UIFont) -> UIFont {
+    let fd = font.fontDescriptor
+    if fd.symbolicTraits.contains(.traitMonoSpace) { return font }
+
+    let size = font.pointSize
+    let traits = fd.symbolicTraits
+
+    let base = UIFont.systemFont(ofSize: size)
+    if let nfd = base.fontDescriptor.withSymbolicTraits(traits) {
+        return UIFont(descriptor: nfd, size: size)
+    }
+    return base
+}
+
+private func NJStandardizeFontFamily(_ s: NSAttributedString) -> NSAttributedString {
+    if s.length == 0 { return s }
+    let m = NSMutableAttributedString(attributedString: s)
+    let full = NSRange(location: 0, length: m.length)
+    m.beginEditing()
+    m.enumerateAttribute(.font, in: full, options: []) { value, range, _ in
+        guard let old = value as? UIFont else { return }
+        let nf = NJStandardizeFontFamily(old)
+        if nf.fontName != old.fontName {
+            m.addAttribute(.font, value: nf, range: range)
+        }
+    }
+    m.endEditing()
+    return m
+}
+
+
 private extension NSAttributedString {
     var fullRange: NSRange { NSRange(location: 0, length: length) }
 }

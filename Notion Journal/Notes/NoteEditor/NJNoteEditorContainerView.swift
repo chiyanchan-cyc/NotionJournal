@@ -202,28 +202,36 @@ struct NJNoteEditorContainerView: View {
             get: { persistence.blocks.first(where: { $0.id == id })?.attr ?? makeEmptyBlockAttr() },
             set: { v in
                 if let i = persistence.blocks.firstIndex(where: { $0.id == id }) {
-                    if persistence.focusedBlockID != persistence.blocks[i].id {
+                    let prev = persistence.focusedBlockID
+                    if prev != persistence.blocks[i].id {
+                        if let prev { persistence.forceEndEditingAndCommitNow(prev) }
                         persistence.focusedBlockID = persistence.blocks[i].id
                     }
                     if !persistence.blocks[i].attr.isEqual(to: v) {
                         persistence.blocks[i].attr = v
                     }
-
                 }
             }
         )
     }
+
 
     func bindingSel(_ id: UUID) -> Binding<NSRange> {
         Binding(
             get: { persistence.blocks.first(where: { $0.id == id })?.sel ?? NSRange(location: 0, length: 0) },
             set: { v in
                 if let i = persistence.blocks.firstIndex(where: { $0.id == id }) {
+                    let prev = persistence.focusedBlockID
+                    if prev != persistence.blocks[i].id {
+                        if let prev { persistence.forceEndEditingAndCommitNow(prev) }
+                        persistence.focusedBlockID = persistence.blocks[i].id
+                    }
                     persistence.blocks[i].sel = v
                 }
             }
         )
     }
+
 }
 private struct NJContainerKeyCommands: UIViewControllerRepresentable {
     let getHandle: () -> NJProtonEditorHandle?

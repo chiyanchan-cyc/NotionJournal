@@ -127,90 +127,164 @@ extension DBNoteRepository {
         print("NJ_SAVE_SINGLE_PROTON_BLOCK tag_json_bytes=\(tagJSON.utf8.count)")
         print("NJ_SAVE_SINGLE_PROTON_BLOCK tag_json_preview=\(String(tagJSON.prefix(240)))")
 
-        let oldPayload = loadPayloadJSON(blockID: blockID)
-        let normalized = normalizeToV1PayloadJSON(oldPayload)
+        let shouldEnqueue = !DBDirtyQueueTable.isInPullScope()
 
-        var newPayload = normalized
-
-        if let data = normalized.data(using: .utf8),
-           var v1 = try? JSONDecoder().decode(NJPayloadV1.self, from: data) {
-            v1.upsertProton1(protonJSON: protonJSON)
-            if let out = try? JSONEncoder().encode(v1),
-               let s = String(data: out, encoding: .utf8) {
-                newPayload = s
-            }
-        } else {
-            var v1 = NJPayloadV1(v: 1, sections: [:])
-            v1.upsertProton1(protonJSON: protonJSON)
-            if let out = try? JSONEncoder().encode(v1),
-               let s = String(data: out, encoding: .utf8) {
-                newPayload = s
-            }
-        }
-
-        print("NJ_SAVE_SINGLE_PROTON_BLOCK payload_bytes=\(newPayload.utf8.count)")
-        print("NJ_SAVE_SINGLE_PROTON_BLOCK payload_preview=\(String(newPayload.prefix(260)))")
+        var didCommit = false
+        var didEnqueue = false
 
         db.withDB { dbp in
-            var stmt: OpaquePointer?
-            let sql = """
-            INSERT INTO nj_block
-            (block_id, block_type, payload_json, domain_tag, tag_json, lineage_id, parent_block_id, created_at_ms, updated_at_ms, deleted, dirty_bl)
-            VALUES (?, 'text', ?, '', ?, '', '', ?, ?, 0, 0)
-            ON CONFLICT(block_id) DO UPDATE SET
-                payload_json = excluded.payload_json,
-                tag_json = CASE
-                    WHEN excluded.tag_json = '' THEN nj_block.tag_json
-                    ELSE excluded.tag_json
-                END,
-                updated_at_ms = excluded.updated_at_ms,
-                deleted = 0,
-                dirty_bl = CASE
-                    WHEN excluded.tag_json = '' THEN nj_block.dirty_bl
-                    WHEN excluded.tag_json = nj_block.tag_json THEN nj_block.dirty_bl
-                    ELSE 1
-                END;
-            """
-            let rc0 = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
-            if rc0 != SQLITE_OK {
-                let msg = String(cString: sqlite3_errmsg(dbp))
-                print("NJ_SAVE_SINGLE_PROTON_BLOCK SQL_PREP_FAIL rc=\(rc0) msg=\(msg)")
-                sqlite3_finalize(stmt)
-                return
+            func isBusy(_ rc: Int32) -> Bool {
+                rc == SQLITE_BUSY || rc == SQLITE_LOCKED
             }
 
-            blockID.withCString { cBlockID in
-                newPayload.withCString { cPayload in
-                    tagJSON.withCString { cTagJSON in
-                        let b0 = sqlite3_bind_text(stmt, 1, cBlockID, -1, SQLITE_TRANSIENT)
-                        let b1 = sqlite3_bind_text(stmt, 2, cPayload, -1, SQLITE_TRANSIENT)
-                        let b2 = sqlite3_bind_text(stmt, 3, cTagJSON, -1, SQLITE_TRANSIENT)
-                        let b3 = sqlite3_bind_int64(stmt, 4, now)
-                        let b4 = sqlite3_bind_int64(stmt, 5, now)
+            func backoff(_ attempt: Int) {
+                let ms = min(800, 25 * (1 << attempt))
+                usleep(useconds_t(ms * 1000))
+            }
 
-                        if b0 != SQLITE_OK || b1 != SQLITE_OK || b2 != SQLITE_OK || b3 != SQLITE_OK || b4 != SQLITE_OK {
-                            let msg = String(cString: sqlite3_errmsg(dbp))
-                            print("NJ_SAVE_SINGLE_PROTON_BLOCK SQL_BIND_FAIL b0=\(b0) b1=\(b1) b2=\(b2) b3=\(b3) b4=\(b4) msg=\(msg)")
-                            sqlite3_finalize(stmt)
-                            return
-                        }
+            func exec(_ sql: String) -> Int32 {
+                sqlite3_exec(dbp, sql, nil, nil, nil)
+            }
 
-                        let rc1 = sqlite3_step(stmt)
-                        if rc1 != SQLITE_DONE {
-                            let msg = String(cString: sqlite3_errmsg(dbp))
-                            print("NJ_SAVE_SINGLE_PROTON_BLOCK SQL_STEP_FAIL rc=\(rc1) msg=\(msg)")
-                        } else {
-                            let ch = sqlite3_changes(dbp)
-                            print("NJ_SAVE_SINGLE_PROTON_BLOCK SQL_DONE changes=\(ch)")
-                        }
-                    }
+            func selectPayloadJSON(_ blockID: String) -> String? {
+                var stmt: OpaquePointer?
+                let rc0 = sqlite3_prepare_v2(dbp, "SELECT payload_json FROM nj_block WHERE block_id = ? LIMIT 1;", -1, &stmt, nil)
+                if rc0 != SQLITE_OK { sqlite3_finalize(stmt); return nil }
+                defer { sqlite3_finalize(stmt) }
+
+                sqlite3_bind_text(stmt, 1, blockID, -1, SQLITE_TRANSIENT)
+                let rc1 = sqlite3_step(stmt)
+                if rc1 == SQLITE_ROW, let c = sqlite3_column_text(stmt, 0) { return String(cString: c) }
+                return nil
+            }
+
+            func upsertBlock(_ blockID: String, _ payload: String, _ tagJSON: String, _ now: Int64) -> Int32 {
+                var stmt: OpaquePointer?
+                let sql = """
+                INSERT INTO nj_block
+                (block_id, block_type, payload_json, domain_tag, tag_json, lineage_id, parent_block_id, created_at_ms, updated_at_ms, deleted, dirty_bl)
+                VALUES (?, 'text', ?, '', ?, '', '', ?, ?, 0, 0)
+                ON CONFLICT(block_id) DO UPDATE SET
+                    payload_json = excluded.payload_json,
+                    tag_json = CASE
+                        WHEN excluded.tag_json = '' THEN nj_block.tag_json
+                        ELSE excluded.tag_json
+                    END,
+                    updated_at_ms = excluded.updated_at_ms,
+                    deleted = 0,
+                    dirty_bl = CASE
+                        WHEN excluded.tag_json = '' THEN nj_block.dirty_bl
+                        WHEN excluded.tag_json = nj_block.tag_json THEN nj_block.dirty_bl
+                        ELSE 1
+                    END;
+                """
+                let rc0 = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
+                if rc0 != SQLITE_OK { sqlite3_finalize(stmt); return rc0 }
+                defer { sqlite3_finalize(stmt) }
+
+                sqlite3_bind_text(stmt, 1, blockID, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(stmt, 2, payload, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(stmt, 3, tagJSON, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_int64(stmt, 4, now)
+                sqlite3_bind_int64(stmt, 5, now)
+
+                return sqlite3_step(stmt)
+            }
+
+            func upsertDirty(_ entity: String, _ entityID: String, _ op: String, _ updatedAtMs: Int64) -> Int32 {
+                var stmt: OpaquePointer?
+                let sql = """
+                INSERT INTO nj_dirty(entity, entity_id, op, updated_at_ms, attempts, last_error)
+                VALUES(?, ?, ?, ?, 0, '')
+                ON CONFLICT(entity, entity_id) DO UPDATE SET
+                  op=excluded.op,
+                  updated_at_ms=excluded.updated_at_ms,
+                  attempts=0,
+                  last_error='',
+                  ignore=0;
+                """
+                let rc0 = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
+                if rc0 != SQLITE_OK { sqlite3_finalize(stmt); return rc0 }
+                defer { sqlite3_finalize(stmt) }
+
+                sqlite3_bind_text(stmt, 1, entity, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(stmt, 2, entityID, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(stmt, 3, op, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_int64(stmt, 4, updatedAtMs)
+
+                return sqlite3_step(stmt)
+            }
+
+            for attempt in 0..<7 {
+                let rcBegin = exec("BEGIN IMMEDIATE;")
+                if rcBegin != SQLITE_OK {
+                    if isBusy(rcBegin) { backoff(attempt); continue }
+                    db.dbgErr(dbp, "saveSingleProtonBlock.begin", rcBegin)
+                    _ = exec("ROLLBACK;")
+                    return
                 }
+
+                let oldPayloadInTx = selectPayloadJSON(blockID)
+                let normalized = normalizeToV1PayloadJSON(oldPayloadInTx ?? "{}")
+
+                var newPayload = normalized
+
+                if let data = normalized.data(using: .utf8),
+                   var v1 = try? JSONDecoder().decode(NJPayloadV1.self, from: data) {
+                    v1.upsertProton1(protonJSON: protonJSON)
+                    if let out = try? JSONEncoder().encode(v1),
+                       let s = String(data: out, encoding: .utf8) { newPayload = s }
+                } else {
+                    var v1 = NJPayloadV1(v: 1, sections: [:])
+                    v1.upsertProton1(protonJSON: protonJSON)
+                    if let out = try? JSONEncoder().encode(v1),
+                       let s = String(data: out, encoding: .utf8) { newPayload = s }
+                }
+
+                print("NJ_SAVE_SINGLE_PROTON_BLOCK payload_bytes=\(newPayload.utf8.count)")
+                print("NJ_SAVE_SINGLE_PROTON_BLOCK payload_preview=\(String(newPayload.prefix(260)))")
+
+                let rcBlock = upsertBlock(blockID, newPayload, tagJSON, now)
+                if rcBlock != SQLITE_DONE {
+                    _ = exec("ROLLBACK;")
+                    if isBusy(rcBlock) { backoff(attempt); continue }
+                    db.dbgErr(dbp, "saveSingleProtonBlock.upsertBlock", rcBlock)
+                    return
+                }
+
+                if shouldEnqueue {
+                    let rcDirty = upsertDirty("block", blockID, "upsert", now)
+                    if rcDirty != SQLITE_DONE {
+                        _ = exec("ROLLBACK;")
+                        if isBusy(rcDirty) { backoff(attempt); continue }
+                        db.dbgErr(dbp, "saveSingleProtonBlock.upsertDirty", rcDirty)
+                        return
+                    }
+                    didEnqueue = true
+                }
+
+                let rcCommit = exec("COMMIT;")
+                if rcCommit != SQLITE_OK {
+                    _ = exec("ROLLBACK;")
+                    if isBusy(rcCommit) { backoff(attempt); continue }
+                    db.dbgErr(dbp, "saveSingleProtonBlock.commit", rcCommit)
+                    return
+                }
+
+                didCommit = true
+                print("NJ_SAVE_SINGLE_PROTON_BLOCK TX_DONE enqueued=\(didEnqueue ? 1 : 0)")
+                break
             }
 
-            sqlite3_finalize(stmt)
+            if !didCommit {
+                let msg = String(cString: sqlite3_errmsg(dbp))
+                print("NJ_SAVE_SINGLE_PROTON_BLOCK GIVE_UP msg=\(msg)")
+            }
         }
 
-        enqueueDirty(entity: "block", entityID: blockID, op: "upsert", updatedAtMs: now)
+        if didCommit && didEnqueue {
+            NotificationCenter.default.post(name: .njDirtyEnqueued, object: nil)
+        }
     }
 
     func updateNoteBlockOrderKey(instanceID: String, orderKey: Double) {

@@ -84,9 +84,12 @@ extension NJNoteEditorContainerView {
 
 
     func deleteBlock(_ id: UUID) {
+        if persistence.focusedBlockID == id {
+            persistence.forceEndEditingAndCommitNow(id)
+        }
         guard let i = persistence.blocks.firstIndex(where: { $0.id == id }) else { return }
         persistence.blocks.remove(at: i)
-
+        
         if persistence.blocks.isEmpty {
             let newID = UUID()
             let handle = makeWiredHandle()
@@ -145,35 +148,18 @@ extension NJNoteEditorContainerView {
     }
 
     func moveBlocks(from source: IndexSet, to destination: Int) {
-        let moved = source.compactMap { idx in
-            (idx >= 0 && idx < persistence.blocks.count) ? persistence.blocks[idx] : nil
-        }
-
         persistence.blocks.move(fromOffsets: source, toOffset: destination)
 
-        for m in moved {
-            guard let i = persistence.blocks.firstIndex(where: { $0.id == m.id }) else { continue }
-
-            let prev = (i > 0) ? persistence.blocks[i - 1].orderKey : 0
-            let next = (i + 1 < persistence.blocks.count) ? persistence.blocks[i + 1].orderKey : 0
-
-            var newKey: Double = 1000
-            if prev > 0 && next > 0 {
-                newKey = (prev + next) / 2.0
-            } else if prev > 0 {
-                newKey = prev + 1000
-            } else if next > 0 {
-                newKey = max(1000, next - 1000)
-            } else {
-                newKey = 1000
-            }
-
-            persistence.blocks[i].orderKey = newKey
-
-            let instanceID = persistence.blocks[i].instanceID
-            if !instanceID.isEmpty {
-                store.notes.updateNoteBlockOrderKey(instanceID: instanceID, orderKey: newKey)
+        for idx in persistence.blocks.indices {
+            let newKey = Double((idx + 1) * 1000)
+            if persistence.blocks[idx].orderKey != newKey {
+                persistence.blocks[idx].orderKey = newKey
+                let instanceID = persistence.blocks[idx].instanceID
+                if !instanceID.isEmpty {
+                    store.notes.updateNoteBlockOrderKey(instanceID: instanceID, orderKey: newKey)
+                }
             }
         }
     }
+
 }
