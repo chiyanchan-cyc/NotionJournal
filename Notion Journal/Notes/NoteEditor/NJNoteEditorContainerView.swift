@@ -321,6 +321,14 @@ private struct NJProtonFloatingFormatBar: View {
                 Button { handle.toggleBullet(); handle.snapshot() } label: { Image(systemName: "list.bullet") }
 
                 Divider().frame(height: 18)
+                
+                Button {
+                    handle.insertTagLine()
+                    handle.snapshot()
+                } label: {
+                    Image(systemName: "tag")
+                }
+
 
                 Button { handle.outdent(); handle.snapshot() } label: { Image(systemName: "decrease.indent") }
                 Button { handle.indent(); handle.snapshot() } label: { Image(systemName: "increase.indent") }

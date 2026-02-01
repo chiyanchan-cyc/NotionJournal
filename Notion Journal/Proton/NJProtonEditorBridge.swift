@@ -26,10 +26,23 @@ private func NJStandardizeFontFamily(_ font: UIFont) -> UIFont {
     if fd.symbolicTraits.contains(.traitMonoSpace) { return font }
 
     let size = font.pointSize
-    let traits = fd.symbolicTraits
 
-    let base = UIFont.systemFont(ofSize: size)
-    if let nfd = base.fontDescriptor.withSymbolicTraits(traits) {
+    let wRaw = (fd.object(forKey: .traits) as? [UIFontDescriptor.TraitKey: Any])?[.weight] as? CGFloat
+    let w0 = UIFont.Weight(wRaw ?? UIFont.Weight.regular.rawValue)
+
+    let hadBoldTrait = fd.symbolicTraits.contains(.traitBold)
+    let hadItalic = fd.symbolicTraits.contains(.traitItalic)
+
+    let isBold = hadBoldTrait || (w0 >= .semibold)
+
+    let w: UIFont.Weight = isBold ? (w0 < .semibold ? .semibold : w0) : .light
+    let base = UIFont.systemFont(ofSize: size, weight: w)
+
+    var keep: UIFontDescriptor.SymbolicTraits = []
+    if hadItalic { keep.insert(.traitItalic) }
+
+    if keep.isEmpty { return base }
+    if let nfd = base.fontDescriptor.withSymbolicTraits(keep) {
         return UIFont(descriptor: nfd, size: size)
     }
     return base
@@ -43,14 +56,13 @@ private func NJStandardizeFontFamily(_ s: NSAttributedString) -> NSAttributedStr
     m.enumerateAttribute(.font, in: full, options: []) { value, range, _ in
         guard let old = value as? UIFont else { return }
         let nf = NJStandardizeFontFamily(old)
-        if nf.fontName != old.fontName {
+        if nf.fontName != old.fontName || nf.pointSize != old.pointSize {
             m.addAttribute(.font, value: nf, range: range)
         }
     }
     m.endEditing()
     return m
 }
-
 
 private extension NSAttributedString {
     var fullRange: NSRange { NSRange(location: 0, length: length) }
@@ -147,7 +159,7 @@ private func NJInstallTextViewKeyCommandHook(_ tv: UITextView) {
 
 final class NJProtonListFormattingProvider: EditorListFormattingProvider {
     let listLineFormatting = LineFormatting(indentation: 24, spacingBefore: 2, spacingAfter: 2)
-    private let font: UIFont = .systemFont(ofSize: 17)
+    private let font: UIFont = .systemFont(ofSize: 17, weight: .light)
 
     func listLineMarkerFor(editor: EditorView, index: Int, level: Int, previousLevel: Int, attributeValue: Any?) -> ListLineMarker {
         let kind: NJListKind = {
@@ -472,6 +484,20 @@ private extension UIColor {
     }
 }
 
+private func NJApplyBaseFontWhereMissing(_ input: NSAttributedString, baseFont: UIFont) -> NSAttributedString {
+    if input.length == 0 { return input }
+    let m = NSMutableAttributedString(attributedString: input)
+    let full = NSRange(location: 0, length: m.length)
+    m.beginEditing()
+    m.enumerateAttribute(.font, in: full, options: []) { v, r, _ in
+        if v == nil {
+            m.addAttribute(.font, value: baseFont, range: r)
+        }
+    }
+    m.endEditing()
+    return m
+}
+
 final class NJProtonEditorHandle {
     weak var editor: EditorView?
     var debugName: String = ""
@@ -482,13 +508,11 @@ final class NJProtonEditorHandle {
     var onSnapshot: ((NSAttributedString, NSRange) -> Void)?
     var onUserTyped: ((NSAttributedString, NSRange) -> Void)?
     var onEndEditing: ((NSAttributedString, NSRange) -> Void)?
-    var onCtrlReturn: (() -> Void)?
     
     private var pendingHydrateProtonJSON: String? = nil
 
     func indent() { adjustIndent(delta: 24) }
     func outdent() { adjustIndent(delta: -24) }
-
     
     func exportProtonJSONString() -> String {
         guard let editor else { return "" }
@@ -1186,7 +1210,7 @@ final class NJProtonEditorHandle {
         let r = tv.selectedRange
 
         let div = NSAttributedString(string: "\n──────────\n", attributes: [
-            .font: UIFont.systemFont(ofSize: 17),
+            .font: UIFont.systemFont(ofSize: 17, weight: .light),
             .foregroundColor: UIColor.secondaryLabel
         ])
 
@@ -1205,7 +1229,7 @@ final class NJProtonEditorHandle {
         let m = NSMutableAttributedString(attributedString: tv.attributedText)
         let r = tv.selectedRange
         let box = NSAttributedString(string: "☐ ", attributes: [
-            .font: UIFont.systemFont(ofSize: 17),
+            .font: UIFont.systemFont(ofSize: 17, weight: .light),
             .foregroundColor: UIColor.label
         ])
 
@@ -1225,7 +1249,7 @@ final class NJProtonEditorHandle {
         df.dateFormat = "yyyy-MM-dd"
         let s = df.string(from: Date())
         let stamp = NSAttributedString(string: s, attributes: [
-            .font: UIFont.systemFont(ofSize: 17),
+            .font: UIFont.systemFont(ofSize: 17, weight: .light),
             .foregroundColor: UIColor.secondaryLabel
         ])
 
@@ -1257,11 +1281,85 @@ final class NJProtonEditorHandle {
 
         snapshot()
     }
+    
+    func insertTagLine() {
+        guard let editor else { return }
+        guard let tv = findTextView(in: editor) else { return }
+
+        let m = NSMutableAttributedString(attributedString: tv.attributedText)
+        let r = tv.selectedRange
+
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: (tv.typingAttributes[.font] as? UIFont) ?? UIFont.systemFont(ofSize: 17, weight: .light),
+            .foregroundColor: (tv.typingAttributes[.foregroundColor] as? UIColor) ?? UIColor.label
+        ]
+
+        let tag = NSAttributedString(string: "@tag: ", attributes: attrs)
+
+        m.replaceCharacters(in: r, with: tag)
+        let loc = r.location + tag.length
+        tv.attributedText = m
+        tv.selectedRange = NSRange(location: min(loc, m.length), length: 0)
+
+        snapshot()
+    }
 
     func increaseFont() { adjustFontSize(delta: 1) }
     func decreaseFont() { adjustFontSize(delta: -1) }
 
-    func toggleBold() { toggleFontTrait(.traitBold) }
+    func toggleBold() { toggleBoldWeight() }
+
+    private func toggleBoldWeight() {
+        guard let editor else { return }
+        guard let tv = findTextView(in: editor) else { return }
+
+        func weightOf(_ font: UIFont) -> UIFont.Weight {
+            let wRaw = (font.fontDescriptor.object(forKey: .traits) as? [UIFontDescriptor.TraitKey: Any])?[.weight] as? CGFloat
+            return UIFont.Weight(wRaw ?? UIFont.Weight.regular.rawValue)
+        }
+
+        func applyBold(_ on: Bool, _ font: UIFont) -> UIFont {
+            let size = font.pointSize
+            let fd = font.fontDescriptor
+            let hadItalic = fd.symbolicTraits.contains(.traitItalic)
+
+            let w0 = weightOf(font)
+            let w1: UIFont.Weight = on ? (w0 < .semibold ? .semibold : w0) : .light
+
+            let base = UIFont.systemFont(ofSize: size, weight: w1)
+
+            if !hadItalic { return base }
+            if let nfd = base.fontDescriptor.withSymbolicTraits([.traitItalic]) {
+                return UIFont(descriptor: nfd, size: size)
+            }
+            return base
+        }
+
+        let r = tv.selectedRange
+        if r.length == 0 {
+            let old = (tv.typingAttributes[.font] as? UIFont) ?? UIFont.systemFont(ofSize: 17, weight: .light)
+            let isBoldNow = old.fontDescriptor.symbolicTraits.contains(.traitBold) || (weightOf(old) >= .semibold)
+            tv.typingAttributes[.font] = applyBold(!isBoldNow, old)
+            return
+        }
+
+        let storage = tv.textStorage
+        let isBoldNow: Bool = {
+            let old = (storage.attribute(.font, at: r.location, effectiveRange: nil) as? UIFont) ?? UIFont.systemFont(ofSize: 17, weight: .light)
+            return old.fontDescriptor.symbolicTraits.contains(.traitBold) || (weightOf(old) >= .semibold)
+        }()
+
+        storage.beginEditing()
+        storage.enumerateAttribute(.font, in: r, options: []) { v, range, _ in
+            let old = (v as? UIFont) ?? UIFont.systemFont(ofSize: 17, weight: .light)
+            let nf = applyBold(!isBoldNow, old)
+            storage.addAttribute(.font, value: nf, range: range)
+        }
+        storage.endEditing()
+
+        snapshot()
+    }
+
     func toggleItalic() { toggleFontTrait(.traitItalic) }
     func toggleStrike() { toggleStrikeThrough() }
 
@@ -1276,7 +1374,7 @@ final class NJProtonEditorHandle {
 
         let r = tv.selectedRange
         if r.length == 0 {
-            let old = (tv.typingAttributes[.font] as? UIFont) ?? UIFont.systemFont(ofSize: 17)
+            let old = (tv.typingAttributes[.font] as? UIFont) ?? UIFont.systemFont(ofSize: 17, weight: .light)
             let newSize = max(8, min(48, old.pointSize + delta))
             let newFont = UIFont(descriptor: old.fontDescriptor, size: newSize)
             tv.typingAttributes[.font] = newFont
@@ -1285,7 +1383,7 @@ final class NJProtonEditorHandle {
 
         tv.textStorage.beginEditing()
         tv.textStorage.enumerateAttribute(.font, in: r, options: []) { value, range, _ in
-            let old = (value as? UIFont) ?? UIFont.systemFont(ofSize: 17)
+            let old = (value as? UIFont) ?? UIFont.systemFont(ofSize: 17, weight: .light)
             let newSize = max(8, min(48, old.pointSize + delta))
             let newFont = UIFont(descriptor: old.fontDescriptor, size: newSize)
             tv.textStorage.addAttribute(.font, value: newFont, range: range)
@@ -1301,7 +1399,7 @@ final class NJProtonEditorHandle {
 
         let r = tv.selectedRange
         if r.length == 0 {
-            let old = (tv.typingAttributes[.font] as? UIFont) ?? UIFont.systemFont(ofSize: 17)
+            let old = (tv.typingAttributes[.font] as? UIFont) ?? UIFont.systemFont(ofSize: 17, weight: .light)
             let fd = old.fontDescriptor
             let has = fd.symbolicTraits.contains(trait)
             var traits = fd.symbolicTraits
@@ -1314,7 +1412,7 @@ final class NJProtonEditorHandle {
 
         tv.textStorage.beginEditing()
         tv.textStorage.enumerateAttribute(.font, in: r, options: []) { value, range, _ in
-            let old = (value as? UIFont) ?? UIFont.systemFont(ofSize: 17)
+            let old = (value as? UIFont) ?? UIFont.systemFont(ofSize: 17, weight: .light)
             let fd = old.fontDescriptor
             let has = fd.symbolicTraits.contains(trait)
             var traits = fd.symbolicTraits
@@ -1369,6 +1467,7 @@ final class NJProtonEditorHandle {
 
     func invalidateHydration() {
         didHydrate = false
+        lastHydratedJSONSig = 0
         attachedEditorID = nil
         hydrationScheduled = false
         pendingJSON = nil
@@ -1385,9 +1484,17 @@ final class NJProtonEditorHandle {
         }
     }
 
+    private var lastHydratedJSONSig: Int = 0
+
     func applyPendingHydrateIfNeeded() {
         guard let json = pendingHydrateProtonJSON else { return }
         guard editor != nil, textView != nil else { return }
+
+        let sig = json.hashValue
+        if didHydrate, sig == lastHydratedJSONSig {
+            pendingHydrateProtonJSON = nil
+            return
+        }
 
         let run = { [weak self] in
             guard let self else { return }
@@ -1458,42 +1565,43 @@ final class NJProtonEditorHandle {
         guard textView != nil else { return }
         guard let editor else { return }
 
-        if let doc = NJProtonDocCodecV1.decodeIfPresent(json: json) {
-            let decoded = NJProtonDocCodecV1.buildAttributedString(doc: doc)
+        let baseFont = UIFont.systemFont(ofSize: 17, weight: .light)
 
+        func apply(_ a: NSAttributedString) {
+            let fixedFonts = NJApplyBaseFontWhereMissing(a, baseFont: baseFont)
             let r = editor.selectedRange
-            editor.attributedText = decoded
-            editor.selectedRange = NSRange(location: min(r.location, decoded.length), length: 0)
+            editor.attributedText = fixedFonts
+            editor.selectedRange = NSRange(location: min(r.location, fixedFonts.length), length: 0)
+
+            if let tv = textView {
+                var ta = tv.typingAttributes
+                ta[.font] = baseFont
+                if ta[.foregroundColor] == nil { ta[.foregroundColor] = UIColor.label }
+                tv.typingAttributes = ta
+            }
 
             didHydrate = true
+            lastHydratedJSONSig = json.hashValue
             onSnapshot?(editor.attributedText, editor.selectedRange)
+        }
+
+        if let doc = NJProtonDocCodecV1.decodeIfPresent(json: json) {
+            let decoded = NJStandardizeFontFamily(NJProtonDocCodecV1.buildAttributedString(doc: doc))
+            apply(decoded)
             return
         }
 
         if let nodes = NJProtonNodeCodecV1.decodeNodesIfPresent(json: json) {
-            let decoded = NJProtonNodeCodecV1.buildAttributedString(nodes: nodes)
-
-            let r = editor.selectedRange
-            editor.attributedText = decoded
-            editor.selectedRange = NSRange(location: min(r.location, decoded.length), length: 0)
-
-            didHydrate = true
-            onSnapshot?(editor.attributedText, editor.selectedRange)
+            let decoded = NJStandardizeFontFamily(NJProtonNodeCodecV1.buildAttributedString(nodes: nodes))
+            apply(decoded)
             return
         }
 
         let mode = njDefaultContentMode()
         let maxSize = CGSize(width: 4096, height: 4096)
         let decoded = (try? NJProtonAuditCodec.decoder.decodeDocument(mode: mode, maxSize: maxSize, json: json)) ?? NSAttributedString(string: "")
-
-        let fixed = NJProtonListFixups.apply(decoded)
-
-        let r = editor.selectedRange
-        editor.attributedText = fixed
-        editor.selectedRange = NSRange(location: min(r.location, fixed.length), length: 0)
-
-        didHydrate = true
-        onSnapshot?(editor.attributedText, editor.selectedRange)
+        let fixed = NJStandardizeFontFamily(NJProtonListFixups.apply(decoded))
+        apply(fixed)
     }
 
     private func njDefaultContentMode() -> EditorContentMode {
@@ -1522,7 +1630,6 @@ final class NJKeyCommandEditorView: EditorView {
 
     override var keyCommands: [UIKeyCommand]? {
         [
-            UIKeyCommand(input: "\r", modifierFlags: [.control], action: #selector(ctrlReturn)),
 
             UIKeyCommand(input: "b", modifierFlags: [.command], action: #selector(cmdBold)),
             UIKeyCommand(input: "i", modifierFlags: [.command], action: #selector(cmdItalic)),
@@ -1538,10 +1645,6 @@ final class NJKeyCommandEditorView: EditorView {
     @objc private func cmdUnderline() {
         njHandle?.toggleUnderline()
         njHandle?.snapshot()
-    }
-
-    @objc private func ctrlReturn() {
-        njHandle?.onCtrlReturn?()
     }
 
     @objc private func cmdBold() {
@@ -1599,11 +1702,9 @@ struct NJProtonEditorView: UIViewRepresentable {
         }
 
         handle.withProgrammatic? {
-            v.attributedText = initialAttributedText
+            v.attributedText = NJStandardizeFontFamily(initialAttributedText)
             v.selectedRange = initialSelectedRange
         }
-
-        normalizeTypingAttributesIfNeeded(v)
 
         if let tv = findTextView(in: v) {
             NJInstallTextViewKeyCommandHook(tv)
@@ -1617,7 +1718,10 @@ struct NJProtonEditorView: UIViewRepresentable {
             tv.textContainerInset = .zero
             tv.textContainer.lineFragmentPadding = 0
 
+            normalizeTypingAttributesIfNeeded(v)
             context.coordinator.attachTextView(tv)
+        } else {
+            normalizeTypingAttributesIfNeeded(v)
         }
 
         v.njProtonHandle = handle
@@ -1646,8 +1750,10 @@ struct NJProtonEditorView: UIViewRepresentable {
                     tv.njProtonHandle = handle
                     handle.textView = tv
                 }
+                normalizeTypingAttributesIfNeeded(v)
+            } else {
+                normalizeTypingAttributesIfNeeded(v)
             }
-            normalizeTypingAttributesIfNeeded(v)
             context.coordinator.updateMeasuredHeight(from: v)
             handle.applyPendingHydrateIfNeeded()
         }
@@ -1675,11 +1781,13 @@ struct NJProtonEditorView: UIViewRepresentable {
             tv.backgroundColor = .clear
             tv.textContainerInset = .zero
             tv.textContainer.lineFragmentPadding = 0
+
+            normalizeTypingAttributesIfNeeded(uiView)
             context.coordinator.attachTextView(tv)
 
-            context.coordinator.beginProgrammatic()
             handle.applyPendingHydrateIfNeeded()
-            context.coordinator.endProgrammatic()
+        } else {
+            normalizeTypingAttributesIfNeeded(uiView)
         }
 
         context.coordinator.updateMeasuredHeight(from: uiView)
@@ -1702,18 +1810,10 @@ struct NJProtonEditorView: UIViewRepresentable {
 
         var ta = tv.typingAttributes
 
-        let baseFont = UIFont.systemFont(ofSize: 17)
-
         if let f = ta[.font] as? UIFont {
-            let fd = f.fontDescriptor
-            let traits = fd.symbolicTraits.subtracting([.traitBold, .traitItalic])
-            if let cleanFD = fd.withSymbolicTraits(traits) {
-                ta[.font] = UIFont(descriptor: cleanFD, size: f.pointSize)
-            } else {
-                ta[.font] = baseFont
-            }
+            ta[.font] = NJStandardizeFontFamily(f)
         } else {
-            ta[.font] = baseFont
+            ta[.font] = UIFont.systemFont(ofSize: 17, weight: .light)
         }
 
         if ta[.foregroundColor] == nil {
@@ -1722,7 +1822,6 @@ struct NJProtonEditorView: UIViewRepresentable {
 
         tv.typingAttributes = ta
     }
-
 
     final class Coordinator: NSObject, EditorViewDelegate, UITextViewDelegate {
         @Binding private var measuredHeight: CGFloat
@@ -1750,6 +1849,37 @@ struct NJProtonEditorView: UIViewRepresentable {
                 NotificationCenter.default.removeObserver(o)
             }
         }
+        
+        private var isNormalizingFonts = false
+
+        private func normalizeFontFamilyInTextStorage(_ tv: UITextView) {
+            if isNormalizingFonts { return }
+            let storage = tv.textStorage
+            if storage.length == 0 { return }
+
+            var didChange = false
+            isNormalizingFonts = true
+            storage.beginEditing()
+            storage.enumerateAttribute(.font, in: NSRange(location: 0, length: storage.length), options: []) { v, range, _ in
+                guard let old = v as? UIFont else { return }
+                let nf = NJStandardizeFontFamily(old)
+                if nf.fontName != old.fontName {
+                    storage.addAttribute(.font, value: nf, range: range)
+                    didChange = true
+                }
+            }
+            storage.endEditing()
+            isNormalizingFonts = false
+
+            if didChange {
+                var ta = tv.typingAttributes
+                if let f = ta[.font] as? UIFont {
+                    ta[.font] = NJStandardizeFontFamily(f)
+                    tv.typingAttributes = ta
+                }
+            }
+        }
+
 
         func textViewDidBeginEditing(_ tv: UITextView) {
             if isProgrammatic { return }
@@ -1791,9 +1921,12 @@ struct NJProtonEditorView: UIViewRepresentable {
                 self.typingIdleWork = w
                 DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(self.typingIdleMs), execute: w)
 
+                self.normalizeFontFamilyInTextStorage(tv)
+
                 self.handle.onSnapshot?(ev.attributedText, ev.selectedRange)
                 self.handle.onUserTyped?(ev.attributedText, ev.selectedRange)
                 self.updateMeasuredHeight(from: ev)
+
 
             }
 
