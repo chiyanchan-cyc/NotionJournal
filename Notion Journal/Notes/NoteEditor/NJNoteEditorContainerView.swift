@@ -65,37 +65,68 @@ struct NJNoteEditorContainerView: View {
 
                     let rowIndex = (persistence.blocks.firstIndex(where: { $0.id == id }) ?? 0) + 1
 
+                    let isFocusedNow = (id == persistence.focusedBlockID)
+                    let attrB = bindingAttr(id)
+                    let selB = bindingSel(id)
+
+                    let onFocusBlock: () -> Void = {
+                        let prev = persistence.focusedBlockID
+                        if let prev, prev != id {
+                            persistence.forceEndEditingAndCommitNow(prev)
+                        }
+                        persistence.focusedBlockID = id
+                        h.focus()
+                        blockBus.focus(id)
+                    }
+
+                    let onCommitBlock: () -> Void = {
+                        persistence.markDirty(id)
+                        persistence.scheduleCommit(id)
+                    }
+
+                    let onCtrlReturnBlock: () -> Void = { blockBus.ctrlReturn(id) }
+                    let onDeleteBlock: () -> Void = { blockBus.delete(id) }
+                    let onHydrateBlock: () -> Void = { persistence.hydrateProton(id) }
+
+                    let inherited: [String] = []
+                    let editable: [String] = []
+
+                    let liveTagJSON: String? = persistence.blocks.first(where: { $0.id == id })?.tagJSON
+
+                    let onSaveTags: (String) -> Void = { newJSON in
+                        if let i = persistence.blocks.firstIndex(where: { $0.id == id }) {
+                            persistence.blocks[i].tagJSON = newJSON
+                            persistence.blocks = Array(persistence.blocks)
+                        }
+                        persistence.markDirty(id)
+                        persistence.scheduleCommit(id)
+                    }
+
                     NJBlockHostView(
                         index: rowIndex,
                         createdAtMs: b.createdAtMs,
                         domainPreview: b.domainPreview,
-                        onEditTags: { },
+                        onEditTags: nil,
                         goalPreview: nil,
-                        onAddGoal: { },
+                        onAddGoal: nil,
                         hasClipPDF: false,
-                        onOpenClipPDF: { },
+                        onOpenClipPDF: nil,
                         protonHandle: h,
                         isCollapsed: collapsedBinding,
-                        isFocused: id == persistence.focusedBlockID,
-                        attr: bindingAttr(id),
-                        sel: bindingSel(id),
-                        onFocus: {
-                            let prev = persistence.focusedBlockID
-                            if let prev, prev != id {
-                                persistence.forceEndEditingAndCommitNow(prev)
-                            }
-                            persistence.focusedBlockID = id
-                            h.focus()
-                            blockBus.focus(id)
-                        },
-                        onCtrlReturn: { blockBus.ctrlReturn(id) },
-                        onDelete: { blockBus.delete(id) },
-                        onHydrateProton: { persistence.hydrateProton(id) },
-                        onCommitProton: {
-                            persistence.markDirty(id)
-                            persistence.scheduleCommit(id)
-                        }
+                        isFocused: isFocusedNow,
+                        attr: attrB,
+                        sel: selB,
+                        onFocus: onFocusBlock,
+                        onCtrlReturn: onCtrlReturnBlock,
+                        onDelete: onDeleteBlock,
+                        onHydrateProton: onHydrateBlock,
+                        onCommitProton: onCommitBlock,
+                        inheritedTags: inherited,
+                        editableTags: editable,
+                        tagJSON: liveTagJSON,
+                        onSaveTagJSON: onSaveTags
                     )
+
                     .id("\(id.uuidString)-\(collapsedBinding.wrappedValue ? "c" : "e")")
                     .fixedSize(horizontal: false, vertical: true)
                     .listRowInsets(EdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 12))

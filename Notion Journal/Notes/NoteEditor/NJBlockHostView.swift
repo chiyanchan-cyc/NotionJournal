@@ -8,12 +8,18 @@ struct NJBlockHostView: View {
     let domainPreview: String?
     let onEditTags: (() -> Void)?
 
+    let inheritedTags: [String]
+    let editableTags: [String]
+    let tagJSON: String?
+    let onSaveTagJSON: ((String) -> Void)?
+
+
     let goalPreview: String?
     let onAddGoal: (() -> Void)?
 
     let hasClipPDF: Bool
     let onOpenClipPDF: (() -> Void)?
-    
+
     let protonHandle: NJProtonEditorHandle
     let onHydrateProton: () -> Void
     let onCommitProton: () -> Void
@@ -29,6 +35,10 @@ struct NJBlockHostView: View {
 
     @State private var didHydrate = false
     @State private var editorHeight: CGFloat = 44
+
+    @State private var showTagSheet: Bool = false
+    @State private var tagDraft: [String] = []
+    @State private var tagNewText: String = ""
 
     init(
         index: Int,
@@ -48,12 +58,20 @@ struct NJBlockHostView: View {
         onCtrlReturn: @escaping () -> Void,
         onDelete: @escaping () -> Void,
         onHydrateProton: @escaping () -> Void,
-        onCommitProton: @escaping () -> Void
+        onCommitProton: @escaping () -> Void,
+        inheritedTags: [String] = [],
+        editableTags: [String] = [],
+        tagJSON: String? = nil,
+        onSaveTagJSON: ((String) -> Void)? = nil
     ) {
         self.index = index
         self.createdAtMs = createdAtMs
         self.domainPreview = domainPreview
         self.onEditTags = onEditTags
+        self.inheritedTags = inheritedTags
+        self.editableTags = editableTags
+        self.tagJSON = tagJSON
+        self.onSaveTagJSON = onSaveTagJSON
         self.goalPreview = goalPreview
         self.onAddGoal = onAddGoal
         self.hasClipPDF = hasClipPDF
@@ -71,11 +89,58 @@ struct NJBlockHostView: View {
     }
 
     private func oneLine(_ s: String) -> String {
-        let t = s
-            .replacingOccurrences(of: "\u{FFFC}", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let t = s.replacingOccurrences(of: "\u{FFFC}", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
         if t.isEmpty { return "" }
         return t.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
+    }
+
+    private func normalizedTag(_ s: String) -> String {
+        s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func uniqPreserveOrder(_ xs: [String]) -> [String] {
+        var seen = Set<String>()
+        var out: [String] = []
+        for x in xs {
+            let t = normalizedTag(x)
+            if t.isEmpty { continue }
+            if seen.contains(t) { continue }
+            seen.insert(t)
+            out.append(t)
+        }
+        return out
+    }
+    
+    private func decodeTagJSON(_ s: String?) -> [String] {
+        guard let s, let data = s.data(using: .utf8) else { return [] }
+        guard let arr = (try? JSONSerialization.jsonObject(with: data)) as? [Any] else { return [] }
+        return arr.compactMap { $0 as? String }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+
+    private func encodeTagJSON(_ tags: [String]) -> String {
+        let arr = uniqPreserveOrder(tags)
+        if let data = try? JSONSerialization.data(withJSONObject: arr, options: []),
+           let s = String(data: data, encoding: .utf8) {
+            return s
+        }
+        return "[]"
+    }
+
+    private func openTagSheet() {
+        let decoded = decodeTagJSON(tagJSON)
+        let base = editableTags.isEmpty ? decoded : editableTags
+        tagDraft = uniqPreserveOrder(base)
+
+//        if tagDraft.isEmpty {
+//            let s = (tagJSON ?? "<nil>")
+//            tagDraft = ["__DEBUG tagJSON=\(s.prefix(120))__"]
+//        }
+
+        tagNewText = ""
+        showTagSheet = true
     }
 
     var body: some View {
@@ -152,7 +217,6 @@ struct NJBlockHostView: View {
                         }
                     }
                     .padding(.trailing, 44)
-
                 }
 
                 VStack {
@@ -161,10 +225,13 @@ struct NJBlockHostView: View {
                         let d = oneLine(domainPreview ?? "")
                         let g = oneLine(goalPreview ?? "")
 
-                        Button { onEditTags?() } label: {
+                        Button {
+                            openTagSheet()
+                        } label: {
                             Label(d.isEmpty ? "Domain: (none)" : "Domain: \(d)", systemImage: "tag")
                         }
-                        .disabled(onEditTags == nil)
+
+                        .disabled(false)
 
                         if g.isEmpty {
                             Label("Goal: (none)", systemImage: "target").foregroundStyle(.secondary)
@@ -209,6 +276,67 @@ struct NJBlockHostView: View {
         .contentShape(Rectangle())
         .onTapGesture { onFocus() }
         .padding(.vertical, isCollapsed ? 2 : 6)
+        .sheet(isPresented: $showTagSheet) {
+            NavigationStack {
+                List {
+                    if !inheritedTags.isEmpty {
+                        Section("Inherited") {
+                            ForEach(uniqPreserveOrder(inheritedTags), id: \.self) { t in
+                                HStack {
+                                    Text(t)
+                                    Spacer()
+                                    Image(systemName: "lock.fill")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+
+                    Section("Block Tags") {
+                        if tagDraft.isEmpty {
+                            Text("(none)")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(tagDraft, id: \.self) { t in
+                                Text(t)
+                            }
+                            .onDelete { idx in
+                                tagDraft.remove(atOffsets: idx)
+                            }
+                        }
+
+                        HStack(spacing: 10) {
+                            TextField("Add tag", text: $tagNewText)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled(true)
+                            Button("Add") {
+                                let t = normalizedTag(tagNewText)
+                                if !t.isEmpty {
+                                    tagDraft = uniqPreserveOrder(tagDraft + [t])
+                                }
+                                tagNewText = ""
+                            }
+                            .disabled(normalizedTag(tagNewText).isEmpty)
+                        }
+                    }
+                }
+                .navigationTitle("Tags")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { showTagSheet = false }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Save") {
+                            let json = encodeTagJSON(tagDraft)
+                            onSaveTagJSON?(json)
+                            showTagSheet = false
+                        }
+                        .disabled(onSaveTagJSON == nil)
+                    }
+                }
+            }
+        }
         .onChange(of: isCollapsed) { v in
             if v {
                 didHydrate = false
