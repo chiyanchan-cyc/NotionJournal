@@ -24,6 +24,7 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         var loadedPayloadHash: String
         var protonJSON: String
         var tagJSON: String
+        var clipPDFRel: String
 
         init(
             id: UUID = UUID(),
@@ -40,7 +41,8 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             loadedUpdatedAtMs: Int64 = 0,
             loadedPayloadHash: String = "",
             protonJSON: String = "",
-            tagJSON: String = ""
+            tagJSON: String = "",
+            clipPDFRel: String = ""
         ) {
             self.id = id
             self.blockID = blockID
@@ -57,6 +59,7 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             self.loadedPayloadHash = loadedPayloadHash
             self.protonJSON = protonJSON
             self.tagJSON = tagJSON
+            self.clipPDFRel = clipPDFRel
         }
 
         static func == (lhs: BlockState, rhs: BlockState) -> Bool {
@@ -73,7 +76,8 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             lhs.loadedUpdatedAtMs == rhs.loadedUpdatedAtMs &&
             lhs.loadedPayloadHash == rhs.loadedPayloadHash &&
             lhs.protonJSON == rhs.protonJSON &&
-            lhs.tagJSON == rhs.tagJSON
+            lhs.tagJSON == rhs.tagJSON &&
+            lhs.clipPDFRel == rhs.clipPDFRel
         }
     }
 
@@ -88,6 +92,44 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
     private var didConfigure = false
 
     init() { }
+
+    private func extractClipPDFRelFromPayload(_ payloadJSON: String) -> String {
+        guard let data = payloadJSON.data(using: .utf8) else { return "" }
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return "" }
+        guard let sections = root["sections"] as? [String: Any] else { return "" }
+        guard let clip = sections["clip"] as? [String: Any] else { return "" }
+        guard let clipData = clip["data"] as? [String: Any] else { return "" }
+        guard let pdfPath = clipData["pdf_path"] as? String else { return "" }
+        return pdfPath.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func dbLoadClipPDFRel(_ blockID: String) -> String {
+        guard let store else { return "" }
+        return store.notes.db.withDB { dbp in
+            var out = ""
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT payload_json
+            FROM nj_block
+            WHERE block_id = ? AND deleted = 0
+            LIMIT 1;
+            """
+            let rc = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
+            if rc != SQLITE_OK { return "" }
+            defer { sqlite3_finalize(stmt) }
+
+            sqlite3_bind_text(stmt, 1, blockID, -1, SQLITE_TRANSIENT)
+
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                if let c = sqlite3_column_text(stmt, 0) {
+                    let payload = String(cString: c)
+                    out = extractClipPDFRelFromPayload(payload)
+                }
+            }
+
+            return out
+        }
+    }
 
     func configure(store: AppStore, noteID: NJNoteID) {
         if didConfigure { return }
@@ -191,6 +233,63 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             return out
         }
     }
+    
+    private func dbDebugAttachments(_ blockID: String) {
+        guard let store else { return }
+        store.notes.db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT name
+            FROM sqlite_master
+            WHERE type='table' AND name LIKE '%attach%';
+            """
+            if sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) != SQLITE_OK { return }
+            defer { sqlite3_finalize(stmt) }
+
+            var tables: [String] = []
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                if let c = sqlite3_column_text(stmt, 0) { tables.append(String(cString: c)) }
+            }
+
+            print("NJ_ATTACH_DEBUG tables=\(tables) block_id=\(blockID)")
+
+            for t in tables {
+                var st2: OpaquePointer?
+                let q = "SELECT * FROM \(t) WHERE block_id = ? LIMIT 5;"
+                let rc = sqlite3_prepare_v2(dbp, q, -1, &st2, nil)
+                if rc != SQLITE_OK { continue }
+                defer { sqlite3_finalize(st2) }
+                sqlite3_bind_text(st2, 1, blockID, -1, SQLITE_TRANSIENT)
+
+                let colCount = sqlite3_column_count(st2)
+                var colNames: [String] = []
+                colNames.reserveCapacity(Int(colCount))
+                for i in 0..<colCount {
+                    if let n = sqlite3_column_name(st2, i) { colNames.append(String(cString: n)) }
+                }
+
+                var rowN = 0
+                while sqlite3_step(st2) == SQLITE_ROW {
+                    rowN += 1
+                    var parts: [String] = []
+                    for i in 0..<colCount {
+                        let name = colNames[Int(i)]
+                        if let c = sqlite3_column_text(st2, i) {
+                            parts.append("\(name)=\(String(cString: c))")
+                        } else {
+                            let v = sqlite3_column_int64(st2, i)
+                            parts.append("\(name)=\(v)")
+                        }
+                    }
+                    print("NJ_ATTACH_DEBUG \(t) row\(rowN): " + parts.joined(separator: " | "))
+                }
+
+                if rowN == 0 {
+                    print("NJ_ATTACH_DEBUG \(t) no rows for block_id")
+                }
+            }
+        }
+    }
 
     func reload(makeHandle: @escaping () -> NJProtonEditorHandle) {
             guard let store, let noteID else { return }
@@ -272,6 +371,11 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                 let createdAtMs = dbLoadBlockCreatedAtMs(row.blockID)
                 let domainPreview = dbLoadDomainPreview3FromBlockTag(row.blockID)
                 let tagJSON = dbLoadBlockTagJSON(row.blockID)
+                let clipPDFRel = dbLoadClipPDFRel(row.blockID)
+
+                if clipPDFRel.isEmpty {
+                    dbDebugAttachments(row.blockID)
+                }
 
                 out.append(
                     BlockState(
@@ -289,9 +393,11 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                         loadedUpdatedAtMs: 0,
                         loadedPayloadHash: "",
                         protonJSON: protonJSON,
-                        tagJSON: tagJSON
+                        tagJSON: tagJSON,
+                        clipPDFRel: clipPDFRel
                     )
                 )
+
             }
 
             blocks = out

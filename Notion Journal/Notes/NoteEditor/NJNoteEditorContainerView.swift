@@ -27,7 +27,16 @@ struct NJNoteEditorContainerView: View {
     @State var lastSplitSig: (UUID, Int, Int, Int)? = nil
     @State var lastSplitSigAtMs: Int64 = 0
     @State var blockBus = NJBlockEventBus()
+
+    private struct NJPDFSheetItem: Identifiable {
+        let id = UUID()
+        let url: URL
+    }
+
+    @State private var clipPDFSheet: NJPDFSheetItem? = nil
+
     @State private var showClipboardInbox = false
+
 
 
     var body: some View {
@@ -102,6 +111,8 @@ struct NJNoteEditorContainerView: View {
                         persistence.scheduleCommit(id)
                     }
 
+                    let rel = b.clipPDFRel.trimmingCharacters(in: .whitespacesAndNewlines)
+
                     NJBlockHostView(
                         index: rowIndex,
                         createdAtMs: b.createdAtMs,
@@ -109,8 +120,8 @@ struct NJNoteEditorContainerView: View {
                         onEditTags: nil,
                         goalPreview: nil,
                         onAddGoal: nil,
-                        hasClipPDF: false,
-                        onOpenClipPDF: nil,
+                        hasClipPDF: !rel.isEmpty,
+                        onOpenClipPDF: rel.isEmpty ? nil : { openClipPDFRel(rel) },
                         protonHandle: h,
                         isCollapsed: collapsedBinding,
                         isFocused: isFocusedNow,
@@ -198,7 +209,13 @@ struct NJNoteEditorContainerView: View {
                 }
             }
         }
-        
+
+        .sheet(item: $clipPDFSheet) { item in
+            NJPDFQuickView(url: item.url)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
+
         .sheet(isPresented: $showClipboardInbox) {
             NJClipboardInboxView(
                 noteID: noteID.raw,
@@ -219,6 +236,69 @@ struct NJNoteEditorContainerView: View {
         .onDisappear {
             if let id = persistence.focusedBlockID {
                 persistence.forceEndEditingAndCommitNow(id)
+            }
+        }
+    }
+
+    func waitForICloudFile(_ u: URL, maxWaitSeconds: Double) async -> Bool {
+        let fm = FileManager.default
+
+        try? fm.startDownloadingUbiquitousItem(at: u)
+
+        let deadline = Date().timeIntervalSince1970 + maxWaitSeconds
+
+        while Date().timeIntervalSince1970 < deadline {
+            if let st = (try? u.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey]))
+                .flatMap({ $0.ubiquitousItemDownloadingStatus }) {
+                if st == .current { return true }
+            }
+
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+
+        if let st = (try? u.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey]))
+            .flatMap({ $0.ubiquitousItemDownloadingStatus }) {
+            return st == .current
+        }
+
+        return false
+    }
+
+    private func isLikelyPDF(_ u: URL) -> Bool {
+        let ext = u.pathExtension.lowercased()
+        return ext == "pdf"
+    }
+
+    private func clipPDFURLFromRel(_ rel: String) -> URL? {
+        let r = rel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if r.isEmpty { return nil }
+        if r.hasPrefix("/") { return URL(fileURLWithPath: r) }
+        guard let base = FileManager.default.url(forUbiquityContainerIdentifier: "iCloud.com.CYC.NotionJournal") else { return nil }
+
+        if r.hasPrefix("Documents/") {
+            let tail = String(r.dropFirst("Documents/".count))
+            return base.appendingPathComponent("Documents", isDirectory: true).appendingPathComponent(tail, isDirectory: false)
+        }
+
+        return base.appendingPathComponent(r)
+    }
+    private func openClipPDFRel(_ rel: String) {
+        guard let u = clipPDFURLFromRel(rel) else { return }
+
+        Task {
+            let ready = await waitForICloudFile(u, maxWaitSeconds: 15.0)
+
+            guard ready else {
+                await MainActor.run {
+                    clipPDFSheet = NJPDFSheetItem(url: u)
+                }
+                return
+            }
+
+            let local = await materializeToTemp(u)
+
+            await MainActor.run {
+                clipPDFSheet = NJPDFSheetItem(url: local ?? u)
             }
         }
     }
@@ -372,6 +452,34 @@ private struct NJProtonFloatingFormatBar: View {
     }
 }
 
+private func materializeToTemp(_ src: URL) async -> URL? {
+    let fm = FileManager.default
+    let tmp = fm.temporaryDirectory
+        .appendingPathComponent("nj_clip_pdf", isDirectory: true)
+
+    try? fm.createDirectory(at: tmp, withIntermediateDirectories: true)
+
+    let dst = tmp.appendingPathComponent(UUID().uuidString + ".pdf", isDirectory: false)
+
+    return await withCheckedContinuation { cont in
+        let coord = NSFileCoordinator()
+        var err: NSError?
+        coord.coordinate(readingItemAt: src, options: [], error: &err) { readURL in
+            do {
+                if fm.fileExists(atPath: dst.path) { try fm.removeItem(at: dst) }
+                try fm.copyItem(at: readURL, to: dst)
+                cont.resume(returning: dst)
+            } catch {
+                cont.resume(returning: nil)
+            }
+        }
+        if err != nil {
+            cont.resume(returning: nil)
+        }
+    }
+}
+
+
 private func extractProtonJSON(_ payload: String) -> String? {
     guard
         let data = payload.data(using: .utf8),
@@ -439,3 +547,145 @@ private struct NJHiddenShortcuts: View {
     }
 
 }
+
+private struct NJPDFQuickView: View {
+    let url: URL
+    @Environment(\.dismiss) var dismiss
+
+    @State private var doc: PDFDocument? = nil
+    @State private var err: String = ""
+    @State private var loading: Bool = true
+
+    var body: some View {
+        VStack(spacing: 0) {
+
+            // ✅ SHEET DRAG ZONE (MUST BE OUTSIDE NavigationStack)
+            Rectangle()
+                .fill(.clear)
+                .frame(height: 28)
+                .contentShape(Rectangle())
+
+            NavigationStack {
+                Group {
+                    if loading {
+                        VStack(spacing: 12) {
+                            ProgressView()
+                            Text("Loading PDF…")
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if let doc {
+                        PDFKitDocumentView(doc: doc)
+                    } else {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Failed to open PDF")
+                                .font(.headline)
+                            if !err.isEmpty {
+                                Text(err)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(16)
+                    }
+                }
+                .navigationTitle(url.lastPathComponent)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Done") { dismiss() }
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .presentationBackgroundInteraction(.enabled)
+        .presentationContentInteraction(.resizes)
+        .task {
+            loading = true
+            err = ""
+            doc = PDFDocument(url: url)
+            loading = false
+        }
+    }
+
+}
+
+private struct PDFKitDocumentView: UIViewRepresentable {
+    let doc: PDFDocument
+
+    func makeUIView(context: Context) -> PDFView {
+        let v = PDFView()
+        v.displayMode = .singlePageContinuous
+        v.displayDirection = .vertical
+        v.autoScales = false
+        v.backgroundColor = .clear
+        return v
+    }
+
+    func updateUIView(_ v: PDFView, context: Context) {
+        if v.document !== doc {
+            v.document = doc
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                v.minScaleFactor = v.scaleFactorForSizeToFit
+                v.maxScaleFactor = 4.0
+                v.scaleFactor = v.scaleFactorForSizeToFit
+            }
+        }
+    }
+}
+
+private struct PDFKitRepresentedView: UIViewRepresentable {
+    let url: URL
+
+    func makeUIView(context: Context) -> PDFView {
+        let v = PDFView()
+        v.displayMode = .singlePageContinuous
+        v.displayDirection = .vertical
+        v.autoScales = false
+        v.minScaleFactor = v.scaleFactorForSizeToFit
+        v.maxScaleFactor = 4.0
+        v.scaleFactor = v.scaleFactorForSizeToFit
+        return v
+    }
+
+    func updateUIView(_ uiView: PDFView, context: Context) {
+        if uiView.document == nil {
+            uiView.document = PDFDocument(url: url)
+            uiView.scaleFactor = uiView.scaleFactorForSizeToFit
+        }
+    }
+}
+
+
+private func loadPDFDocument(url: URL) async throws -> PDFDocument {
+    let fm = FileManager.default
+    let rv = try? url.resourceValues(forKeys: [.isUbiquitousItemKey])
+    if rv?.isUbiquitousItem == true {
+        try? fm.startDownloadingUbiquitousItem(at: url)
+
+        let deadline = Date().addingTimeInterval(12)
+        while Date() < deadline {
+            let v = try? url.resourceValues(forKeys: [.ubiquitousItemDownloadingStatusKey])
+            if let s = v?.ubiquitousItemDownloadingStatus, s == .current { break }
+            try await Task.sleep(nanoseconds: 200_000_000)
+        }
+    }
+
+    let coord = NSFileCoordinator()
+    var readErr: NSError?
+    var data: Data? = nil
+
+    coord.coordinate(readingItemAt: url, options: [], error: &readErr) { u in
+        data = try? Data(contentsOf: u)
+    }
+
+    if let readErr { throw readErr }
+    guard let data, let d = PDFDocument(data: data) else {
+        throw NSError(domain: "NJPDF", code: -1, userInfo: [NSLocalizedDescriptionKey: "PDFDocument init failed"])
+    }
+    return d
+}
+

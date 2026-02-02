@@ -35,6 +35,9 @@ struct NJBlockHostView: View {
 
     @State private var didHydrate = false
     @State private var editorHeight: CGFloat = 44
+    
+    @State private var showClipMenu: Bool = false
+
 
     @State private var showTagSheet: Bool = false
     @State private var tagDraft: [String] = []
@@ -244,13 +247,13 @@ struct NJBlockHostView: View {
                         }
                         .disabled(onAddGoal == nil)
 
-                        if hasClipPDF {
-                            Divider()
-                            Button { onOpenClipPDF?() } label: {
-                                Label("Open PDF", systemImage: "doc.richtext")
-                            }
-                            .disabled(onOpenClipPDF == nil)
+                        Divider()
+                        Button {
+                            showClipMenu = true
+                        } label: {
+                            Label(hasClipPDF ? "Clip…" : "Clip: (none)", systemImage: "doc")
                         }
+                        .disabled(onOpenClipPDF == nil)
 
                         Divider()
 
@@ -276,6 +279,8 @@ struct NJBlockHostView: View {
         .contentShape(Rectangle())
         .onTapGesture { onFocus() }
         .padding(.vertical, isCollapsed ? 2 : 6)
+        
+        
         .sheet(isPresented: $showTagSheet) {
             NavigationStack {
                 List {
@@ -337,6 +342,12 @@ struct NJBlockHostView: View {
                 }
             }
         }
+        
+        .confirmationDialog("Clip", isPresented: $showClipMenu, titleVisibility: .visible) {
+            Button("Open PDF") { onOpenClipPDF?() }
+                .disabled(onOpenClipPDF == nil)
+        }
+
         .onChange(of: isCollapsed) { v in
             if v {
                 didHydrate = false
