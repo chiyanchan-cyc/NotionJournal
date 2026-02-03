@@ -88,7 +88,7 @@ struct NJReconstructedNoteView: View {
             createdAtMs: b.createdAtMs,
             domainPreview: b.domainPreview,
             onEditTags: { },
-            goalPreview: nil,
+            goalPreview: b.goalPreview,
             onAddGoal: { },
             hasClipPDF: false,
             onOpenClipPDF: { },

@@ -419,6 +419,8 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Notion-Journal-Info.plist";
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "Notion Journal reads your Health data to sync sleep, workouts, blood pressure, weight, and medications into your local database.";
+				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Notion Journal does not write Health data, but needs permission to read and sync your Health records.";
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Used to log approximate location in the background for geotag backup.";
 				INFOPLIST_KEY_NSLocationAlwaysUsageDescription = "Used to record approximate location for photo/video geotag backup.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Used to record approximate location for photo/video geotag backup.";
@@ -458,6 +460,8 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Notion-Journal-Info.plist";
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "Notion Journal reads your Health data to sync sleep, workouts, blood pressure, weight, and medications into your local database.";
+				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Notion Journal does not write Health data, but needs permission to read and sync your Health records.";
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Used to log approximate location in the background for geotag backup.";
 				INFOPLIST_KEY_NSLocationAlwaysUsageDescription = "Used to record approximate location for photo/video geotag backup.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Used to record approximate location for photo/video geotag backup.";

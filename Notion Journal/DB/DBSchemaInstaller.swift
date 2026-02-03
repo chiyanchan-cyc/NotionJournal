@@ -403,6 +403,42 @@ enum DBSchemaInstaller {
                     "CREATE INDEX IF NOT EXISTS idx_nj_goal_origin ON nj_goal(origin_block_id);"
                 ]
             )
+            ,
+            TableSpec(
+                name: "health_samples",
+                createSQL: """
+                CREATE TABLE IF NOT EXISTS health_samples (
+                    sample_id TEXT PRIMARY KEY,
+                    type TEXT NOT NULL,
+                    start_ms INTEGER NOT NULL,
+                    end_ms INTEGER NOT NULL,
+                    value_num REAL NOT NULL DEFAULT 0,
+                    value_str TEXT NOT NULL DEFAULT '',
+                    unit TEXT NOT NULL DEFAULT '',
+                    source TEXT NOT NULL DEFAULT '',
+                    metadata_json TEXT NOT NULL DEFAULT '',
+                    device_id TEXT NOT NULL DEFAULT '',
+                    inserted_at_ms INTEGER NOT NULL
+                );
+                """,
+                columns: [
+                    ColumnSpec(name: "sample_id", declForAlter: "TEXT"),
+                    ColumnSpec(name: "type", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "start_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "end_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "value_num", declForAlter: "REAL NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "value_str", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "unit", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "source", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "metadata_json", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "device_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "inserted_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0")
+                ],
+                indexes: [
+                    "CREATE INDEX IF NOT EXISTS idx_health_samples_type_start ON health_samples(type, start_ms DESC);",
+                    "CREATE INDEX IF NOT EXISTS idx_health_samples_start ON health_samples(start_ms DESC);"
+                ]
+            )
 
         ]
     }

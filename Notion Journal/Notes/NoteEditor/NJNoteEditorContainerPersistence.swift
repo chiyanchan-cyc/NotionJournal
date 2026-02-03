@@ -26,6 +26,7 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         var orderKey: Double
         var createdAtMs: Int64
         var domainPreview: String
+        var goalPreview: String
         var attr: NSAttributedString
         var sel: NSRange
         var isCollapsed: Bool
@@ -44,6 +45,7 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             orderKey: Double,
             createdAtMs: Int64 = 0,
             domainPreview: String = "",
+            goalPreview: String = "",
             attr: NSAttributedString,
             sel: NSRange = NSRange(location: 0, length: 0),
             isCollapsed: Bool = false,
@@ -61,6 +63,7 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             self.orderKey = orderKey
             self.createdAtMs = createdAtMs
             self.domainPreview = domainPreview
+            self.goalPreview = goalPreview
             self.attr = attr
             self.sel = sel
             self.isCollapsed = isCollapsed
@@ -80,6 +83,7 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             lhs.orderKey == rhs.orderKey &&
             lhs.createdAtMs == rhs.createdAtMs &&
             lhs.domainPreview == rhs.domainPreview &&
+            lhs.goalPreview == rhs.goalPreview &&
             lhs.attr.isEqual(to: rhs.attr) &&
             NSEqualRanges(lhs.sel, rhs.sel) &&
             lhs.isCollapsed == rhs.isCollapsed &&
@@ -201,6 +205,11 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             }
             return out
         }
+    }
+
+    private func dbLoadGoalPreview(_ blockID: String) -> String {
+        guard let store else { return "" }
+        return store.notes.goalTable.loadGoalPreviewForOriginBlock(blockID: blockID)
     }
 
     private func dbLoadDomainPreview3FromBlockTag(_ blockID: String) -> String {
@@ -342,6 +351,7 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                     orderKey: 1000,
                     createdAtMs: DBNoteRepository.nowMs(),
                     domainPreview: "",
+                    goalPreview: "",
                     attr: makeEmptyBlockAttr(),
                     sel: NSRange(location: 0, length: 0),
                     isCollapsed: loadCollapsed(blockID: newBlockID),
@@ -389,6 +399,7 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                     if !fromIndex.isEmpty { return fromIndex }
                     return domainPreviewFromTagJSON(tagJSON)
                 }()
+                let goalPreview = dbLoadGoalPreview(row.blockID)
                 let clipPDFRel = dbLoadClipPDFRel(row.blockID)
 
                 if clipPDFRel.isEmpty {
@@ -403,6 +414,7 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                         orderKey: row.orderKey,
                         createdAtMs: createdAtMs,
                         domainPreview: domainPreview,
+                        goalPreview: goalPreview,
                         attr: attr,
                         sel: NSRange(location: 0, length: 0),
                         isCollapsed: loadCollapsed(blockID: row.blockID),
@@ -434,6 +446,15 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
     func markDirty(_ id: UUID) {
         guard let i = blocks.firstIndex(where: { $0.id == id }) else { return }
         if !blocks[i].isDirty { blocks[i].isDirty = true }
+    }
+
+    func refreshGoalPreview(blockID: String) {
+        guard let i = blocks.firstIndex(where: { $0.blockID == blockID }) else { return }
+        let preview = dbLoadGoalPreview(blockID)
+        if blocks[i].goalPreview != preview {
+            blocks[i].goalPreview = preview
+            blocks = Array(blocks)
+        }
     }
 
     func scheduleCommit(_ id: UUID, debounce: Double = 0.9) {

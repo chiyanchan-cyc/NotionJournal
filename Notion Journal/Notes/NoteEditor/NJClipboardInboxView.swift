@@ -4,6 +4,7 @@ import PDFKit
 struct NJClipboardInboxView: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) var dismiss
+    @Environment(\.openWindow) private var openWindow
 
     let noteID: String
     let onImported: () -> Void
@@ -191,13 +192,19 @@ struct NJClipboardInboxView: View {
             return
         }
 
-        pdfURL = nil
-        showPDF = true
+        if !shouldUseWindowForPDF {
+            pdfURL = nil
+            showPDF = true
+        }
 
         Task {
             let ready = await waitForICloudFile(u, maxWaitSeconds: 6.0)
             await MainActor.run {
-                pdfURL = ready ? u : nil
+                if shouldUseWindowForPDF {
+                    openWindow(id: "clip-pdf", value: u)
+                } else {
+                    pdfURL = ready ? u : nil
+                }
             }
         }
     }
@@ -324,6 +331,17 @@ struct NJClipboardInboxView: View {
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyy-MM-dd"
         return f.string(from: d)
+    }
+}
+
+private extension NJClipboardInboxView {
+    var shouldUseWindowForPDF: Bool {
+        #if os(iOS)
+        let idiom = UIDevice.current.userInterfaceIdiom
+        return idiom == .pad || idiom == .mac
+        #else
+        return true
+        #endif
     }
 }
 

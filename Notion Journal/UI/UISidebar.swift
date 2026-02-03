@@ -4,6 +4,7 @@ import UIKit
 struct Sidebar: View {
     @EnvironmentObject var store: AppStore
     @Binding var selectedNoteID: NJNoteID?
+    @Environment(\.openWindow) private var openWindow
 
     @State private var showNewNotebook = false
     @State private var showNewTab = false
@@ -21,6 +22,7 @@ struct Sidebar: View {
     @State private var showWeeklyReconstructed = false
     @State private var showManualReconstructed = false // <-- ADD THIS
     @State private var showGPSLogger = false
+    @State private var showHealthLogger = false
     @State private var showExport = false
 
 
@@ -110,42 +112,29 @@ struct Sidebar: View {
 
                     addMenu()
 
-                    Button {
-                        showGPSLogger = true
-                    } label: {
-                        Image(systemName: "location.circle")
-                    }
+                    Menu {
+                        Button("GPS Logger", systemImage: "location.circle") {
+                            showGPSLogger = true
+                        }
 
-                    Button {
-                        showWeeklyReconstructed = true
-                    } label: {
-                        Image(systemName: "calendar")
-                    }
+                        Button("Health Logger", systemImage: "heart.circle") {
+                            showHealthLogger = true
+                        }
 
-                    Button {
-                        showManualReconstructed = true
-                    } label: {
-                        Image(systemName: "line.3.horizontal.decrease.circle")
-                    }
-                    
-                    Button {
-                        store.showDBDebugPanel = true
-                    } label: {
-                        Image(systemName: "terminal")
-                    }
+                        Button("DB Debug", systemImage: "terminal") {
+                            store.showDBDebugPanel = true
+                        }
 
-                    Button {
-                        store.forcePullNow(forceSinceZero: true)
-                    } label: {
-                        Image(systemName: "arrow.down.circle")
-                    }
-                    
-                    Button {
-                        showExport = true
-                    } label: {
-                        Image(systemName: "square.and.arrow.up")
-                    }
+                        Button("Force Pull", systemImage: "arrow.down.circle") {
+                            store.forcePullNow(forceSinceZero: true)
+                        }
 
+                        Button("Export", systemImage: "square.and.arrow.up") {
+                            showExport = true
+                        }
+                    } label: {
+                        Image(systemName: "slider.horizontal.3")
+                    }
                 }
                 .padding(.trailing, 10)
                 .padding(.top, 8)
@@ -202,6 +191,26 @@ struct Sidebar: View {
                 }
                 .listStyle(.sidebar)
             }
+
+            Divider()
+
+            HStack(spacing: 10) {
+                Button {
+                    openWeeklyReconstructed()
+                } label: {
+                    Image(systemName: "viewfinder")
+                }
+
+                Button {
+                    openManualReconstructed()
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                }
+
+                Spacer()
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
         }
         .sheet(isPresented: $showNewNotebook) {
             NavigationStack {
@@ -268,6 +277,12 @@ struct Sidebar: View {
                 NJGPSLoggerPage()
             }
         }
+
+        .sheet(isPresented: $showHealthLogger) {
+            NavigationStack {
+                NJHealthLoggerPage()
+            }
+        }
         
         .sheet(isPresented: $showExport) {
             NJExportView().environmentObject(store)
@@ -282,13 +297,40 @@ struct Sidebar: View {
 
         .sheet(isPresented: $showManualReconstructed) {
             NavigationStack {
-                NJReconstructedManualView() // Initialize the new manual view
+                NJReconstructedManualView()
                     .environmentObject(store)
             }
         }
         .sheet(isPresented: $store.showDBDebugPanel) {
             NJDebugSQLConsole(db: store.db)
         }
+    }
+
+    private func openWeeklyReconstructed() {
+        if shouldUseWindowForReconstructed {
+            openWindow(id: "reconstructed-weekly")
+        } else {
+            showWeeklyReconstructed = true
+        }
+    }
+
+    private func openManualReconstructed() {
+        if shouldUseWindowForReconstructed {
+            openWindow(id: "reconstructed-manual")
+        } else {
+            showManualReconstructed = true
+        }
+    }
+}
+
+private extension Sidebar {
+    var shouldUseWindowForReconstructed: Bool {
+        #if os(iOS)
+        let idiom = UIDevice.current.userInterfaceIdiom
+        return idiom == .pad || idiom == .mac
+        #else
+        return true
+        #endif
     }
 }
 
@@ -297,12 +339,22 @@ struct NotebookTopBar: View {
     let selectedID: String?
     let onSelect: (String) -> Void
 
-    private let itemW: CGFloat = 120
-    private let itemH: CGFloat = 52
+    private var itemW: CGFloat {
+        isPad ? 92 : 120
+    }
+    private var itemH: CGFloat {
+        isPad ? 44 : 52
+    }
+    private var fontSize: CGFloat {
+        isPad ? 11 : 12
+    }
+    private var itemSpacing: CGFloat {
+        isPad ? 8 : 10
+    }
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
+            HStack(spacing: itemSpacing) {
                 ForEach(notebooks) { nb in
                     let isOn = (selectedID == nb.notebookID)
 
@@ -314,12 +366,12 @@ struct NotebookTopBar: View {
                                 .fill(isOn ? Color(hex: nb.colorHex).opacity(0.22) : Color(UIColor.secondarySystemBackground))
 
                             Text(nb.title)
-                                .font(.system(size: 12, weight: .regular))
+                                .font(.system(size: fontSize, weight: .regular))
                                 .multilineTextAlignment(.center)
                                 .lineLimit(2)
                                 .minimumScaleFactor(0.65)
                                 .allowsTightening(true)
-                                .frame(width: itemW - 16, alignment: .center)
+                                .frame(width: itemW - 14, alignment: .center)
                                 .foregroundStyle(.primary)
                         }
                         .frame(width: itemW, height: itemH)
@@ -331,5 +383,13 @@ struct NotebookTopBar: View {
             .padding(.vertical, 10)
         }
         .background(Color(UIColor.systemBackground))
+    }
+
+    private var isPad: Bool {
+        #if os(iOS)
+        return UIDevice.current.userInterfaceIdiom == .pad
+        #else
+        return false
+        #endif
     }
 }

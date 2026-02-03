@@ -3,19 +3,30 @@ import SwiftUI
 @main
 struct Notion_JournalApp: App {
     @StateObject private var store = AppStore()
-    @StateObject private var clipPDFWindowState = ClipPDFWindowState()
+    // Ensure GPS logger is initialized at app launch so background logging starts
+    @StateObject private var gpsLogger = NJGPSLogger.shared
+    // Ensure Health logger is initialized at app launch so sync can run
+    @StateObject private var healthLogger = NJHealthLogger.shared
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environmentObject(store)
-                .environmentObject(clipPDFWindowState)
         }
 
-        WindowGroup(id: "clip-pdf") {
-            NJClipPDFWindowPage()
+        WindowGroup(id: "clip-pdf", for: URL.self) { url in
+            NJClipPDFWindowPage(url: url.wrappedValue)
                 .environmentObject(store)
-                .environmentObject(clipPDFWindowState)
+        }
+
+        WindowGroup(id: "reconstructed-weekly") {
+            NJReconstructedNoteView(spec: .weekly())
+                .environmentObject(store)
+        }
+
+        WindowGroup(id: "reconstructed-manual") {
+            NJReconstructedManualView()
+                .environmentObject(store)
         }
     }
 }

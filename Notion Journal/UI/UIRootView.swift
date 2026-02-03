@@ -41,11 +41,15 @@ struct RootView: View {
                 .onAppear {
                     store.runClipIngestIfNeeded()
                     NJLocalBLRunner(db: store.db).run(.deriveBlockTagIndexAndDomainV1)
+                    NJHealthLogger.shared.configure(db: store.db)
+                    NJHealthLogger.shared.appDidBecomeActive()
                 }
                 .onChange(of: scenePhase) { ph in
                     if ph == .active {
                         store.runClipIngestIfNeeded()
                         NJLocalBLRunner(db: store.db).run(.deriveBlockTagIndexAndDomainV1)
+                        NJHealthLogger.shared.configure(db: store.db)
+                        NJHealthLogger.shared.appDidBecomeActive()
                     }
                 }
                 .onChange(of: store.selectedNotebookID) { _ in

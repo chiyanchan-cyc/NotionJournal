@@ -6,5 +6,11 @@
 	<array>
 		<string>location</string>
 	</array>
+	<key>NSHealthShareUsageDescription</key>
+	<string>Notion Journal reads your Health data to sync sleep, workouts, blood pressure, weight, and medications into your local database.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>Notion Journal does not write Health data, but needs permission to read and sync your Health records.</string>
+	<key>NSHealthClinicalHealthRecordsShareUsageDescription</key>
+	<string>Notion Journal reads your clinical Health Records (medications) to sync into your local database.</string>
 </dict>
 </plist>

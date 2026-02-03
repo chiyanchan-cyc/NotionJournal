@@ -15,6 +15,7 @@ private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.sel
 struct NJNoteEditorContainerView: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) var dismiss
+    @Environment(\.openWindow) private var openWindow
     let noteID: NJNoteID
 
     @StateObject var persistence = NJNoteEditorContainerPersistence()
@@ -36,6 +37,14 @@ struct NJNoteEditorContainerView: View {
     @State private var clipPDFSheet: NJPDFSheetItem? = nil
 
     @State private var showClipboardInbox = false
+
+    private struct NJGoalSheetItem: Identifiable {
+        let id = UUID()
+        let blockID: String
+    }
+
+    @State private var goalSheetItem: NJGoalSheetItem? = nil
+    @State private var lastGoalBlockID: String? = nil
 
 
 
@@ -118,8 +127,11 @@ struct NJNoteEditorContainerView: View {
                         createdAtMs: b.createdAtMs,
                         domainPreview: b.domainPreview,
                         onEditTags: nil,
-                        goalPreview: nil,
-                        onAddGoal: nil,
+                        goalPreview: b.goalPreview,
+                        onAddGoal: {
+                            lastGoalBlockID = b.blockID
+                            goalSheetItem = NJGoalSheetItem(blockID: b.blockID)
+                        },
                         hasClipPDF: !rel.isEmpty,
                         onOpenClipPDF: rel.isEmpty ? nil : { openClipPDFRel(rel) },
                         protonHandle: h,
@@ -216,6 +228,18 @@ struct NJNoteEditorContainerView: View {
                 .presentationDragIndicator(.visible)
         }
 
+        .sheet(item: $goalSheetItem, onDismiss: {
+            if let blockID = lastGoalBlockID {
+                persistence.refreshGoalPreview(blockID: blockID)
+                lastGoalBlockID = nil
+            }
+        }) { item in
+            NJGoalCreateSheet(
+                repo: store.notes,
+                originBlockID: item.blockID
+            )
+        }
+
         .sheet(isPresented: $showClipboardInbox) {
             NJClipboardInboxView(
                 noteID: noteID.raw,
@@ -293,7 +317,11 @@ struct NJNoteEditorContainerView: View {
 
             guard ready else {
                 await MainActor.run {
-                    clipPDFSheet = NJPDFSheetItem(url: u)
+                    if shouldUseWindowForPDF {
+                        openWindow(id: "clip-pdf", value: u)
+                    } else {
+                        clipPDFSheet = NJPDFSheetItem(url: u)
+                    }
                 }
                 return
             }
@@ -301,7 +329,12 @@ struct NJNoteEditorContainerView: View {
             let local = await materializeToTemp(u)
 
             await MainActor.run {
-                clipPDFSheet = NJPDFSheetItem(url: local ?? u)
+                let target = local ?? u
+                if shouldUseWindowForPDF {
+                    openWindow(id: "clip-pdf", value: target)
+                } else {
+                    clipPDFSheet = NJPDFSheetItem(url: target)
+                }
             }
         }
     }
@@ -346,6 +379,17 @@ struct NJNoteEditorContainerView: View {
         )
     }
 
+}
+
+private extension NJNoteEditorContainerView {
+    var shouldUseWindowForPDF: Bool {
+        #if os(iOS)
+        let idiom = UIDevice.current.userInterfaceIdiom
+        return idiom == .pad || idiom == .mac
+        #else
+        return true
+        #endif
+    }
 }
 private struct NJContainerKeyCommands: UIViewControllerRepresentable {
     let getHandle: () -> NJProtonEditorHandle?

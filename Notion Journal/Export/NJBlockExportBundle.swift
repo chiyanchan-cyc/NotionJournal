@@ -30,4 +30,5 @@ struct NJBlockExportItem: Codable {
     let block_domain: String?
     let block_tags: [String]
     let body: String
+    let rtf_base64: String?
 }

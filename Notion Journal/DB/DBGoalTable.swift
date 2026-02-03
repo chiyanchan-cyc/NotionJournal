@@ -10,6 +10,45 @@ final class DBGoalTable {
         self.db = db
     }
 
+    func loadGoalPreviewForOriginBlock(blockID: String) -> String {
+        if blockID.isEmpty { return "" }
+        return db.withDB { dbp in
+            var out = ""
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT goal_tag, payload_json
+            FROM nj_goal
+            WHERE origin_block_id=? AND deleted=0
+            ORDER BY updated_at_ms DESC
+            LIMIT 1;
+            """
+            let rc0 = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
+            if rc0 != SQLITE_OK { return "" }
+            defer { sqlite3_finalize(stmt) }
+
+            sqlite3_bind_text(stmt, 1, blockID, -1, SQLITE_TRANSIENT)
+
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                let goalTag = sqlite3_column_text(stmt, 0).flatMap { String(cString: $0) } ?? ""
+                let payloadJSON = sqlite3_column_text(stmt, 1).flatMap { String(cString: $0) } ?? ""
+
+                let trimmedTag = goalTag.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmedTag.isEmpty { return trimmedTag }
+
+                if let data = payloadJSON.data(using: .utf8),
+                   let payload = try? JSONDecoder().decode(NJGoalPayloadV1.self, from: data) {
+                    out = payload.name
+                } else if let data = payloadJSON.data(using: .utf8),
+                          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                          let name = obj["name"] as? String {
+                    out = name
+                }
+            }
+
+            return out
+        }
+    }
+
     func loadNJGoal(goalID: String) -> [String: Any]? {
         db.withDB { dbp in
             var stmt: OpaquePointer?

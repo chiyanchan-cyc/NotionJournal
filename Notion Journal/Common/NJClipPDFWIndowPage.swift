@@ -1,17 +1,12 @@
 import SwiftUI
 import PDFKit
-import Combine
-
-final class ClipPDFWindowState: ObservableObject {
-    @Published var url: URL? = nil
-}
 
 struct NJClipPDFWindowPage: View {
-    @EnvironmentObject var clipPDFWindowState: ClipPDFWindowState
+    let url: URL?
 
     var body: some View {
         Group {
-            if let u = clipPDFWindowState.url {
+            if let u = url {
                 NJPDFKitViewer(url: u)
             } else {
                 Text("PDF not found")
@@ -69,4 +64,3 @@ struct NJPDFKitViewer: UIViewRepresentable {
         }
     }
 }
-

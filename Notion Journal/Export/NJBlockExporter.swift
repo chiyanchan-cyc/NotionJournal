@@ -27,6 +27,7 @@ struct NJBlockExporter {
 
         for r in rows {
             let body = plainTextFromPayloadJSON(r.payloadJSON)
+            let rtf = rtfBase64FromPayloadJSON(r.payloadJSON)
 
             blocks.append([
                 "block_id": r.blockID,
@@ -35,7 +36,8 @@ struct NJBlockExporter {
                 "block_domain": r.tagJSON,
                 "block_tags": r.blockTags,
                 "ts_ms": r.tsMs,
-                "body": body
+                "body": body,
+                "rtf_base64": rtf
             ])
         }
 
@@ -45,7 +47,7 @@ struct NJBlockExporter {
         df.dateFormat = "yyyy-MM-dd"
 
         let obj: [String: Any] = [
-            "schema": "nj_block_export_v1",
+            "schema": "nj_block_export_v2",
             "range": [
                 "from": df.string(from: fromDate),
                 "to": df.string(from: toDate),
@@ -99,6 +101,52 @@ struct NJBlockExporter {
 
         if let rtf = findString(root, key: "rtf_base64") {
             return plainTextFromRTFBase64(rtf)
+        }
+
+        return ""
+    }
+
+    private static func rtfBase64FromPayloadJSON(_ s: String) -> String {
+        guard let data = s.data(using: .utf8) else { return "" }
+        guard let root = try? JSONSerialization.jsonObject(with: data) else { return "" }
+
+        func findString(_ any: Any, key: String) -> String? {
+            if let d = any as? [String: Any] {
+                if let v = d[key] as? String, !v.isEmpty { return v }
+                for (_, v) in d {
+                    if let hit = findString(v, key: key) { return hit }
+                }
+            } else if let a = any as? [Any] {
+                for v in a {
+                    if let hit = findString(v, key: key) { return hit }
+                }
+            }
+            return nil
+        }
+
+        func findRTF(_ any: Any) -> String? {
+            if let d = any as? [String: Any] {
+                if let v = d["rtf_base64"] as? String, !v.isEmpty { return v }
+                for (_, v) in d {
+                    if let hit = findRTF(v) { return hit }
+                }
+            } else if let a = any as? [Any] {
+                for v in a {
+                    if let hit = findRTF(v) { return hit }
+                }
+            }
+            return nil
+        }
+
+        if let protonJSON = findString(root, key: "proton_json"),
+           let pdata = protonJSON.data(using: .utf8),
+           let pobj = try? JSONSerialization.jsonObject(with: pdata),
+           let rtf = findRTF(pobj) {
+            return rtf
+        }
+
+        if let rtf = findString(root, key: "rtf_base64") {
+            return rtf
         }
 
         return ""
