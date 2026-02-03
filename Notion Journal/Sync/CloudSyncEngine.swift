@@ -57,6 +57,12 @@ final class CloudSyncEngine: ObservableObject {
         }
     }
 
+    func forcePullNow(forceSinceZero: Bool = true) async {
+        await DBDirtyQueueTable.withPullScopeAsync {
+            await coordinator.pullAll(forceSinceZero: forceSinceZero)
+        }
+    }
+
     func schedulePush(debounceMs: Int) {
         scheduledTask?.cancel()
         scheduledTask = Task { [weak self] in

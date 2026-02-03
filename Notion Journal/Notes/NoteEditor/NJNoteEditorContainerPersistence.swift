@@ -3,8 +3,19 @@ import Combine
 import UIKit
 import Proton
 import SQLite3
+import CryptoKit
 
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
+private func NJStableUUID(_ s: String) -> UUID {
+    let d = Data(s.utf8)
+    let h = SHA256.hash(data: d)
+    var b = [UInt8](h.prefix(16))
+    b[6] = (b[6] & 0x0F) | 0x50
+    b[8] = (b[8] & 0x3F) | 0x80
+    let u = uuid_t(b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15])
+    return UUID(uuid: u)
+}
 
 final class NJNoteEditorContainerPersistence: ObservableObject {
 
@@ -317,11 +328,12 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             let rows = store.notes.loadAllTextBlocksRTFWithPlacement(noteID: noteID.raw)
 
             if rows.isEmpty {
-                let id = UUID()
                 let h = makeHandle()
-                h.ownerBlockUUID = id
 
                 let newBlockID = UUID().uuidString
+                let id = UUID(uuidString: newBlockID)
+                    ?? NJStableUUID("\(noteID.raw)|\(newBlockID)|")
+                h.ownerBlockUUID = id
 
                 let b = BlockState(
                     id: id,
@@ -349,9 +361,11 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             out.reserveCapacity(rows.count)
 
             for row in rows {
-                let id = UUID()
+                let stableID = UUID(uuidString: row.instanceID)
+                    ?? UUID(uuidString: row.blockID)
+                    ?? NJStableUUID("\(noteID.raw)|\(row.blockID)|\(row.instanceID)")
                 let h = makeHandle()
-                h.ownerBlockUUID = id
+                h.ownerBlockUUID = stableID
 
                 let protonJSON = row.protonJSON
 
@@ -369,8 +383,12 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                 }()
 
                 let createdAtMs = dbLoadBlockCreatedAtMs(row.blockID)
-                let domainPreview = dbLoadDomainPreview3FromBlockTag(row.blockID)
                 let tagJSON = dbLoadBlockTagJSON(row.blockID)
+                let domainPreview = {
+                    let fromIndex = dbLoadDomainPreview3FromBlockTag(row.blockID)
+                    if !fromIndex.isEmpty { return fromIndex }
+                    return domainPreviewFromTagJSON(tagJSON)
+                }()
                 let clipPDFRel = dbLoadClipPDFRel(row.blockID)
 
                 if clipPDFRel.isEmpty {
@@ -379,7 +397,7 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
 
                 out.append(
                     BlockState(
-                        id: id,
+                        id: stableID,
                         blockID: row.blockID,
                         instanceID: row.instanceID,
                         orderKey: row.orderKey,
@@ -401,6 +419,7 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             }
 
             blocks = out
+            assert(Set(blocks.map { $0.id }).count == blocks.count)
             focusedBlockID = blocks.first?.id
         }
 
@@ -482,12 +501,14 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         commitNoteMetaNow()
 
         guard let editor = b.protonHandle.editor else {
-            let protonJSON = b.protonHandle.exportProtonJSONString()
-            b.protonJSON = protonJSON
-            blocks[i].protonJSON = protonJSON
+            if b.protonJSON.isEmpty {
+                b.isDirty = false
+                blocks[i] = b
+                return
+            }
             store.notes.saveSingleProtonBlock(
                 blockID: b.blockID,
-                protonJSON: protonJSON,
+                protonJSON: b.protonJSON,
                 tagJSON: b.tagJSON
             )
             b.loadedUpdatedAtMs = DBNoteRepository.nowMs()
@@ -497,8 +518,17 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         }
 
         let liveAttr = editor.attributedText
-        let tagRes = NJTagExtraction.extract(from: liveAttr)
-        let tags = tagRes?.tags ?? []
+
+        let existingTags: [String] = {
+            guard !b.tagJSON.isEmpty,
+                  let data = b.tagJSON.data(using: .utf8),
+                  let arr = try? JSONSerialization.jsonObject(with: data) as? [String]
+            else { return [] }
+            return arr
+        }()
+
+        let tagRes = NJTagExtraction.extract(from: liveAttr, existingTags: existingTags)
+        let mergedTags = tagRes?.tags ?? existingTags
 
         if let tagRes {
             NotificationCenter.default.post(
@@ -512,8 +542,8 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         }
 
         let tagJSON: String = {
-            guard !tags.isEmpty,
-                  let data = try? JSONSerialization.data(withJSONObject: tags),
+            guard !mergedTags.isEmpty,
+                  let data = try? JSONSerialization.data(withJSONObject: mergedTags),
                   let s = String(data: data, encoding: .utf8)
             else { return "" }
             return s

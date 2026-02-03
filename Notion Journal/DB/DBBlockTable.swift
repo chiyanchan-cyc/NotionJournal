@@ -234,7 +234,12 @@ final class DBBlockTable {
             var stmt: OpaquePointer?
             let rc = sqlite3_prepare_v2(dbp, """
             UPDATE nj_block
-            SET tag_json=?, updated_at_ms=?
+            SET tag_json=?,
+                updated_at_ms=?,
+                dirty_bl=CASE
+                  WHEN tag_json <> ? THEN 1
+                  ELSE dirty_bl
+                END
             WHERE block_id=?;
             """, -1, &stmt, nil)
             if rc != SQLITE_OK { db.dbgErr(dbp, "updateBlockTagJSON.prepare", rc); return }
@@ -242,7 +247,8 @@ final class DBBlockTable {
 
             sqlite3_bind_text(stmt, 1, tagJSON, -1, SQLITE_TRANSIENT)
             sqlite3_bind_int64(stmt, 2, updatedAtMs)
-            sqlite3_bind_text(stmt, 3, blockID, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 3, tagJSON, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 4, blockID, -1, SQLITE_TRANSIENT)
 
             let rc2 = sqlite3_step(stmt)
             if rc2 != SQLITE_DONE { db.dbgErr(dbp, "updateBlockTagJSON.step", rc2) }
@@ -267,6 +273,7 @@ final class DBBlockTable {
         let updatedAtMs = (f["updated_at_ms"] as? Int64) ?? 0
         let deleted = (f["deleted"] as? Int64) ?? 0
 
+
         db.withDB { dbp in
             var stmt: OpaquePointer?
             let rc = sqlite3_prepare_v2(dbp, """
@@ -280,9 +287,10 @@ final class DBBlockTable {
               parent_block_id,
               created_at_ms,
               updated_at_ms,
-              deleted
+              deleted,
+              dirty_bl
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
             ON CONFLICT(block_id) DO UPDATE SET
               block_type=excluded.block_type,
               payload_json=excluded.payload_json,
@@ -292,7 +300,11 @@ final class DBBlockTable {
               parent_block_id=excluded.parent_block_id,
               created_at_ms=excluded.created_at_ms,
               updated_at_ms=excluded.updated_at_ms,
-              deleted=excluded.deleted;
+              deleted=excluded.deleted,
+              dirty_bl=CASE
+                WHEN excluded.tag_json != nj_block.tag_json THEN 1
+                ELSE nj_block.dirty_bl
+              END;
             """, -1, &stmt, nil)
             if rc != SQLITE_OK { db.dbgErr(dbp, "applyNJBlock.prepare", rc); return }
             defer { sqlite3_finalize(stmt) }

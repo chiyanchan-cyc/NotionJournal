@@ -233,6 +233,9 @@ struct NJNoteEditorContainerView: View {
             blockBus.setHandler { e in handleBlockEvent(e) }
             persistence.reload(makeHandle: makeWiredHandle)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .njForceReloadNote)) { _ in
+            persistence.reload(makeHandle: makeWiredHandle)
+        }
         .onDisappear {
             if let id = persistence.focusedBlockID {
                 persistence.forceEndEditingAndCommitNow(id)
@@ -688,4 +691,3 @@ private func loadPDFDocument(url: URL) async throws -> PDFDocument {
     }
     return d
 }
-

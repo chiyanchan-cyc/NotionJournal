@@ -46,7 +46,6 @@ actor NJCloudSyncCoordinator {
 
         for (entity, recordType) in order {
             let sinceMs: Int64 = forceSinceZero ? 0 : await loadLastPullMs(entity: entity)
-            NJLog.l("NJ_CK_PULL_BEGIN entity=\(entity) since=\(sinceMs)")
 
             let (rawRows, newMax) = await transport.pullEntityAll(entity: entity, recordType: recordType, sinceMs: sinceMs)
 

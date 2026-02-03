@@ -124,10 +124,9 @@ extension DBNoteRepository {
 
         print("NJ_SAVE_SINGLE_PROTON_BLOCK block_id=\(blockID) proton_json_bytes=\(protonJSON.utf8.count)")
         print("NJ_SAVE_SINGLE_PROTON_BLOCK proton_json_preview=\(String(protonJSON.prefix(240)))")
-        print("NJ_SAVE_SINGLE_PROTON_BLOCK tag_json_bytes=\(tagJSON.utf8.count)")
-        print("NJ_SAVE_SINGLE_PROTON_BLOCK tag_json_preview=\(String(tagJSON.prefix(240)))")
 
         let shouldEnqueue = !DBDirtyQueueTable.isInPullScope()
+        print("NJ_SAVE_SINGLE_PROTON_BLOCK enqueue_allowed=\(shouldEnqueue ? 1 : 0)")
 
         var didCommit = false
         var didEnqueue = false

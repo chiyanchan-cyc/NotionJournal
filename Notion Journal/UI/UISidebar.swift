@@ -133,6 +133,12 @@ struct Sidebar: View {
                     } label: {
                         Image(systemName: "terminal")
                     }
+
+                    Button {
+                        store.forcePullNow(forceSinceZero: true)
+                    } label: {
+                        Image(systemName: "arrow.down.circle")
+                    }
                     
                     Button {
                         showExport = true

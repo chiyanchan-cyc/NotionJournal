@@ -10,8 +10,19 @@ import Combine
 import UIKit
 import Proton
 import SQLite3
+import CryptoKit
 
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
+private func NJStableUUID(_ s: String) -> UUID {
+    let d = Data(s.utf8)
+    let h = SHA256.hash(data: d)
+    var b = [UInt8](h.prefix(16))
+    b[6] = (b[6] & 0x0F) | 0x50
+    b[8] = (b[8] & 0x3F) | 0x80
+    let u = uuid_t(b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15])
+    return UUID(uuid: u)
+}
 
 final class NJReconstructedNotePersistence: ObservableObject {
     @Published var title: String = ""
@@ -421,9 +432,10 @@ final class NJReconstructedNotePersistence: ObservableObject {
                 blockMainDomainByBlockID[r.blockID] = mainKey
             }
 
-            let id = UUID()
+            let stableID = UUID(uuidString: r.blockID)
+                ?? NJStableUUID("\(spec.id)|\(r.blockID)|")
             let h = makeHandle()
-            h.ownerBlockUUID = id
+            h.ownerBlockUUID = stableID
 
             let attr: NSAttributedString = {
                 if !r.protonJSON.isEmpty {
@@ -438,7 +450,7 @@ final class NJReconstructedNotePersistence: ObservableObject {
 
             out.append(
                 NJNoteEditorContainerPersistence.BlockState(
-                    id: id,
+                    id: stableID,
                     blockID: r.blockID,
                     instanceID: "",
                     orderKey: ok,
@@ -460,6 +472,7 @@ final class NJReconstructedNotePersistence: ObservableObject {
         }
 
         blocks = out
+        assert(Set(blocks.map { $0.id }).count == blocks.count)
         focusedBlockID = blocks.first?.id
     }
 
@@ -513,12 +526,14 @@ final class NJReconstructedNotePersistence: ObservableObject {
         var b = blocks[i]
 
         guard let editor = b.protonHandle.editor else {
-            let protonJSON = b.protonHandle.exportProtonJSONString()
-            b.protonJSON = protonJSON
-            blocks[i].protonJSON = protonJSON
+            if b.protonJSON.isEmpty {
+                b.isDirty = false
+                blocks[i] = b
+                return
+            }
             store.notes.saveSingleProtonBlock(
                 blockID: b.blockID,
-                protonJSON: protonJSON,
+                protonJSON: b.protonJSON,
                 tagJSON: b.tagJSON
             )
             b.loadedUpdatedAtMs = DBNoteRepository.nowMs()

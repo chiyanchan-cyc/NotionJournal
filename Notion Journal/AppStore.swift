@@ -156,6 +156,9 @@ final class AppStore: ObservableObject {
                   !tabs.contains(where: { $0.tabID == tab }) {
             selectedTabID = tabsForSelectedNotebook.first?.tabID
         }
+
+        // Keep derived block-tag index/domain up to date on any reload.
+        NJLocalBLRunner(db: db).run(.deriveBlockTagIndexAndDomainV1)
     }
 
     var currentNotebookTitle: String? {
@@ -240,6 +243,16 @@ final class AppStore: ObservableObject {
 
     func toggleDBDebug() {
         showDBDebugPanel.toggle()
+    }
+
+    func forcePullNow(forceSinceZero: Bool = true) {
+        Task {
+            await sync.forcePullNow(forceSinceZero: forceSinceZero)
+            await MainActor.run {
+                reloadNotebooksTabsFromDB()
+                NotificationCenter.default.post(name: .njForceReloadNote, object: nil)
+            }
+        }
     }
 
 }

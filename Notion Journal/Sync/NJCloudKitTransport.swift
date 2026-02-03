@@ -104,6 +104,9 @@ final class NJCloudKitTransport {
 
         var cursor: CKQueryOperation.Cursor? = nil
 
+        if entity == "block" {
+        }
+
         while true {
             let op: CKQueryOperation
             if let c = cursor {
@@ -151,6 +154,10 @@ final class NJCloudKitTransport {
                 if u <= sinceMs { continue }
 
                 let f = recordToFields(entity: entity, record: r)
+                if entity == "block" {
+                    let tj = (f["tag_json"] as? String) ?? ""
+                    let dom = (f["domain_tag"] as? String) ?? ""
+                }
 
                 if let fm = f["updated_at_ms"] as? NSNumber { u = fm.int64Value }
                 if let fm = f["updated_at_ms"] as? Int64 { u = fm }
@@ -164,6 +171,8 @@ final class NJCloudKitTransport {
             cursor = nextCursor
         }
 
+        if entity == "block" {
+        }
         return (rows, newMax)
     }
 
@@ -219,6 +228,11 @@ final class NJCloudKitTransport {
             if entity == "block" {
                 let payload = (f["payload_json"] as? String) ?? ""
                 rec["payload_json"] = payload as CKRecordValue
+                let tagJSON = (f["tag_json"] as? String) ?? ""
+                rec["tag_json"] = tagJSON as CKRecordValue
+                if let domainTag = f["domain_tag"] as? String {
+                    rec["domain_tag"] = domainTag as CKRecordValue
+                }
 
                 let protonLen: Int = {
                     if let d = payload.data(using: .utf8),
@@ -233,7 +247,6 @@ final class NJCloudKitTransport {
                 }()
 
                 let rowUpdated = toMs(f["updated_at_ms"])
-                print("NJ_CK_PUSH_BLOCK id=\(id) row_updated_at_ms=\(rowUpdated) payload_bytes=\(payload.utf8.count) proton_json_bytes=\(protonLen) payload_head=\(String(payload.prefix(180)))")
                         }
             
             if rec["device_id"] == nil { rec["device_id"] = deviceID as CKRecordValue }
