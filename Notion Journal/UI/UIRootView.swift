@@ -40,6 +40,8 @@ struct RootView: View {
                 }
                 .onAppear {
                     store.runClipIngestIfNeeded()
+                    store.runAudioIngestIfNeeded()
+                    store.runAudioTranscribeIfNeeded()
                     NJLocalBLRunner(db: store.db).run(.deriveBlockTagIndexAndDomainV1)
                     NJHealthLogger.shared.configure(db: store.db)
                     NJHealthLogger.shared.appDidBecomeActive()
@@ -47,6 +49,8 @@ struct RootView: View {
                 .onChange(of: scenePhase) { ph in
                     if ph == .active {
                         store.runClipIngestIfNeeded()
+                        store.runAudioIngestIfNeeded()
+                        store.runAudioTranscribeIfNeeded()
                         NJLocalBLRunner(db: store.db).run(.deriveBlockTagIndexAndDomainV1)
                         NJHealthLogger.shared.configure(db: store.db)
                         NJHealthLogger.shared.appDidBecomeActive()

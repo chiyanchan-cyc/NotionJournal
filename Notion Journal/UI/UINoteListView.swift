@@ -23,6 +23,7 @@ struct UINoteListView: View {
             .listNotes(tabDomainKey: domainKey)
             .filter { $0.deleted == 0 }
             .sorted {
+                if $0.pinned != $1.pinned { return $0.pinned > $1.pinned }
                 if $0.updatedAtMs != $1.updatedAtMs { return $0.updatedAtMs > $1.updatedAtMs }
                 return String(describing: $0.id) > String(describing: $1.id)
             }
@@ -33,11 +34,27 @@ struct UINoteListView: View {
                     open(n.id)
                 } label: {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(n.title.isEmpty ? "Untitled" : n.title).font(.headline)
+                        HStack(spacing: 6) {
+                            Text(n.title.isEmpty ? "Untitled" : n.title).font(.headline)
+                            if n.pinned > 0 {
+                                Image(systemName: "pin.fill")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                         Text(n.tabDomain).font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 .buttonStyle(.plain)
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                    Button {
+                        store.notes.setPinned(noteID: n.id.raw, pinned: n.pinned == 0)
+                        store.objectWillChange.send()
+                    } label: {
+                        Label(n.pinned == 0 ? "Pin" : "Unpin", systemImage: n.pinned == 0 ? "pin" : "pin.slash")
+                    }
+                    .tint(n.pinned == 0 ? .orange : .gray)
+                }
             }
         }
         .id("\(nb)|\(domainKey)")

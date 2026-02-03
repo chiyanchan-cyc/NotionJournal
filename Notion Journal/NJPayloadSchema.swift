@@ -15,6 +15,12 @@ struct NJPayloadV1: Codable, Equatable {
         return try decode(NJClipDataV1.self, from: s.data)
     }
 
+    func audioData() throws -> NJAudioDataV1? {
+        guard let s = sections["audio"] else { return nil }
+        guard s.v == 1 else { throw NJPayloadError.unsupportedSectionVersion(section: "audio", v: s.v) }
+        return try decode(NJAudioDataV1.self, from: s.data)
+    }
+
     func proton1Data() throws -> NJProton1DataV1? {
         guard let s = sections["proton1"] else { return nil }
         guard s.v == 1 else { throw NJPayloadError.unsupportedSectionVersion(section: "proton1", v: s.v) }
@@ -32,6 +38,9 @@ struct NJPayloadV1: Codable, Equatable {
             }
             if k == "clip" {
                 _ = try decode(NJClipDataV1.self, from: s.data)
+            }
+            if k == "audio" {
+                _ = try decode(NJAudioDataV1.self, from: s.data)
             }
         }
     }
@@ -102,6 +111,17 @@ struct NJClipDataV1: Codable, Equatable {
     var pdf_path: String?
     var json_path: String?
     var body: String?
+}
+
+struct NJAudioDataV1: Codable, Equatable {
+    var title: String?
+    var recorded_at_ms: Int64
+    var recorded_at_iso: String?
+    var audio_path: String?
+    var audio_ext: String?
+    var original_filename: String?
+    var transcript_txt: String?
+    var transcript_updated_ms: Int64?
 }
 
 struct NJProton1DataV1: Codable {

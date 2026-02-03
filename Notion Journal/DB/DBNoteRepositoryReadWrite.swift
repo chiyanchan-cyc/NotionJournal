@@ -57,6 +57,10 @@ extension DBNoteRepository {
         noteTable.markNoteDeleted(noteID: noteID)
     }
 
+    func setPinned(noteID: String, pinned: Bool) {
+        noteTable.setPinned(noteID: noteID, pinned: pinned)
+    }
+
     func enqueueDirty(entity: String, entityID: String, op: String, updatedAtMs: Int64) {
         dirtyQueue.enqueueDirty(entity: entity, entityID: entityID, op: op, updatedAtMs: updatedAtMs)
     }

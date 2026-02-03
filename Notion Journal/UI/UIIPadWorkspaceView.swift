@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 struct IPadWorkspaceView: View {
     @EnvironmentObject var store: AppStore
@@ -14,7 +15,11 @@ struct IPadWorkspaceView: View {
     }
 
     private var notesInTab: [NJNote] {
-        store.notes.listNotes(tabDomainKey: tabDomainKey)
+        store.notes.listNotes(tabDomainKey: tabDomainKey).sorted {
+            if $0.pinned != $1.pinned { return $0.pinned > $1.pinned }
+            if $0.updatedAtMs != $1.updatedAtMs { return $0.updatedAtMs > $1.updatedAtMs }
+            return String(describing: $0.id) > String(describing: $1.id)
+        }
     }
 
     var body: some View {
@@ -55,12 +60,28 @@ struct IPadWorkspaceView: View {
                 List {
                     ForEach(notesInTab) { n in
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(n.title.isEmpty ? "Untitled" : n.title).font(.headline)
+                            HStack(spacing: 6) {
+                                Text(n.title.isEmpty ? "Untitled" : n.title).font(.headline)
+                                if n.pinned > 0 {
+                                    Image(systemName: "pin.fill")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
                             Text(n.tabDomain).font(.caption).foregroundStyle(.secondary)
                         }
                         .contentShape(Rectangle())
                         .onTapGesture(count: 2) {
                             selectedNoteID = n.id
+                        }
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            Button {
+                                store.notes.setPinned(noteID: n.id.raw, pinned: n.pinned == 0)
+                                store.objectWillChange.send()
+                            } label: {
+                                Label(n.pinned == 0 ? "Pin" : "Unpin", systemImage: n.pinned == 0 ? "pin" : "pin.slash")
+                            }
+                            .tint(n.pinned == 0 ? .orange : .gray)
                         }
                     }
                 }

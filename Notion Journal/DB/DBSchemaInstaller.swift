@@ -148,6 +148,7 @@ enum DBSchemaInstaller {
                     title TEXT NOT NULL,
                     created_at_ms INTEGER NOT NULL,
                     updated_at_ms INTEGER NOT NULL,
+                    pinned INTEGER NOT NULL DEFAULT 0,
                     deleted INTEGER NOT NULL DEFAULT 0
                 );
                 """,
@@ -158,10 +159,41 @@ enum DBSchemaInstaller {
                     ColumnSpec(name: "title", declForAlter: "TEXT NOT NULL DEFAULT ''"),
                     ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
                     ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "pinned", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
                     ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
                 ],
                 indexes: [
                     "CREATE INDEX IF NOT EXISTS idx_nj_note_tab_updated ON nj_note(tab_domain, updated_at_ms DESC);"
+                ]
+            ),
+
+            TableSpec(
+                name: "nj_calendar_item",
+                createSQL: """
+                CREATE TABLE IF NOT EXISTS nj_calendar_item (
+                    date_key TEXT PRIMARY KEY,
+                    title TEXT NOT NULL DEFAULT '',
+                    photo_attachment_id TEXT NOT NULL DEFAULT '',
+                    photo_local_id TEXT NOT NULL DEFAULT '',
+                    photo_thumb_path TEXT NOT NULL DEFAULT '',
+                    created_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL,
+                    deleted INTEGER NOT NULL DEFAULT 0
+                );
+                """,
+                columns: [
+                    ColumnSpec(name: "date_key", declForAlter: "TEXT"),
+                    ColumnSpec(name: "title", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "photo_attachment_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "photo_local_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "photo_thumb_path", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
+                ],
+                indexes: [
+                    "CREATE INDEX IF NOT EXISTS idx_nj_calendar_item_updated ON nj_calendar_item(updated_at_ms DESC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_calendar_item_date ON nj_calendar_item(date_key ASC);"
                 ]
             ),
 

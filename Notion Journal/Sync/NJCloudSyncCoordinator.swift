@@ -153,6 +153,8 @@ actor NJCloudSyncCoordinator {
             return (row["instance_id"] as? String) ?? (row["id"] as? String) ?? ""
         case "goal":
             return (row["goal_id"] as? String) ?? (row["id"] as? String) ?? ""
+        case "calendar_item":
+            return (row["date_key"] as? String) ?? (row["id"] as? String) ?? ""
         default:
             return (row["id"] as? String) ?? ""
         }

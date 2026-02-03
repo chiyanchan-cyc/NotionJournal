@@ -6,19 +6,22 @@ final class DBCloudBridge {
     let noteBlockTable: DBNoteBlockTable
     let attachmentTable: DBAttachmentTable
     let goalTable: DBGoalTable
+    let calendarTable: DBCalendarTable
 
     init(
         noteTable: DBNoteTable,
         blockTable: DBBlockTable,
         noteBlockTable: DBNoteBlockTable,
         attachmentTable: DBAttachmentTable,
-        goalTable: DBGoalTable
+        goalTable: DBGoalTable,
+        calendarTable: DBCalendarTable
     ) {
         self.noteTable = noteTable
         self.blockTable = blockTable
         self.noteBlockTable = noteBlockTable
         self.attachmentTable = attachmentTable
         self.goalTable = goalTable
+        self.calendarTable = calendarTable
     }
 
     func loadRecord(entity: String, id: String) -> [String: Any]? {
@@ -33,6 +36,8 @@ final class DBCloudBridge {
             return loadNJAttachment(attachmentID: id)
         case "goal":
             return goalTable.loadNJGoal(goalID: id)
+        case "calendar_item":
+            return loadNJCalendarItem(dateKey: id)
         default:
             return nil
         }
@@ -50,6 +55,8 @@ final class DBCloudBridge {
             attachmentTable.applyNJAttachment(fields)
         case "goal":
             goalTable.applyNJGoal(fields)
+        case "calendar_item":
+            applyNJCalendarItem(fields: fields)
         default:
             break
         }
@@ -64,6 +71,7 @@ final class DBCloudBridge {
             "notebook": n.notebook,
             "tab_domain": n.tabDomain,
             "title": n.title,
+            "pinned": n.pinned,
             "deleted": n.deleted
         ]
     }
@@ -77,6 +85,7 @@ final class DBCloudBridge {
         let notebook = (fields["notebook"] as? String) ?? ""
         let tabDomain = (fields["tab_domain"] as? String) ?? ""
         let title = (fields["title"] as? String) ?? ""
+        let pinned = (fields["pinned"] as? Int64) ?? 0
         let deleted = (fields["deleted"] as? Int64) ?? 0
 
         let existing = noteTable.getNote(NJNoteID(noteID))
@@ -94,7 +103,8 @@ final class DBCloudBridge {
             tabDomain: tabDomain,
             title: title,
             rtfData: keepRTF,
-            deleted: deleted
+            deleted: deleted,
+            pinned: pinned
         )
         noteTable.upsertNote(note)
     }
@@ -118,5 +128,53 @@ final class DBCloudBridge {
             out["thumb_asset"] = URL(fileURLWithPath: a.thumbPath)
         }
         return out
+    }
+
+    private func loadNJCalendarItem(dateKey: String) -> [String: Any]? {
+        guard let item = calendarTable.loadItemIncludingDeleted(dateKey: dateKey) else { return nil }
+        return [
+            "date_key": item.dateKey,
+            "title": item.title,
+            "photo_attachment_id": item.photoAttachmentID,
+            "created_at_ms": item.createdAtMs,
+            "updated_at_ms": item.updatedAtMs,
+            "deleted": item.deleted
+        ]
+    }
+
+    private func applyNJCalendarItem(fields: [String: Any]) {
+        let key = (fields["date_key"] as? String) ?? (fields["dateKey"] as? String) ?? ""
+        if key.isEmpty { return }
+
+        let title = (fields["title"] as? String) ?? ""
+        let photoAttachmentID = (fields["photo_attachment_id"] as? String) ?? ""
+        let createdAt = (fields["created_at_ms"] as? Int64) ?? 0
+        let updatedAt = (fields["updated_at_ms"] as? Int64) ?? 0
+        let deleted = (fields["deleted"] as? Int64) ?? 0
+
+        let existing = calendarTable.loadItem(dateKey: key)
+        if let existing, existing.updatedAtMs > updatedAt, updatedAt > 0 {
+            return
+        }
+
+        let thumbPath: String = {
+            guard !photoAttachmentID.isEmpty,
+                  let url = NJAttachmentCache.fileURL(for: photoAttachmentID),
+                  FileManager.default.fileExists(atPath: url.path)
+            else { return "" }
+            return url.path
+        }()
+
+        let item = NJCalendarItem(
+            dateKey: key,
+            title: title,
+            photoAttachmentID: photoAttachmentID,
+            photoLocalID: "",
+            photoThumbPath: thumbPath,
+            createdAtMs: createdAt > 0 ? createdAt : (existing?.createdAtMs ?? 0),
+            updatedAtMs: updatedAt,
+            deleted: Int(deleted)
+        )
+        calendarTable.upsertItem(item)
     }
 }

@@ -37,11 +37,11 @@ final class DBNoteTable {
         let prefix = exact + ".%"
 
         let sql = """
-        SELECT note_id, created_at_ms, updated_at_ms, notebook, tab_domain, title, deleted
+        SELECT note_id, created_at_ms, updated_at_ms, notebook, tab_domain, title, pinned, deleted
         FROM nj_note
         WHERE deleted = 0
           AND (tab_domain = ? OR tab_domain LIKE ?)
-        ORDER BY updated_at_ms \(order);
+        ORDER BY pinned DESC, updated_at_ms \(order);
         """
 
         return db.withDB { dbp in
@@ -79,7 +79,8 @@ final class DBNoteTable {
                 let notebook = String(cString: sqlite3_column_text(stmt, 3))
                 let tab = String(cString: sqlite3_column_text(stmt, 4))
                 let title = String(cString: sqlite3_column_text(stmt, 5))
-                let deleted = sqlite3_column_int64(stmt, 6)
+                let pinned = sqlite3_column_int64(stmt, 6)
+                let deleted = sqlite3_column_int64(stmt, 7)
 
                 let rtf = loadRTF(noteID) ?? emptyRTF()
 
@@ -91,7 +92,8 @@ final class DBNoteTable {
                     tabDomain: tab,
                     title: title,
                     rtfData: rtf,
-                    deleted: deleted
+                    deleted: deleted,
+                    pinned: pinned
                 ))
             }
 
@@ -105,7 +107,7 @@ final class DBNoteTable {
         return db.withDB { dbp in
             var stmt: OpaquePointer?
             let rc0 = sqlite3_prepare_v2(dbp, """
-            SELECT note_id, created_at_ms, updated_at_ms, notebook, tab_domain, title, deleted
+            SELECT note_id, created_at_ms, updated_at_ms, notebook, tab_domain, title, pinned, deleted
             FROM nj_note
             WHERE note_id = ?;
             """, -1, &stmt, nil)
@@ -120,7 +122,8 @@ final class DBNoteTable {
             let notebook = String(cString: sqlite3_column_text(stmt, 3))
             let tab = String(cString: sqlite3_column_text(stmt, 4))
             let title = String(cString: sqlite3_column_text(stmt, 5))
-            let deleted = sqlite3_column_int64(stmt, 6)
+            let pinned = sqlite3_column_int64(stmt, 6)
+            let deleted = sqlite3_column_int64(stmt, 7)
 
             let rtf = loadRTF(noteID) ?? emptyRTF()
 
@@ -132,7 +135,8 @@ final class DBNoteTable {
                 tabDomain: tab,
                 title: title,
                 rtfData: rtf,
-                deleted: deleted
+                deleted: deleted,
+                pinned: pinned
             )
         }
     }
@@ -148,7 +152,8 @@ final class DBNoteTable {
             tabDomain: tabDomain,
             title: title,
             rtfData: emptyRTF(),
-            deleted: 0
+            deleted: 0,
+            pinned: 0
         )
         upsertNote(note)
         return note
@@ -160,9 +165,9 @@ final class DBNoteTable {
             let rc0 = sqlite3_prepare_v2(dbp, """
             INSERT INTO nj_note(
               note_id, created_at_ms, updated_at_ms,
-              notebook, tab_domain, title, deleted
+              notebook, tab_domain, title, pinned, deleted
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(note_id) DO UPDATE SET
               created_at_ms = CASE
                 WHEN nj_note.created_at_ms IS NULL OR nj_note.created_at_ms = 0 THEN excluded.created_at_ms
@@ -172,6 +177,7 @@ final class DBNoteTable {
               notebook=excluded.notebook,
               tab_domain=excluded.tab_domain,
               title=excluded.title,
+              pinned=excluded.pinned,
               deleted=excluded.deleted;
             """, -1, &stmt, nil)
             if rc0 != SQLITE_OK { db.dbgErr(dbp, "upsertNote.prepare", rc0); return }
@@ -183,7 +189,8 @@ final class DBNoteTable {
             sqlite3_bind_text(stmt, 4, note.notebook, -1, SQLITE_TRANSIENT)
             sqlite3_bind_text(stmt, 5, note.tabDomain, -1, SQLITE_TRANSIENT)
             sqlite3_bind_text(stmt, 6, note.title, -1, SQLITE_TRANSIENT)
-            sqlite3_bind_int64(stmt, 7, note.deleted)
+            sqlite3_bind_int64(stmt, 7, note.pinned)
+            sqlite3_bind_int64(stmt, 8, note.deleted)
 
             let rc1 = sqlite3_step(stmt)
             if rc1 != SQLITE_DONE { db.dbgErr(dbp, "upsertNote.step", rc1) }
@@ -230,6 +237,30 @@ final class DBNoteTable {
 
             let rc1 = sqlite3_step(stmt)
             if rc1 != SQLITE_DONE { db.dbgErr(dbp, "markNoteDeleted.step", rc1) }
+        }
+        enqueueDirty("note", noteID, "upsert", now)
+    }
+
+    func setPinned(noteID: String, pinned: Bool) {
+        let now = nowMs()
+        let val: Int64 = pinned ? 1 : 0
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let rc0 = sqlite3_prepare_v2(dbp, """
+            UPDATE nj_note
+            SET pinned = ?,
+                updated_at_ms = ?
+            WHERE note_id = ?;
+            """, -1, &stmt, nil)
+            if rc0 != SQLITE_OK { db.dbgErr(dbp, "setPinned.prepare", rc0); return }
+            defer { sqlite3_finalize(stmt) }
+
+            sqlite3_bind_int64(stmt, 1, val)
+            sqlite3_bind_int64(stmt, 2, now)
+            sqlite3_bind_text(stmt, 3, noteID, -1, SQLITE_TRANSIENT)
+
+            let rc1 = sqlite3_step(stmt)
+            if rc1 != SQLITE_DONE { db.dbgErr(dbp, "setPinned.step", rc1) }
         }
         enqueueDirty("note", noteID, "upsert", now)
     }

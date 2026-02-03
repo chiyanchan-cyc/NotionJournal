@@ -23,6 +23,18 @@ final class DBBlockTable {
         let createdAtMs: Int64
         let payloadJSON: String
     }
+
+    struct NJOrphanAudioRow: Identifiable {
+        let id: String
+        let createdAtMs: Int64
+        let payloadJSON: String
+    }
+
+    struct NJAudioRow: Identifiable {
+        let id: String
+        let updatedAtMs: Int64
+        let payloadJSON: String
+    }
     
 //    func loadBlockCreatedAtMs(blockID: String) -> Int64 {
 //        db.withDB { dbp in
@@ -128,6 +140,114 @@ final class DBBlockTable {
         }
 
         return out
+    }
+
+    func listOrphanAudioBlocks(limit: Int = 200) -> [NJOrphanAudioRow] {
+        var out: [NJOrphanAudioRow] = []
+
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT b.block_id, b.created_at_ms, b.payload_json
+            FROM nj_block b
+            LEFT JOIN nj_note_block nb
+              ON nb.block_id = b.block_id AND nb.deleted = 0
+            WHERE b.block_type = 'audio'
+              AND b.deleted = 0
+              AND nb.block_id IS NULL
+            ORDER BY b.created_at_ms DESC
+            LIMIT ?;
+            """
+            if sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) == SQLITE_OK {
+                sqlite3_bind_int(stmt, 1, Int32(limit))
+                while sqlite3_step(stmt) == SQLITE_ROW {
+                    let bid = sqlite3_column_text(stmt, 0).flatMap { String(cString: $0) } ?? ""
+                    if bid.isEmpty { continue }
+                    let ms = sqlite3_column_int64(stmt, 1)
+                    let payload = sqlite3_column_text(stmt, 2).flatMap { String(cString: $0) } ?? "{}"
+                    out.append(NJOrphanAudioRow(id: bid, createdAtMs: ms, payloadJSON: payload))
+                }
+            }
+            sqlite3_finalize(stmt)
+        }
+
+        return out
+    }
+
+    func listAudioBlocks(limit: Int = 200) -> [NJAudioRow] {
+        var out: [NJAudioRow] = []
+
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT b.block_id, b.updated_at_ms, b.payload_json
+            FROM nj_block b
+            WHERE b.block_type = 'audio'
+              AND b.deleted = 0
+            ORDER BY b.updated_at_ms ASC
+            LIMIT ?;
+            """
+            if sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) == SQLITE_OK {
+                sqlite3_bind_int(stmt, 1, Int32(limit))
+                while sqlite3_step(stmt) == SQLITE_ROW {
+                    let bid = sqlite3_column_text(stmt, 0).flatMap { String(cString: $0) } ?? ""
+                    if bid.isEmpty { continue }
+                    let ms = sqlite3_column_int64(stmt, 1)
+                    let payload = sqlite3_column_text(stmt, 2).flatMap { String(cString: $0) } ?? "{}"
+                    out.append(NJAudioRow(id: bid, updatedAtMs: ms, payloadJSON: payload))
+                }
+            }
+            sqlite3_finalize(stmt)
+        }
+
+        return out
+    }
+
+    func markBlockDeleted(blockID: String) {
+        let now = DBNoteRepository.nowMs()
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let rc0 = sqlite3_prepare_v2(dbp, """
+            UPDATE nj_block
+            SET deleted=1,
+                updated_at_ms=?,
+                dirty_bl=1
+            WHERE block_id=?;
+            """, -1, &stmt, nil)
+            if rc0 != SQLITE_OK { db.dbgErr(dbp, "markBlockDeleted.prepare", rc0); return }
+            defer { sqlite3_finalize(stmt) }
+
+            sqlite3_bind_int64(stmt, 1, now)
+            sqlite3_bind_text(stmt, 2, blockID, -1, SQLITE_TRANSIENT)
+
+            let rc1 = sqlite3_step(stmt)
+            if rc1 != SQLITE_DONE { db.dbgErr(dbp, "markBlockDeleted.step", rc1) }
+        }
+        enqueueDirty(entity: "block", entityID: blockID, op: "upsert", updatedAtMs: now)
+    }
+
+    func updateBlockPayloadJSON(blockID: String, payloadJSON: String, updatedAtMs: Int64) {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let rc = sqlite3_prepare_v2(dbp, """
+            UPDATE nj_block
+            SET payload_json=?,
+                updated_at_ms=?,
+                dirty_bl=1,
+                deleted=0
+            WHERE block_id=?;
+            """, -1, &stmt, nil)
+            if rc != SQLITE_OK { db.dbgErr(dbp, "updateBlockPayloadJSON.prepare", rc); return }
+            defer { sqlite3_finalize(stmt) }
+
+            sqlite3_bind_text(stmt, 1, payloadJSON, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int64(stmt, 2, updatedAtMs)
+            sqlite3_bind_text(stmt, 3, blockID, -1, SQLITE_TRANSIENT)
+
+            let rc2 = sqlite3_step(stmt)
+            if rc2 != SQLITE_DONE { db.dbgErr(dbp, "updateBlockPayloadJSON.step", rc2) }
+        }
+        enqueueDirty(entity: "block", entityID: blockID, op: "upsert", updatedAtMs: updatedAtMs)
     }
 
     func enqueueDirty(entity: String, entityID: String, op: String, updatedAtMs: Int64) {

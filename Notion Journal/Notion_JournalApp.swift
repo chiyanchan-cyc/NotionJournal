@@ -12,6 +12,11 @@ struct Notion_JournalApp: App {
         WindowGroup {
             RootView()
                 .environmentObject(store)
+                .onOpenURL { url in
+                    if NJAudioShareReceiver.handleIncomingURL(url) != nil {
+                        store.runAudioIngestIfNeeded()
+                    }
+                }
         }
 
         WindowGroup(id: "clip-pdf", for: URL.self) { url in
@@ -26,6 +31,11 @@ struct Notion_JournalApp: App {
 
         WindowGroup(id: "reconstructed-manual") {
             NJReconstructedManualView()
+                .environmentObject(store)
+        }
+
+        WindowGroup(id: "calendar") {
+            NJCalendarView()
                 .environmentObject(store)
         }
     }

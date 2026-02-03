@@ -16,6 +16,7 @@ final class DBNoteRepository {
     private let noteBlockTable: DBNoteBlockTable
     let attachmentTable: DBAttachmentTable
     let goalTable: DBGoalTable
+    let calendarTable: DBCalendarTable
     private let cloudBridge: DBCloudBridge
     
     
@@ -41,17 +42,38 @@ final class DBNoteRepository {
             nowMs: { Self.nowMs() }
         )
         self.goalTable = DBGoalTable(db: db)
+        self.calendarTable = DBCalendarTable(
+            db: db,
+            enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
+        )
         self.cloudBridge = DBCloudBridge(
             noteTable: self.noteTable,
             blockTable: self.blockTable,
             noteBlockTable: self.noteBlockTable,
             attachmentTable: self.attachmentTable,
-            goalTable: self.goalTable
+            goalTable: self.goalTable,
+            calendarTable: self.calendarTable
         )
     }
     
     func listOrphanClipBlocks(limit: Int = 200) -> [DBBlockTable.NJOrphanClipRow] {
         blockTable.listOrphanClipBlocks(limit: limit)
+    }
+
+    func listOrphanAudioBlocks(limit: Int = 200) -> [DBBlockTable.NJOrphanAudioRow] {
+        blockTable.listOrphanAudioBlocks(limit: limit)
+    }
+
+    func listAudioBlocks(limit: Int = 200) -> [DBBlockTable.NJAudioRow] {
+        blockTable.listAudioBlocks(limit: limit)
+    }
+
+    func markBlockDeleted(blockID: String) {
+        blockTable.markBlockDeleted(blockID: blockID)
+    }
+
+    func updateBlockPayloadJSON(blockID: String, payloadJSON: String, updatedAtMs: Int64) {
+        blockTable.updateBlockPayloadJSON(blockID: blockID, payloadJSON: payloadJSON, updatedAtMs: updatedAtMs)
     }
     
     func upsertTagsForNoteBlockInstanceID(
@@ -110,6 +132,9 @@ final class DBNoteRepository {
         case "attachment":
             for (_, f) in rows { applyRemoteUpsert(entity: "attachment", fields: f) }
 
+        case "calendar_item":
+            for (_, f) in rows { applyRemoteUpsert(entity: "calendar_item", fields: f) }
+
         case "note_block":
             func noteID(_ f: [String: Any]) -> String { (f["note_id"] as? String) ?? (f["noteID"] as? String) ?? "" }
             func blockID(_ f: [String: Any]) -> String { (f["block_id"] as? String) ?? (f["blockID"] as? String) ?? "" }
@@ -144,6 +169,21 @@ final class DBNoteRepository {
         if entity == "tab" { return loadTabFields(tabID: id) ?? [:] }
         return loadRecord(entity: entity, id: id) ?? [:]
     }
+
+    func cleanupCalendarItemsOlderThan3Months() {
+        let cal = Calendar.current
+        guard let cutoff = cal.date(byAdding: .month, value: -3, to: Date()) else { return }
+        let cutoffKey = Self.dateKey(cutoff)
+        let items = calendarTable.listItemsBefore(dateKey: cutoffKey)
+        if items.isEmpty { return }
+        let now = Self.nowMs()
+        for item in items {
+            calendarTable.markDeleted(dateKey: item.dateKey, nowMs: now)
+            if !item.photoAttachmentID.isEmpty {
+                markAttachmentDeleted(attachmentID: item.photoAttachmentID, nowMs: now)
+            }
+        }
+    }
     
     func localCount(entity: String) -> Int {
         let table: String
@@ -153,6 +193,7 @@ final class DBNoteRepository {
         case "note": table = "nj_note"
         case "block": table = "nj_block"
         case "note_block": table = "nj_note_block"
+        case "calendar_item": table = "nj_calendar_item"
         default: return 0
         }
         
@@ -205,6 +246,10 @@ final class DBNoteRepository {
     
     func markNoteDeleted(noteID: String) {
         noteTable.markNoteDeleted(noteID: noteID)
+    }
+
+    func setPinned(noteID: String, pinned: Bool) {
+        noteTable.setPinned(noteID: noteID, pinned: pinned)
     }
     
     func enqueueDirty(entity: String, entityID: String, op: String, updatedAtMs: Int64) {
@@ -379,9 +424,32 @@ final class DBNoteRepository {
     func findFirstInstanceByBlock(blockID: String) -> (noteID: String, instanceID: String)? {
         noteBlockTable.findFirstInstanceByBlock(blockID: blockID)
     }
+
+    func calendarItem(dateKey: String) -> NJCalendarItem? {
+        calendarTable.loadItem(dateKey: dateKey)
+    }
+
+    func listCalendarItems(startKey: String, endKey: String) -> [NJCalendarItem] {
+        calendarTable.listItems(startKey: startKey, endKey: endKey)
+    }
+
+    func upsertCalendarItem(_ item: NJCalendarItem) {
+        calendarTable.upsertItem(item)
+    }
+
+    func deleteCalendarItem(dateKey: String, nowMs: Int64) {
+        calendarTable.markDeleted(dateKey: dateKey, nowMs: nowMs)
+    }
     
     static func nowMs() -> Int64 {
         Int64(Date().timeIntervalSince1970 * 1000.0)
+    }
+
+    static func dateKey(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
     }
     
     static func emptyRTF() -> Data {

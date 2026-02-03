@@ -73,6 +73,7 @@ final class AppStore: ObservableObject {
         self.selectedTabID = nil
 
         runAttachmentCacheCleanupIfNeeded()
+        notes.cleanupCalendarItemsOlderThan3Months()
 
         self.sync.start()
         Task { await runInitialPullGate() }
@@ -115,6 +116,12 @@ final class AppStore: ObservableObject {
     private var clipIngestRunning = false
 
     @MainActor
+    private var audioIngestRunning = false
+
+    @MainActor
+    private var audioTranscribeRunning = false
+
+    @MainActor
     func runClipIngestIfNeeded() {
         if clipIngestRunning { return }
         clipIngestRunning = true
@@ -126,6 +133,37 @@ final class AppStore: ObservableObject {
                 print("NJ_CLIP_INGEST done")
             }
         }
+    }
+
+    @MainActor
+    func runAudioIngestIfNeeded() {
+        if audioIngestRunning { return }
+        audioIngestRunning = true
+        print("NJ_AUDIO_INGEST trigger")
+        Task {
+            await NJAudioIngestor.ingestAll(store: self)
+            await MainActor.run {
+                self.audioIngestRunning = false
+                print("NJ_AUDIO_INGEST done")
+            }
+        }
+    }
+
+    @MainActor
+    func runAudioTranscribeIfNeeded() {
+        #if os(macOS) || targetEnvironment(macCatalyst)
+        if audioTranscribeRunning { return }
+        audioTranscribeRunning = true
+        print("NJ_AUDIO_TRANSCRIBE trigger")
+        Task.detached { [weak self] in
+            guard let self else { return }
+            await NJAudioTranscriber.runOnce(store: self)
+            await MainActor.run {
+                self.audioTranscribeRunning = false
+                print("NJ_AUDIO_TRANSCRIBE done")
+            }
+        }
+        #endif
     }
     
     func reloadNotebooksTabsFromDB() {

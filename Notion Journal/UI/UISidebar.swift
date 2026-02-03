@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import Combine
 
 struct Sidebar: View {
     @EnvironmentObject var store: AppStore
@@ -21,6 +22,7 @@ struct Sidebar: View {
     @State private var showCKNoteBlockDebug = false
     @State private var showWeeklyReconstructed = false
     @State private var showManualReconstructed = false // <-- ADD THIS
+    @State private var showCalendarView = false
     @State private var showGPSLogger = false
     @State private var showHealthLogger = false
     @State private var showExport = false
@@ -39,6 +41,7 @@ struct Sidebar: View {
         return store.notes.listNotes(tabDomainKey: key)
             .filter { $0.notebook == nb && $0.deleted == 0 }
             .sorted {
+                if $0.pinned != $1.pinned { return $0.pinned > $1.pinned }
                 if $0.createdAtMs != $1.createdAtMs { return $0.createdAtMs > $1.createdAtMs }
                 return String(describing: $0.id) > String(describing: $1.id)
             }
@@ -160,8 +163,15 @@ struct Sidebar: View {
                         ForEach(notesInScope, id: \.id) { n in
                             NavigationLink(value: n.id) {
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(n.title.isEmpty ? "Untitled" : n.title)
-                                        .lineLimit(1)
+                                    HStack(spacing: 6) {
+                                        Text(n.title.isEmpty ? "Untitled" : n.title)
+                                            .lineLimit(1)
+                                        if n.pinned > 0 {
+                                            Image(systemName: "pin.fill")
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
 
                                     if n.createdAtMs > 0 {
                                         Text(njDateSubscript(n.createdAtMs))
@@ -177,6 +187,15 @@ struct Sidebar: View {
                                 selectedNoteID = nil
                                 DispatchQueue.main.async { selectedNoteID = n.id }
                             })
+                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                Button {
+                                    store.notes.setPinned(noteID: n.id.raw, pinned: n.pinned == 0)
+                                    store.objectWillChange.send()
+                                } label: {
+                                    Label(n.pinned == 0 ? "Pin" : "Unpin", systemImage: n.pinned == 0 ? "pin" : "pin.slash")
+                                }
+                                .tint(n.pinned == 0 ? .orange : .gray)
+                            }
                         }
                     }
                 }
@@ -189,22 +208,25 @@ struct Sidebar: View {
                     selectedNoteID = nil
                     noteListResetKey = UUID()
                 }
+                .safeAreaInset(edge: .bottom) {
+                    Color.clear.frame(height: 56)
+                }
                 .listStyle(.sidebar)
             }
 
             Divider()
 
-            HStack(spacing: 10) {
-                Button {
+            HStack(spacing: 12) {
+                SidebarSquareButton(systemName: "viewfinder") {
                     openWeeklyReconstructed()
-                } label: {
-                    Image(systemName: "viewfinder")
                 }
 
-                Button {
+                SidebarSquareButton(systemName: "magnifyingglass") {
                     openManualReconstructed()
-                } label: {
-                    Image(systemName: "magnifyingglass")
+                }
+
+                SidebarSquareButton(systemName: "calendar") {
+                    openCalendarView()
                 }
 
                 Spacer()
@@ -301,6 +323,12 @@ struct Sidebar: View {
                     .environmentObject(store)
             }
         }
+        .sheet(isPresented: $showCalendarView) {
+            NavigationStack {
+                NJCalendarView()
+                    .environmentObject(store)
+            }
+        }
         .sheet(isPresented: $store.showDBDebugPanel) {
             NJDebugSQLConsole(db: store.db)
         }
@@ -321,6 +349,14 @@ struct Sidebar: View {
             showManualReconstructed = true
         }
     }
+
+    private func openCalendarView() {
+        if shouldUseWindowForReconstructed {
+            openWindow(id: "calendar")
+        } else {
+            showCalendarView = true
+        }
+    }
 }
 
 private extension Sidebar {
@@ -331,6 +367,23 @@ private extension Sidebar {
         #else
         return true
         #endif
+    }
+}
+
+private struct SidebarSquareButton: View {
+    let systemName: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .frame(width: 40, height: 40)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color(UIColor.secondarySystemBackground))
+                )
+        }
+        .buttonStyle(.plain)
     }
 }
 

@@ -16,6 +16,7 @@ struct Rail: View {
     private let spacing: CGFloat = 12
     private let tabMin: CGFloat = 72
     private let tabMax: CGFloat = 176
+    private let bottomReserve: CGFloat = 56
 
     @State private var didRunBLOnce = false
 
@@ -25,7 +26,10 @@ struct Rail: View {
             let tabCount = store.tabsForSelectedNotebook.count
 
             let topBottomPad: CGFloat = 24
-            let usableForTabs = max(0, H - topBottomPad - (tabCount > 0 ? spacing * CGFloat(max(0, tabCount - 1)) : 0))
+            let usableForTabs = max(
+                0,
+                H - topBottomPad - bottomReserve - (tabCount > 0 ? spacing * CGFloat(max(0, tabCount - 1)) : 0)
+            )
 
             let rawTab = tabCount > 0 ? usableForTabs / CGFloat(tabCount) : tabMax
             let tabHeight = min(tabMax, max(tabMin, rawTab))
@@ -51,7 +55,7 @@ struct Rail: View {
                     }
                 }
 
-                Spacer(minLength: 0)
+                Spacer(minLength: bottomReserve)
             }
             .onAppear {
                 if didRunBLOnce { return }

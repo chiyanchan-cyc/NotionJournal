@@ -23,6 +23,14 @@ struct NJClipboardInboxView: View {
         let website: String
         let title: String
         let pdfPath: String
+        let jsonPath: String
+        let audioPath: String
+        let kind: Kind
+    }
+
+    enum Kind: String, Equatable {
+        case clip
+        case audio
     }
 
     var selectedRow: Row? {
@@ -71,6 +79,13 @@ struct NJClipboardInboxView: View {
                         .listRowBackground(
                             (selectedBlockID == r.id) ? Color.primary.opacity(0.10) : Color.clear
                         )
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            Button(role: .destructive) {
+                                deleteRow(r)
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
                         .simultaneousGesture(
                             TapGesture(count: 2).onEnded {
                                 selectedBlockID = r.id
@@ -89,11 +104,11 @@ struct NJClipboardInboxView: View {
                     }
 
                     Button("Open PDF") {
-                        guard let r = selectedRow else { return }
+                        guard let r = selectedRow, r.kind == .clip else { return }
                         refreshICloudDiagForSelected()
                         openPDF(for: r)
                     }
-                    .disabled(selectedBlockID == nil)
+                    .disabled(selectedBlockID == nil || selectedRow?.kind != .clip || (selectedRow?.pdfPath.isEmpty ?? true))
 
                     Spacer()
 
@@ -150,9 +165,10 @@ struct NJClipboardInboxView: View {
 
     func reload() {
         let raw = store.notes.listOrphanClipBlocks(limit: 500)
+        let rawAudio = store.notes.listOrphanAudioBlocks(limit: 500)
 
         var out: [Row] = []
-        out.reserveCapacity(raw.count)
+        out.reserveCapacity(raw.count + rawAudio.count)
 
         for r in raw {
             let meta = parseClipPayload(r.payloadJSON)
@@ -162,10 +178,32 @@ struct NJClipboardInboxView: View {
                     createdAtMs: r.createdAtMs,
                     website: meta.website,
                     title: meta.title,
-                    pdfPath: meta.pdfPath
+                    pdfPath: meta.pdfPath,
+                    jsonPath: meta.jsonPath,
+                    audioPath: "",
+                    kind: .clip
                 )
             )
         }
+
+        for r in rawAudio {
+            let meta = parseAudioPayload(r.payloadJSON)
+            if meta.transcript.isEmpty { continue }
+            out.append(
+                Row(
+                    id: r.id,
+                    createdAtMs: r.createdAtMs,
+                    website: "Audio",
+                    title: meta.title,
+                    pdfPath: "",
+                    jsonPath: "",
+                    audioPath: meta.audioPath,
+                    kind: .audio
+                )
+            )
+        }
+
+        out.sort { $0.createdAtMs > $1.createdAtMs }
 
         rows = out
         if let sel = selectedBlockID, !rows.contains(where: { $0.id == sel }) {
@@ -186,6 +224,7 @@ struct NJClipboardInboxView: View {
     }
 
     func openPDF(for r: Row) {
+        if r.kind != .clip { return }
         guard let u = resolveICloudDocumentsPath(r.pdfPath) else {
             pdfURL = nil
             showPDF = true
@@ -232,11 +271,11 @@ struct NJClipboardInboxView: View {
     }
 
 
-    func parseClipPayload(_ payload: String) -> (title: String, website: String, pdfPath: String) {
+    func parseClipPayload(_ payload: String) -> (title: String, website: String, pdfPath: String, jsonPath: String) {
         guard
             let data = payload.data(using: .utf8),
             let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return ("", "", "") }
+        else { return ("", "", "", "") }
 
         if
             let sections = obj["sections"] as? [String: Any],
@@ -249,13 +288,38 @@ struct NJClipboardInboxView: View {
                 (clipData["pdf_path"] as? String)
                 ?? (clipData["PDF_Path"] as? String)
                 ?? ""
-            return (title, website, pdfPath)
+            let jsonPath =
+                (clipData["json_path"] as? String)
+                ?? (clipData["JSON_Path"] as? String)
+                ?? ""
+            return (title, website, pdfPath, jsonPath)
         }
 
         let title = obj["title"] as? String ?? ""
         let website = obj["website"] as? String ?? ""
         let pdfPath = obj["PDF_Path"] as? String ?? ""
-        return (title, website, pdfPath)
+        let jsonPath = obj["JSON_Path"] as? String ?? ""
+        return (title, website, pdfPath, jsonPath)
+    }
+
+    func parseAudioPayload(_ payload: String) -> (title: String, audioPath: String, transcript: String) {
+        guard
+            let data = payload.data(using: .utf8),
+            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return ("", "", "") }
+
+        if
+            let sections = obj["sections"] as? [String: Any],
+            let audio = sections["audio"] as? [String: Any],
+            let audioData = audio["data"] as? [String: Any]
+        {
+            let title = (audioData["title"] as? String) ?? "Audio Recording"
+            let audioPath = (audioData["audio_path"] as? String) ?? ""
+            let transcript = (audioData["transcript_txt"] as? String) ?? ""
+            return (title, audioPath, transcript.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+
+        return ("Audio Recording", "", "")
     }
 
 
@@ -287,15 +351,20 @@ struct NJClipboardInboxView: View {
         let implicit = fm.url(forUbiquityContainerIdentifier: nil)
 
         let pdfPath = selectedRow?.pdfPath ?? ""
+        let audioPath = selectedRow?.audioPath ?? ""
 
         var lines: [String] = []
         lines.append("token=\(tokenOK ? "OK" : "NIL")")
         lines.append("explicit=\(explicit?.path ?? "NIL")")
         lines.append("implicit=\(implicit?.path ?? "NIL")")
-        lines.append("PDF_Path=\(pdfPath.isEmpty ? "EMPTY" : pdfPath)")
+        if !audioPath.isEmpty {
+            lines.append("Audio_Path=\(audioPath)")
+        } else {
+            lines.append("PDF_Path=\(pdfPath.isEmpty ? "EMPTY" : pdfPath)")
+        }
 
-        if !pdfPath.isEmpty {
-            var rel = pdfPath
+        if !pdfPath.isEmpty || !audioPath.isEmpty {
+            var rel = !audioPath.isEmpty ? audioPath : pdfPath
             if rel.hasPrefix("/") { rel.removeFirst() }
 
             if let e = explicit {
@@ -322,6 +391,65 @@ struct NJClipboardInboxView: View {
         }
 
         diagText = lines.joined(separator: "\n")
+    }
+
+    func deleteRow(_ r: Row) {
+        store.notes.markBlockDeleted(blockID: r.id)
+        store.sync.schedulePush(debounceMs: 0)
+
+        if r.kind == .clip {
+            deleteClipFiles(pdfPath: r.pdfPath, jsonPath: r.jsonPath)
+        } else if r.kind == .audio {
+            deleteAudioFiles(audioPath: r.audioPath)
+        }
+
+        rows.removeAll { $0.id == r.id }
+        if selectedBlockID == r.id {
+            selectedBlockID = nil
+        }
+    }
+
+    func deleteAudioFiles(audioPath: String) {
+        let fm = FileManager.default
+        let audioURL = resolveICloudDocumentsPath(audioPath)
+        if let u = audioURL {
+            try? fm.removeItem(at: u)
+            if let dir = audioURL?.deletingLastPathComponent() {
+                pruneEmptyDirs(start: dir)
+            }
+        }
+    }
+
+    func deleteClipFiles(pdfPath: String, jsonPath: String) {
+        let fm = FileManager.default
+
+        let pdfURL = resolveICloudDocumentsPath(pdfPath)
+        let jsonURL = resolveICloudDocumentsPath(jsonPath)
+
+        if let u = pdfURL {
+            try? fm.removeItem(at: u)
+        }
+
+        if let u = jsonURL {
+            try? fm.removeItem(at: u)
+        }
+
+        if let dir = (pdfURL ?? jsonURL)?.deletingLastPathComponent() {
+            pruneEmptyDirs(start: dir)
+        }
+    }
+
+    func pruneEmptyDirs(start: URL) {
+        let fm = FileManager.default
+        var current = start
+
+        while true {
+            if current.lastPathComponent == "Documents" { break }
+            let contents = (try? fm.contentsOfDirectory(atPath: current.path)) ?? []
+            if !contents.isEmpty { break }
+            try? fm.removeItem(at: current)
+            current = current.deletingLastPathComponent()
+        }
     }
 
     func njDate(_ ms: Int64) -> String {

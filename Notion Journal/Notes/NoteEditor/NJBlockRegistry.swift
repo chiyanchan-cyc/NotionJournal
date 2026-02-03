@@ -11,6 +11,7 @@ import Foundation
 enum NJBlockType: String, Codable, CaseIterable {
     case textRTF = "text_rtf"
     case clip = "clip"
+    case audio = "audio"
 }
 
 struct NJBlockDescriptor: Hashable, Codable {
@@ -21,7 +22,8 @@ struct NJBlockDescriptor: Hashable, Codable {
 enum NJBlockRegistry {
     static let descriptors: [NJBlockType: NJBlockDescriptor] = [
         .textRTF: NJBlockDescriptor(type: .textRTF, displayName: "Text (RTF)"),
-        .clip: NJBlockDescriptor(type: .clip, displayName: "Clip")
+        .clip: NJBlockDescriptor(type: .clip, displayName: "Clip"),
+        .audio: NJBlockDescriptor(type: .audio, displayName: "Audio")
     ]
 
     static func descriptor(for type: NJBlockType) -> NJBlockDescriptor? {
