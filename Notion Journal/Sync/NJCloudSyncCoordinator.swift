@@ -73,21 +73,39 @@ actor NJCloudSyncCoordinator {
         let order: [(String, String)] = await MainActor.run { NJCloudSchema.syncOrder }
 
         let batch = await MainActor.run {
-            repo.takeDirtyBatch(limit: 50)
+            repo.takeDirtyBatchDetailed(limit: 50)
         }
-        
-        NJLog.p("NJ_PUSH_ALL batchCount=\(batch.count) sample=\(batch.prefix(5))")
+
+        let sample = batch.prefix(5).map { "\($0.entity):\($0.entityID):\($0.op)" }
+        NJLog.p("NJ_PUSH_ALL batchCount=\(batch.count) sample=\(sample)")
 
         if batch.isEmpty { return }
 
         for (entity, recordType) in order {
-            let ids = batch.filter { $0.0 == entity }.map { $0.1 }
+            let items = batch.filter { $0.entity == entity }
+            let ids = items.map { $0.entityID }
             if ids.isEmpty { continue }
 
-            var rows: [(String, [String: Any])] = []
-            rows.reserveCapacity(ids.count)
+            let deleteIDs = items.filter { $0.op == "delete" }.map { $0.entityID }
+            if !deleteIDs.isEmpty {
+                NJLog.p("NJ_PUSH_DELETE entity=\(entity) ids=\(deleteIDs.count)")
+                let deleted = await transport.deleteEntity(entity: entity, recordType: recordType, ids: deleteIDs)
+                if !deleted.isEmpty {
+                    for id in deleted {
+                        await MainActor.run {
+                            repo.clearDirty(entity: entity, entityID: id)
+                        }
+                    }
+                }
+            }
 
-            for id in ids {
+            let upsertIDs = items.filter { $0.op != "delete" }.map { $0.entityID }
+            if upsertIDs.isEmpty { continue }
+
+            var rows: [(String, [String: Any])] = []
+            rows.reserveCapacity(upsertIDs.count)
+
+            for id in upsertIDs {
                 let f = await MainActor.run {
                     repo.cloudFields(entity: entity, id: id)
                 }
@@ -101,7 +119,7 @@ actor NJCloudSyncCoordinator {
 
             if rows.isEmpty { continue }
 
-            NJLog.p("NJ_PUSH_PREP entity=\(entity) dirtyIDs=\(ids.count) rows=\(rows.count)")
+            NJLog.p("NJ_PUSH_PREP entity=\(entity) dirtyIDs=\(upsertIDs.count) rows=\(rows.count)")
 
             let saved = await transport.pushEntity(entity: entity, recordType: recordType, rows: rows)
 

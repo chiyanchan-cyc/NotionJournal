@@ -74,6 +74,10 @@ final class NJCloudKitTransport {
                 if NJNoteBlockCloudMapper.ingestPulledField(key: key, val: val, f: &f, toMs: { self.toMs($0) }) { continue }
             }
 
+            if entity == NJAttachmentCloudMapper.entity {
+                if NJAttachmentCloudMapper.ingestPulledField(key: key, val: val, f: &f, toMs: { self.toMs($0) }) { continue }
+            }
+
             ingestDefault(key, val)
         }
 
@@ -335,6 +339,84 @@ final class NJCloudKitTransport {
         }
 
         return saved
+    }
+
+    func deleteEntity(entity: String, recordType: String, ids: [String]) async -> [String] {
+        if ids.isEmpty { return [] }
+
+        let tryIDs = Set(ids)
+        let recordIDs = ids.map { CKRecord.ID(recordName: $0) }
+        let op = CKModifyRecordsOperation(recordsToSave: nil, recordIDsToDelete: recordIDs)
+        op.savePolicy = .ifServerRecordUnchanged
+        op.isAtomic = false
+
+        let deleted: [String] = await withCheckedContinuation { (cont: CheckedContinuation<[String], Never>) in
+            op.modifyRecordsResultBlock = { result in
+                switch result {
+                case .success:
+                    cont.resume(returning: Array(tryIDs))
+                case .failure(let err):
+                    var deletedSet = Set<String>()
+
+                    if let ckErr = err as? CKError {
+                        if let partial = ckErr.userInfo[CKPartialErrorsByItemIDKey] as? [CKRecord.ID: Error] {
+                            var failedIDs = Set<String>()
+                            for (rid, perErr) in partial {
+                                failedIDs.insert(rid.recordName)
+                                if let perCK = perErr as? CKError, perCK.code == .unknownItem {
+                                    deletedSet.insert(rid.recordName)
+                                    continue
+                                }
+                                let perCK = perErr as? CKError
+                                let retryAfter = perCK?.retryAfterSeconds
+                                let perDomain = (perCK as NSError?)?.domain ?? "ck"
+                                self.recordDirtyError(
+                                    entity,
+                                    rid.recordName,
+                                    (perCK?.code.rawValue) ?? -1,
+                                    perDomain,
+                                    perErr.localizedDescription,
+                                    retryAfter
+                                )
+                            }
+                            let ok = tryIDs.subtracting(failedIDs)
+                            deletedSet.formUnion(ok)
+                        } else if ckErr.code == .unknownItem {
+                            deletedSet = tryIDs
+                        } else {
+                            let retryAfter = ckErr.retryAfterSeconds
+                            for id in ids {
+                                let ckDomain = (ckErr as NSError).domain
+                                self.recordDirtyError(
+                                    entity,
+                                    id,
+                                    ckErr.code.rawValue,
+                                    ckDomain,
+                                    ckErr.localizedDescription,
+                                    retryAfter
+                                )
+                            }
+                        }
+                    } else {
+                        for id in ids {
+                            self.recordDirtyError(
+                                entity,
+                                id,
+                                -1,
+                                "Error",
+                                err.localizedDescription,
+                                nil
+                            )
+                        }
+                    }
+
+                    cont.resume(returning: Array(deletedSet))
+                }
+            }
+            self.db.add(op)
+        }
+
+        return deleted
     }
 
 }

@@ -10,6 +10,7 @@ import Combine
 import UIKit
 import Proton
 import os
+import PhotosUI
 
 private let NJShortcutLog = Logger(subsystem: "NotionJournal", category: "Shortcuts")
 
@@ -25,6 +26,7 @@ struct NJReconstructedNoteView: View {
     @State private var loaded = false
     @State private var pendingFocusID: UUID? = nil
     @State private var pendingFocusToStart: Bool = false
+    @State private var pickedPhotoItem: PhotosPickerItem? = nil
     
     init(spec: NJReconstructedSpec) {
         self.spec = spec
@@ -40,7 +42,7 @@ struct NJReconstructedNoteView: View {
         .overlay(NJHiddenShortcuts(getHandle: { focusedHandle() }))
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if let h = focusedHandle() {
-                NJProtonFloatingFormatBar(handle: h)
+                NJProtonFloatingFormatBar(handle: h, pickedPhotoItem: $pickedPhotoItem)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 6)
                     .background(.ultraThinMaterial)
@@ -151,7 +153,19 @@ struct NJReconstructedNoteView: View {
         ToolbarItemGroup(placement: .topBarTrailing) {
             Button {
                 forceCommitFocusedIfAny()
-                persistence.reload(makeHandle: { NJProtonEditorHandle() })
+                persistence.reload(makeHandle: {
+                    let h = NJProtonEditorHandle()
+                    h.attachmentResolver = { [weak store] id in
+                        store?.notes.attachmentByID(id)
+                    }
+                    h.attachmentThumbPathCleaner = { [weak store] id in
+                        store?.notes.clearAttachmentThumbPath(attachmentID: id, nowMs: DBNoteRepository.nowMs())
+                    }
+                    h.onOpenFullPhoto = { id in
+                        NJPhotoLibraryPresenter.presentFullPhoto(localIdentifier: id)
+                    }
+                    return h
+                })
             } label: {
                 Image(systemName: "arrow.clockwise")
             }
@@ -163,7 +177,19 @@ struct NJReconstructedNoteView: View {
         loaded = true
         persistence.configure(store: store)
         persistence.updateSpec(spec)
-        persistence.reload(makeHandle: { NJProtonEditorHandle() })
+        persistence.reload(makeHandle: {
+            let h = NJProtonEditorHandle()
+            h.attachmentResolver = { [weak store] id in
+                store?.notes.attachmentByID(id)
+            }
+            h.attachmentThumbPathCleaner = { [weak store] id in
+                store?.notes.clearAttachmentThumbPath(attachmentID: id, nowMs: DBNoteRepository.nowMs())
+            }
+            h.onOpenFullPhoto = { id in
+                NJPhotoLibraryPresenter.presentFullPhoto(localIdentifier: id)
+            }
+            return h
+        })
     }
     
     private func forceCommitFocusedIfAny() {
@@ -226,6 +252,7 @@ struct NJReconstructedNoteView: View {
 
 private struct NJProtonFloatingFormatBar: View {
     let handle: NJProtonEditorHandle
+    @Binding var pickedPhotoItem: PhotosPickerItem?
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -247,6 +274,19 @@ private struct NJProtonFloatingFormatBar: View {
 
                 Divider().frame(height: 18)
 
+                PhotosPicker(selection: $pickedPhotoItem, matching: .images, photoLibrary: .shared()) {
+                    Image(systemName: "photo")
+                }
+
+                Button {
+                    handle.insertTableAttachment()
+                    handle.snapshot()
+                } label: {
+                    Image(systemName: "tablecells")
+                }
+
+                Divider().frame(height: 18)
+
                 Button { handle.outdent(); handle.snapshot() } label: { Image(systemName: "decrease.indent") }
                 Button { handle.indent(); handle.snapshot() } label: { Image(systemName: "increase.indent") }
             }
@@ -254,6 +294,20 @@ private struct NJProtonFloatingFormatBar: View {
             .labelStyle(.iconOnly)
             .font(.system(size: 16, weight: .semibold))
             .padding(.horizontal, 8)
+        }
+        .onChange(of: pickedPhotoItem) { _, newItem in
+            guard let newItem else { return }
+            Task {
+                let fullRef = newItem.itemIdentifier ?? ""
+                if let img = await NJPhotoPickerHelper.loadImage(
+                    itemIdentifier: newItem.itemIdentifier,
+                    loadData: { try? await newItem.loadTransferable(type: Data.self) }
+                ) {
+                    handle.insertPhotoAttachment(img, fullPhotoRef: fullRef)
+                    handle.snapshot()
+                }
+                await MainActor.run { pickedPhotoItem = nil }
+            }
         }
     }
 }

@@ -4,17 +4,20 @@ final class DBCloudBridge {
     let noteTable: DBNoteTable
     let blockTable: DBBlockTable
     let noteBlockTable: DBNoteBlockTable
+    let attachmentTable: DBAttachmentTable
     let goalTable: DBGoalTable
 
     init(
         noteTable: DBNoteTable,
         blockTable: DBBlockTable,
         noteBlockTable: DBNoteBlockTable,
+        attachmentTable: DBAttachmentTable,
         goalTable: DBGoalTable
     ) {
         self.noteTable = noteTable
         self.blockTable = blockTable
         self.noteBlockTable = noteBlockTable
+        self.attachmentTable = attachmentTable
         self.goalTable = goalTable
     }
 
@@ -26,6 +29,8 @@ final class DBCloudBridge {
             return blockTable.loadNJBlock(blockID: id)
         case "note_block":
             return noteBlockTable.loadNJNoteBlock(instanceID: id)
+        case "attachment":
+            return loadNJAttachment(attachmentID: id)
         case "goal":
             return goalTable.loadNJGoal(goalID: id)
         default:
@@ -41,6 +46,8 @@ final class DBCloudBridge {
             blockTable.applyNJBlock(fields)
         case "note_block":
             noteBlockTable.applyNJNoteBlock(fields)
+        case "attachment":
+            attachmentTable.applyNJAttachment(fields)
         case "goal":
             goalTable.applyNJGoal(fields)
         default:
@@ -90,5 +97,26 @@ final class DBCloudBridge {
             deleted: deleted
         )
         noteTable.upsertNote(note)
+    }
+
+    private func loadNJAttachment(attachmentID: String) -> [String: Any]? {
+        guard let a = attachmentTable.loadNJAttachment(attachmentID: attachmentID) else { return nil }
+        var out: [String: Any] = [
+            "attachment_id": a.attachmentID,
+            "block_id": a.blockID,
+            "kind": a.kind.rawValue,
+            "thumb_path": a.thumbPath,
+            "full_photo_ref": a.fullPhotoRef,
+            "display_w": a.displayW,
+            "display_h": a.displayH,
+            "created_at_ms": a.createdAtMs,
+            "updated_at_ms": a.updatedAtMs,
+            "deleted": a.deleted
+        ]
+        if let n = a.noteID { out["note_id"] = n }
+        if !a.thumbPath.isEmpty {
+            out["thumb_asset"] = URL(fileURLWithPath: a.thumbPath)
+        }
+        return out
     }
 }

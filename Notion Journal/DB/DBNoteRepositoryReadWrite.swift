@@ -65,6 +65,10 @@ extension DBNoteRepository {
         dirtyQueue.takeDirtyBatch(limit: limit)
     }
 
+    func takeDirtyBatchDetailed(limit: Int) -> [NJDirtyItem] {
+        dirtyQueue.takeDirtyBatch(limit: limit)
+    }
+
     func clearDirty(entity: String, entityID: String) {
         dirtyQueue.clearDirty(entity: entity, entityID: entityID)
     }

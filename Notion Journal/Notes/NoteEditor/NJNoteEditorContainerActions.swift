@@ -4,6 +4,15 @@ extension NJNoteEditorContainerView {
 
     func makeWiredHandle() -> NJProtonEditorHandle {
         let handle = NJProtonEditorHandle()
+        handle.attachmentResolver = { [weak store] id in
+            store?.notes.attachmentByID(id)
+        }
+        handle.attachmentThumbPathCleaner = { [weak store] id in
+            store?.notes.clearAttachmentThumbPath(attachmentID: id, nowMs: DBNoteRepository.nowMs())
+        }
+        handle.onOpenFullPhoto = { id in
+            NJPhotoLibraryPresenter.presentFullPhoto(localIdentifier: id)
+        }
 
         handle.onUserTyped = { [weak p = persistence, weak handle] _, _ in
             guard let p, let id = handle?.ownerBlockUUID else { return }

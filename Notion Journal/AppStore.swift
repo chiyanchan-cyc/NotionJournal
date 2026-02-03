@@ -60,7 +60,7 @@ final class AppStore: ObservableObject {
         self.sync = CloudSyncEngine(
             repo: self.notes,
             deviceID: deviceID,
-            containerID: "iCloud.com.CYC.NotionJournal"
+            containerID: NJCloudConfig.containerID
         )
         
         CKContainer.default().accountStatus { status, error in
@@ -72,8 +72,23 @@ final class AppStore: ObservableObject {
         self.selectedNotebookID = nil
         self.selectedTabID = nil
 
+        runAttachmentCacheCleanupIfNeeded()
+
         self.sync.start()
         Task { await runInitialPullGate() }
+    }
+
+    private func runAttachmentCacheCleanupIfNeeded() {
+        let key = "nj_attachment_cache_cleanup_ms"
+        let now = Int64(Date().timeIntervalSince1970 * 1000.0)
+        let last = Int64(UserDefaults.standard.double(forKey: key))
+        let dayMs: Int64 = 24 * 60 * 60 * 1000
+        if last > 0, now - last < dayMs { return }
+        UserDefaults.standard.set(Double(now), forKey: key)
+
+        NJAttachmentCache.cleanupOlderThan(days: 30) { [weak self] attachmentID in
+            self?.notes.clearAttachmentThumbPath(attachmentID: attachmentID, nowMs: now)
+        }
     }
 
     @MainActor

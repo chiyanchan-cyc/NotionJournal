@@ -504,6 +504,11 @@ final class NJProtonEditorHandle {
     var ownerBlockUUID: UUID? = nil
     var isEditing: Bool = false
     var withProgrammatic: (((() -> Void)) -> Void)? = nil
+    var attachmentResolver: ((String) -> NJAttachmentRecord?)? = nil
+    var attachmentThumbPathCleaner: ((String) -> Void)? = nil
+    var onOpenFullPhoto: ((String) -> Void)? = nil
+    var onTableAction: ((String, NJTableAction) -> Void)? = nil
+    var onDeletePhotoAttachment: ((String) -> Void)? = nil
     
     var onSnapshot: ((NSAttributedString, NSRange) -> Void)?
     var onUserTyped: ((NSAttributedString, NSRange) -> Void)?
@@ -516,11 +521,25 @@ final class NJProtonEditorHandle {
     
     func exportProtonJSONString() -> String {
         guard let editor else { return "" }
-        return NJProtonDocCodecV1.encodeDocument(from: editor.attributedText)
+        let text = editor.attributedText
+        if NJProtonDocCodecV2.containsBlockAttachments(text) {
+            return NJProtonDocCodecV2.encodeDocument(from: text)
+        }
+        return NJProtonDocCodecV1.encodeDocument(from: text)
     }
     
     func previewFirstLineFromProtonJSON(_ json: String) -> String {
-        let decoded: NSAttributedString = {
+            let decoded: NSAttributedString = {
+                if let doc = NJProtonDocCodecV2.decodeIfPresent(json: json) {
+                    return NJProtonDocCodecV2.buildAttributedString(
+                        doc: doc,
+                        resolveAttachment: nil,
+                        onMissingThumb: nil,
+                        onOpenFullPhoto: nil,
+                        onTableAction: nil,
+                        onDeletePhoto: nil
+                    )
+                }
             if let doc = NJProtonDocCodecV1.decodeIfPresent(json: json) {
                 return NJProtonDocCodecV1.buildAttributedString(doc: doc)
             }
@@ -771,6 +790,385 @@ final class NJProtonEditorHandle {
             if let tls = v as? [NSTextList], let tl = tls.first { return (tl.markerFormat == .decimal) ? "number" : "bullet" }
             if let s = v as? String { return (s == "number") ? "number" : "bullet" }
             return "bullet"
+        }
+
+        private static func encodeRTFBase64(_ s: NSAttributedString) -> String? {
+            let r = NSRange(location: 0, length: s.length)
+            guard let data = try? s.data(from: r, documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]) else { return nil }
+            return data.base64EncodedString()
+        }
+
+        private static func decodeRTFBase64(_ b64: String) -> NSAttributedString? {
+            guard let data = Data(base64Encoded: b64) else { return nil }
+            return try? NSAttributedString(
+                data: data,
+                options: [.documentType: NSAttributedString.DocumentType.rtf],
+                documentAttributes: nil
+            )
+        }
+    }
+
+    private struct NJProtonDocCodecV2 {
+        private static let schema = "nj_proton_doc_v2"
+
+        static func containsBlockAttachments(_ text: NSAttributedString) -> Bool {
+            if text.length == 0 { return false }
+            var found = false
+            text.enumerateAttribute(.attachment, in: NSRange(location: 0, length: text.length), options: []) { value, _, stop in
+                guard let att = value as? Attachment else { return }
+                if att.isBlockType {
+                    found = true
+                    stop.pointee = true
+                }
+            }
+            return found
+        }
+
+        static func encodeDocument(from text: NSAttributedString) -> String {
+            let doc = buildDoc(from: text)
+            let root: [String: Any] = ["schema": schema, "doc": doc]
+            guard JSONSerialization.isValidJSONObject(root) else { return "" }
+            guard let data = try? JSONSerialization.data(withJSONObject: root, options: []) else { return "" }
+            return String(data: data, encoding: .utf8) ?? ""
+        }
+
+        static func decodeIfPresent(json: String) -> [[String: Any]]? {
+            guard let data = json.data(using: .utf8) else { return nil }
+            guard let rootAny = try? JSONSerialization.jsonObject(with: data, options: []) else { return nil }
+            guard let root = rootAny as? [String: Any] else { return nil }
+            guard (root["schema"] as? String) == schema else { return nil }
+            guard let docAny = root["doc"] as? [Any] else { return nil }
+            let doc = docAny.compactMap { $0 as? [String: Any] }
+            return doc.isEmpty ? nil : doc
+        }
+
+        static func buildAttributedString(
+            doc: [[String: Any]],
+            resolveAttachment: ((String) -> NJAttachmentRecord?)?,
+            onMissingThumb: ((String) -> Void)?,
+            onOpenFullPhoto: ((String) -> Void)?,
+            onTableAction: ((String, NJTableAction) -> Void)?,
+            onDeletePhoto: ((String) -> Void)?
+        ) -> NSAttributedString {
+            let out = NSMutableAttributedString()
+
+            for seg in doc {
+                let t = (seg["type"] as? String) ?? ""
+
+                if t == "rich" {
+                    let b64 = (seg["rtf_base64"] as? String) ?? ""
+                    if let a = decodeRTFBase64(b64) {
+                        out.append(a)
+                    }
+                    continue
+                }
+
+                if t == "list" {
+                    let itemsAny = (seg["items"] as? [Any]) ?? []
+                    let items = itemsAny.compactMap { $0 as? [String: Any] }
+                    let listAttr = buildListAttributedString(items)
+                    out.append(listAttr)
+                    continue
+                }
+
+                if t == "attachment" {
+                    if let att = decodeAttachment(
+                        seg,
+                        resolveAttachment: resolveAttachment,
+                        onMissingThumb: onMissingThumb,
+                        onOpenFullPhoto: onOpenFullPhoto,
+                        onTableAction: onTableAction,
+                        onDeletePhoto: onDeletePhoto
+                    ) {
+                        out.append(att)
+                    }
+                }
+            }
+
+            return out
+        }
+
+        private enum Segment {
+            case text(NSAttributedString)
+            case attachment(Attachment, UIView)
+        }
+
+        private static func buildDoc(from text: NSAttributedString) -> [[String: Any]] {
+            let segments = splitByBlockAttachments(text)
+            var doc: [[String: Any]] = []
+
+            for seg in segments {
+                switch seg {
+                case .text(let sub):
+                    let textDoc = textDocSegments(from: sub)
+                    doc.append(contentsOf: textDoc)
+                case .attachment(_, let view):
+                    if let node = encodeAttachment(view) {
+                        doc.append(node)
+                    }
+                }
+            }
+
+            if doc.isEmpty {
+                doc.append(["type": "rich", "rtf_base64": encodeRTFBase64(text) ?? ""])
+            }
+
+            return doc
+        }
+
+        private static func splitByBlockAttachments(_ text: NSAttributedString) -> [Segment] {
+            let full = NSRange(location: 0, length: text.length)
+            var attachments: [(NSRange, Attachment, UIView)] = []
+
+            text.enumerateAttribute(.attachment, in: full, options: []) { value, range, _ in
+                guard let att = value as? Attachment else { return }
+                guard att.isBlockType else { return }
+                guard let view = att.contentView else { return }
+                attachments.append((range, att, view))
+            }
+
+            if attachments.isEmpty { return [.text(text)] }
+
+            attachments.sort { $0.0.location < $1.0.location }
+
+            var segments: [Segment] = []
+            var pos = 0
+
+            for (range, att, view) in attachments {
+                if range.location > pos {
+                    let sub = text.attributedSubstring(from: NSRange(location: pos, length: range.location - pos))
+                    if sub.length > 0 { segments.append(.text(sub)) }
+                }
+                segments.append(.attachment(att, view))
+                pos = range.location + range.length
+            }
+
+            if pos < text.length {
+                let sub = text.attributedSubstring(from: NSRange(location: pos, length: text.length - pos))
+                if sub.length > 0 { segments.append(.text(sub)) }
+            }
+
+            return segments
+        }
+
+        private static func textDocSegments(from text: NSAttributedString) -> [[String: Any]] {
+            let json = NJProtonDocCodecV1.encodeDocument(from: text)
+            if let doc = NJProtonDocCodecV1.decodeIfPresent(json: json) {
+                return doc
+            }
+            return [["type": "rich", "rtf_base64": encodeRTFBase64(text) ?? ""]]
+        }
+
+        private static func encodeAttachment(_ view: UIView) -> [String: Any]? {
+            if let v = view as? NJPhotoAttachmentView {
+                return [
+                    "type": "attachment",
+                    "kind": "photo",
+                    "attachment_id": v.attachmentID,
+                    "display_w": Int(v.displaySize.width),
+                    "display_h": Int(v.displaySize.height)
+                ]
+            }
+            if let v = view as? NJTableAttachmentView {
+                var node: [String: Any] = [
+                    "type": "attachment",
+                    "kind": "table",
+                    "attachment_id": v.attachmentID
+                ]
+                node["table"] = encodeTable(v.gridView)
+                return node
+            }
+            return nil
+        }
+
+        private static func encodeTable(_ grid: GridView) -> [String: Any] {
+            let rows = grid.numberOfRows
+            let cols = grid.numberOfColumns
+            var cellsJSON: [[String: Any]] = []
+            cellsJSON.reserveCapacity(grid.cells.count)
+
+            for cell in grid.cells {
+                let row = cell.rowSpan.min() ?? 0
+                let col = cell.columnSpan.min() ?? 0
+                let rtf = encodeRTFBase64(cell.editor.attributedText) ?? ""
+                cellsJSON.append([
+                    "row": row,
+                    "col": col,
+                    "row_span": cell.rowSpan,
+                    "col_span": cell.columnSpan,
+                    "rtf_base64": rtf
+                ])
+            }
+
+            return [
+                "rows": rows,
+                "cols": cols,
+                "cells": cellsJSON
+            ]
+        }
+
+        private static func decodeAttachment(
+            _ node: [String: Any],
+            resolveAttachment: ((String) -> NJAttachmentRecord?)?,
+            onMissingThumb: ((String) -> Void)?,
+            onOpenFullPhoto: ((String) -> Void)?,
+            onTableAction: ((String, NJTableAction) -> Void)?,
+            onDeletePhoto: ((String) -> Void)?
+        ) -> NSAttributedString? {
+            let kind = (node["kind"] as? String) ?? ""
+            let attachmentID = (node["attachment_id"] as? String) ?? UUID().uuidString
+
+            if kind == "photo" {
+                let w = CGFloat((node["display_w"] as? Int) ?? 400)
+                let h = CGFloat((node["display_h"] as? Int) ?? 400)
+                let size = CGSize(width: max(1, w), height: max(1, h))
+                let record = resolveAttachment?(attachmentID)
+                var image: UIImage? = nil
+
+                if let record, !record.thumbPath.isEmpty {
+                    image = NJAttachmentCache.imageFromPath(record.thumbPath)
+                    if image == nil { onMissingThumb?(attachmentID) }
+                }
+
+                if image == nil, let url = NJAttachmentCache.fileURL(for: attachmentID),
+                   FileManager.default.fileExists(atPath: url.path) {
+                    image = UIImage(contentsOfFile: url.path)
+                }
+
+                let view = NJPhotoAttachmentView(
+                    attachmentID: attachmentID,
+                    size: size,
+                    image: image,
+                    fullPhotoRef: record?.fullPhotoRef ?? ""
+                )
+                if let onOpenFullPhoto {
+                    view.onOpenFull = onOpenFullPhoto
+                }
+                view.onDelete = { onDeletePhoto?(attachmentID) }
+                if image == nil {
+                    view.backgroundColor = UIColor.secondarySystemFill
+                    NJAttachmentCloudFetcher.fetchThumbIfNeeded(attachmentID: attachmentID) { img in
+                        guard let img else { return }
+                        view.backgroundColor = .clear
+                        view.updateImage(img)
+                    }
+                }
+                let att = Attachment(view, size: .matchContent)
+                att.selectOnTap = false
+                att.selectBeforeDelete = false
+                return att.string
+            }
+
+            if kind == "table" {
+                guard let table = node["table"] as? [String: Any] else { return nil }
+                let rows = (table["rows"] as? Int) ?? 2
+                let cols = (table["cols"] as? Int) ?? 2
+                let cellsAny = (table["cells"] as? [Any]) ?? []
+                let cellsJSON = cellsAny.compactMap { $0 as? [String: Any] }
+
+                let colWidth: CGFloat = cols > 0 ? 1.0 / CGFloat(cols) : 1.0
+                let columns = (0..<max(1, cols)).map { _ in GridColumnConfiguration(width: .fractional(colWidth)) }
+                let rowsCfg = (0..<max(1, rows)).map { _ in GridRowConfiguration(initialHeight: 40) }
+
+                let config = GridConfiguration(
+                    columnsConfiguration: columns,
+                    rowsConfiguration: rowsCfg,
+                    style: .default,
+                    boundsLimitShadowColors: GradientColors(primary: .black, secondary: .white),
+                    collapsedColumnWidth: 2,
+                    collapsedRowHeight: 2,
+                    ignoresOptimizedInit: true
+                )
+
+                var cells: [GridCell] = []
+                cells.reserveCapacity(max(1, rows) * max(1, cols))
+
+                for r in 0..<max(1, rows) {
+                    for c in 0..<max(1, cols) {
+                        let cell = GridCell(rowSpan: [r], columnSpan: [c], initialHeight: 40, ignoresOptimizedInit: true)
+                        cell.editor.forceApplyAttributedText = true
+                        cells.append(cell)
+                    }
+                }
+
+                for c in cellsJSON {
+                    let row = (c["row"] as? Int) ?? 0
+                    let col = (c["col"] as? Int) ?? 0
+                    let rtf = (c["rtf_base64"] as? String) ?? ""
+                    let idx = (row * max(1, cols)) + col
+                    if idx >= 0 && idx < cells.count {
+                        let cell = cells[idx]
+                        if let a = decodeRTFBase64(rtf) {
+                            cell.editor.attributedText = a
+                        }
+                    }
+                }
+
+                let tableAttachment = NJTableAttachmentFactory.make(
+                    attachmentID: attachmentID,
+                    config: config,
+                    cells: cells,
+                    onTableAction: onTableAction
+                )
+                return tableAttachment.string
+            }
+
+            return nil
+        }
+
+        private static func buildListAttributedString(_ items: [[String: Any]]) -> NSAttributedString {
+            var listItems: [ListItem] = []
+            listItems.reserveCapacity(items.count)
+
+            for it in items {
+                let lvl = max(0, (it["level"] as? Int) ?? 0)
+                let kind = (it["kind"] as? String) ?? "bullet"
+                let b64 = (it["rtf_base64"] as? String) ?? ""
+                let text = decodeRTFBase64(b64) ?? NSAttributedString(string: "")
+                listItems.append(ListItem(text: text, level: lvl, attributeValue: kind))
+            }
+
+            let parsed = ListParser.parse(list: listItems, indent: 24)
+            let a = NSMutableAttributedString(attributedString: parsed)
+
+            func hasStrike(_ s: NSAttributedString) -> Bool {
+                if s.length == 0 { return false }
+                var hit = false
+                s.enumerateAttribute(.strikethroughStyle, in: NSRange(location: 0, length: s.length), options: []) { v, _, stop in
+                    if let i = v as? Int, i != 0 {
+                        hit = true
+                        stop.pointee = true
+                    }
+                }
+                return hit
+            }
+
+            let ns = a.string as NSString
+            var loc = 0
+            var itemIdx = 0
+
+            while loc < ns.length && itemIdx < listItems.count {
+                let pr = ns.paragraphRange(for: NSRange(location: loc, length: 0))
+                if hasStrike(listItems[itemIdx].text) {
+                    var rr = pr
+                    if rr.length > 0 {
+                        let last = ns.character(at: rr.location + rr.length - 1)
+                        if last == 10 || last == 13 { rr.length -= 1 }
+                    }
+                    if rr.length > 0 {
+                        a.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: rr)
+                    }
+                }
+                loc = pr.location + pr.length
+                itemIdx += 1
+            }
+
+            let ns2 = a.string as NSString
+            if ns2.length == 0 || ns2.character(at: ns2.length - 1) != 10 {
+                a.append(NSAttributedString(string: "\n"))
+            }
+
+            return a
         }
 
         private static func encodeRTFBase64(_ s: NSAttributedString) -> String? {
@@ -1162,6 +1560,223 @@ final class NJProtonEditorHandle {
         snapshot()
     }
 
+    func insertPhotoAttachment(
+        _ image: UIImage,
+        displayWidth: CGFloat = NJPhotoAttachmentView.defaultDisplayWidth,
+        fullPhotoRef: String = ""
+    ) {
+        guard let editor else { return }
+        let attachmentID = UUID().uuidString
+
+        let saved = NJAttachmentCache.saveThumbnail(
+            image: image,
+            attachmentID: attachmentID,
+            width: NJAttachmentCache.thumbWidth
+        )
+        let size = {
+            let w = max(1, displayWidth)
+            let ratio = image.size.height / max(1, image.size.width)
+            let h = max(1, w * ratio)
+            return CGSize(width: w, height: h)
+        }()
+
+        let thumbImage = saved.flatMap { UIImage(contentsOfFile: $0.url.path) } ?? image
+        let view = NJPhotoAttachmentView(
+            attachmentID: attachmentID,
+            size: size,
+            image: thumbImage,
+            fullPhotoRef: fullPhotoRef
+        )
+        if let onOpenFullPhoto {
+            view.onOpenFull = onOpenFullPhoto
+        }
+        view.onDelete = { [weak self] in
+            self?.deletePhotoAttachment(attachmentID: attachmentID)
+        }
+        let att = Attachment(view, size: .matchContent)
+        att.selectOnTap = false
+        att.selectBeforeDelete = false
+
+        let s = NSMutableAttributedString(attributedString: editor.attributedText)
+        let r = editor.selectedRange
+        s.replaceCharacters(in: r, with: att.string)
+
+        editor.attributedText = s
+        editor.selectedRange = NSRange(location: min(r.location + 1, s.length), length: 0)
+
+        snapshot()
+    }
+
+    func insertTableAttachment(rows: Int = 2, cols: Int = 2) {
+        guard let editor else { return }
+        let rCount = max(1, rows)
+        let cCount = max(1, cols)
+
+        let attachmentID = UUID().uuidString
+        let attachment = buildTableAttachment(
+            attachmentID: attachmentID,
+            rows: rCount,
+            cols: cCount,
+            cellsJSON: nil
+        )
+        let s = NSMutableAttributedString(attributedString: editor.attributedText)
+        let r = editor.selectedRange
+        s.replaceCharacters(in: r, with: attachment.string)
+
+        editor.attributedText = s
+        editor.selectedRange = NSRange(location: min(r.location + 1, s.length), length: 0)
+
+        snapshot()
+    }
+
+    private func handleTableAction(attachmentID: String, action: NJTableAction) {
+        guard let editor else { return }
+        guard let (range, view) = findTableAttachment(attachmentID: attachmentID, in: editor.attributedText) else { return }
+
+        let grid = view.gridView
+        var rows = max(1, grid.numberOfRows)
+        var cols = max(1, grid.numberOfColumns)
+
+        switch action {
+        case .addRow:
+            rows += 1
+        case .addColumn:
+            cols += 1
+        }
+
+        let cellsJSON = tableCellsJSON(from: grid)
+        let newAttachment = buildTableAttachment(
+            attachmentID: attachmentID,
+            rows: rows,
+            cols: cols,
+            cellsJSON: cellsJSON
+        )
+
+        let s = NSMutableAttributedString(attributedString: editor.attributedText)
+        s.replaceCharacters(in: range, with: newAttachment.string)
+        editor.attributedText = s
+        editor.selectedRange = NSRange(location: min(range.location + 1, s.length), length: 0)
+
+        snapshot()
+    }
+
+    private func findTableAttachment(
+        attachmentID: String,
+        in text: NSAttributedString
+    ) -> (NSRange, NJTableAttachmentView)? {
+        let full = NSRange(location: 0, length: text.length)
+        var found: (NSRange, NJTableAttachmentView)? = nil
+        text.enumerateAttribute(.attachment, in: full, options: []) { value, range, stop in
+            guard let att = value as? Attachment else { return }
+            guard att.isBlockType else { return }
+            guard let view = att.contentView as? NJTableAttachmentView else { return }
+            guard view.attachmentID == attachmentID else { return }
+            found = (range, view)
+            stop.pointee = true
+        }
+        return found
+    }
+
+    private func tableCellsJSON(from grid: GridView) -> [[String: Any]] {
+        var cellsJSON: [[String: Any]] = []
+        cellsJSON.reserveCapacity(grid.cells.count)
+
+        for cell in grid.cells {
+            let row = cell.rowSpan.min() ?? 0
+            let col = cell.columnSpan.min() ?? 0
+            let rtf = encodeRTFBase64(cell.editor.attributedText) ?? ""
+            cellsJSON.append([
+                "row": row,
+                "col": col,
+                "row_span": cell.rowSpan,
+                "col_span": cell.columnSpan,
+                "rtf_base64": rtf
+            ])
+        }
+
+        return cellsJSON
+    }
+
+    private func buildTableAttachment(
+        attachmentID: String,
+        rows: Int,
+        cols: Int,
+        cellsJSON: [[String: Any]]?
+    ) -> Attachment {
+        let rCount = max(1, rows)
+        let cCount = max(1, cols)
+        let colWidth: CGFloat = 1.0 / CGFloat(cCount)
+        let columns = (0..<cCount).map { _ in GridColumnConfiguration(width: .fractional(colWidth)) }
+        let rowsCfg = (0..<rCount).map { _ in GridRowConfiguration(initialHeight: 40) }
+
+        let config = GridConfiguration(
+            columnsConfiguration: columns,
+            rowsConfiguration: rowsCfg,
+            style: .default,
+            boundsLimitShadowColors: GradientColors(primary: .black, secondary: .white),
+            collapsedColumnWidth: 2,
+            collapsedRowHeight: 2,
+            ignoresOptimizedInit: true
+        )
+
+        var cells: [GridCell] = []
+        cells.reserveCapacity(rCount * cCount)
+
+        for r in 0..<rCount {
+            for c in 0..<cCount {
+                let cell = GridCell(rowSpan: [r], columnSpan: [c], initialHeight: 40, ignoresOptimizedInit: true)
+                cell.editor.forceApplyAttributedText = true
+                cell.editor.attributedText = NSAttributedString(string: "")
+                cells.append(cell)
+            }
+        }
+
+        if let cellsJSON {
+            for c in cellsJSON {
+                let row = (c["row"] as? Int) ?? 0
+                let col = (c["col"] as? Int) ?? 0
+                let rtf = (c["rtf_base64"] as? String) ?? ""
+                let idx = (row * cCount) + col
+                if idx >= 0 && idx < cells.count {
+                    if let a = decodeRTFBase64(rtf) {
+                        cells[idx].editor.attributedText = a
+                    }
+                }
+            }
+        }
+
+        return NJTableAttachmentFactory.make(
+            attachmentID: attachmentID,
+            config: config,
+            cells: cells,
+            onTableAction: { [weak self] id, action in
+                self?.handleTableAction(attachmentID: id, action: action)
+            }
+        )
+    }
+
+    private func deletePhotoAttachment(attachmentID: String) {
+        guard let editor else { return }
+        let full = NSRange(location: 0, length: editor.attributedText.length)
+        var target: NSRange? = nil
+
+        editor.attributedText.enumerateAttribute(.attachment, in: full, options: []) { value, range, stop in
+            guard let att = value as? Attachment else { return }
+            guard att.isBlockType else { return }
+            guard let view = att.contentView as? NJPhotoAttachmentView else { return }
+            guard view.attachmentID == attachmentID else { return }
+            target = range
+            stop.pointee = true
+        }
+
+        guard let target else { return }
+        let s = NSMutableAttributedString(attributedString: editor.attributedText)
+        s.replaceCharacters(in: target, with: NSAttributedString(string: ""))
+        editor.attributedText = s
+        editor.selectedRange = NSRange(location: min(target.location, s.length), length: 0)
+        snapshot()
+    }
+
 
     func insertPhoto(_ image: UIImage) {
         guard let editor else { return }
@@ -1310,8 +1925,7 @@ final class NJProtonEditorHandle {
     func toggleBold() { toggleBoldWeight() }
 
     private func toggleBoldWeight() {
-        guard let editor else { return }
-        guard let tv = findTextView(in: editor) else { return }
+        guard let tv = activeTextView() else { return }
 
         func weightOf(_ font: UIFont) -> UIFont.Weight {
             let wRaw = (font.fontDescriptor.object(forKey: .traits) as? [UIFontDescriptor.TraitKey: Any])?[.weight] as? CGFloat
@@ -1369,8 +1983,7 @@ final class NJProtonEditorHandle {
     }
 
     private func adjustFontSize(delta: CGFloat) {
-        guard let editor else { return }
-        guard let tv = findTextView(in: editor) else { return }
+        guard let tv = activeTextView() else { return }
 
         let r = tv.selectedRange
         if r.length == 0 {
@@ -1394,8 +2007,7 @@ final class NJProtonEditorHandle {
     }
 
     private func toggleFontTrait(_ trait: UIFontDescriptor.SymbolicTraits) {
-        guard let editor else { return }
-        guard let tv = findTextView(in: editor) else { return }
+        guard let tv = activeTextView() else { return }
 
         let r = tv.selectedRange
         if r.length == 0 {
@@ -1428,8 +2040,7 @@ final class NJProtonEditorHandle {
     }
 
     private func toggleStrikeThrough() {
-        guard let editor else { return }
-        guard let tv = findTextView(in: editor) else { return }
+        guard let tv = activeTextView() else { return }
 
         let r = tv.selectedRange
         if r.length == 0 {
@@ -1585,6 +2196,25 @@ final class NJProtonEditorHandle {
             onSnapshot?(editor.attributedText, editor.selectedRange)
         }
 
+        if let doc = NJProtonDocCodecV2.decodeIfPresent(json: json) {
+            let decoded = NJStandardizeFontFamily(
+                NJProtonDocCodecV2.buildAttributedString(
+                    doc: doc,
+                    resolveAttachment: { [weak self] id in self?.attachmentResolver?(id) },
+                    onMissingThumb: { [weak self] id in self?.attachmentThumbPathCleaner?(id) },
+                    onOpenFullPhoto: { [weak self] id in self?.onOpenFullPhoto?(id) },
+                    onTableAction: { [weak self] id, action in
+                        self?.handleTableAction(attachmentID: id, action: action)
+                    },
+                    onDeletePhoto: { [weak self] id in
+                        self?.deletePhotoAttachment(attachmentID: id)
+                    }
+                )
+            )
+            apply(decoded)
+            return
+        }
+
         if let doc = NJProtonDocCodecV1.decodeIfPresent(json: json) {
             let decoded = NJStandardizeFontFamily(NJProtonDocCodecV1.buildAttributedString(doc: doc))
             apply(decoded)
@@ -1616,6 +2246,57 @@ final class NJProtonEditorHandle {
             if let tv = findTextView(in: v) { return tv }
         }
         return nil
+    }
+
+    private func activeTextView() -> UITextView? {
+        if let editor, let tv = findTextView(in: editor), tv.isFirstResponder {
+            return tv
+        }
+
+        if let tv = findFirstResponderTextView() {
+            return tv
+        }
+
+        if let editor { return findTextView(in: editor) }
+        return nil
+    }
+
+    private func findFirstResponderTextView() -> UITextView? {
+        guard let window = njKeyWindow() else { return nil }
+        return findFirstResponder(in: window) as? UITextView
+    }
+
+    private func njKeyWindow() -> UIWindow? {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        for scene in scenes {
+            if let window = scene.windows.first(where: { $0.isKeyWindow }) {
+                return window
+            }
+        }
+        return UIApplication.shared.windows.first(where: { $0.isKeyWindow })
+    }
+
+    private func findFirstResponder(in view: UIView) -> UIResponder? {
+        if view.isFirstResponder { return view }
+        for sub in view.subviews {
+            if let hit = findFirstResponder(in: sub) { return hit }
+        }
+        return nil
+    }
+
+    private func encodeRTFBase64(_ s: NSAttributedString) -> String? {
+        let r = NSRange(location: 0, length: s.length)
+        guard let data = try? s.data(from: r, documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]) else { return nil }
+        return data.base64EncodedString()
+    }
+
+    private func decodeRTFBase64(_ b64: String) -> NSAttributedString? {
+        guard let data = Data(base64Encoded: b64) else { return nil }
+        return try? NSAttributedString(
+            data: data,
+            options: [.documentType: NSAttributedString.DocumentType.rtf],
+            documentAttributes: nil
+        )
     }
 }
 

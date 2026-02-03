@@ -481,6 +481,19 @@ final class NJReconstructedNotePersistence: ObservableObject {
         return NSAttributedString(string: cleaned)
     }
 
+    private func extractPhotoAttachments(from attr: NSAttributedString) -> [NJPhotoAttachmentView] {
+        if attr.length == 0 { return [] }
+        var out: [NJPhotoAttachmentView] = []
+        let r = NSRange(location: 0, length: attr.length)
+        attr.enumerateAttribute(.attachment, in: r, options: []) { value, range, _ in
+            guard let att = value as? Attachment else { return }
+            guard att.isBlockType else { return }
+            guard let view = att.contentView as? NJPhotoAttachmentView else { return }
+            out.append(view)
+        }
+        return out
+    }
+
     func hydrateProton(_ id: UUID) {
         guard let i = blocks.firstIndex(where: { $0.id == id }) else { return }
         let json = blocks[i].protonJSON
@@ -593,6 +606,44 @@ final class NJReconstructedNotePersistence: ObservableObject {
 
         b.protonJSON = protonJSON
         blocks[i].protonJSON = protonJSON
+
+        let nowMs = DBNoteRepository.nowMs()
+        let views = extractPhotoAttachments(from: originalAttr)
+        let existing = store.notes.listAttachments(blockID: b.blockID)
+        var existingByID: [String: NJAttachmentRecord] = [:]
+        for e in existing { existingByID[e.attachmentID] = e }
+
+        var seen = Set<String>()
+        for v in views {
+            let id = v.attachmentID
+            seen.insert(id)
+            let prior = existingByID[id]
+            let thumb = v.image.flatMap { img in
+                NJAttachmentCache.saveThumbnail(image: img, attachmentID: id, width: NJAttachmentCache.thumbWidth)
+            }
+            let thumbPath = thumb?.url.path ?? prior?.thumbPath ?? ""
+            let displayW = Int(v.displaySize.width)
+            let displayH = Int(v.displaySize.height)
+            let fullPhotoRef = v.fullPhotoRef.isEmpty ? (prior?.fullPhotoRef ?? "") : v.fullPhotoRef
+            let record = NJAttachmentRecord(
+                attachmentID: id,
+                blockID: b.blockID,
+                noteID: nil,
+                kind: .photo,
+                thumbPath: thumbPath,
+                fullPhotoRef: fullPhotoRef,
+                displayW: displayW,
+                displayH: displayH,
+                createdAtMs: prior?.createdAtMs ?? nowMs,
+                updatedAtMs: nowMs,
+                deleted: 0
+            )
+            store.notes.upsertAttachment(record, nowMs: nowMs)
+        }
+
+        for e in existing where !seen.contains(e.attachmentID) {
+            store.notes.markAttachmentDeleted(attachmentID: e.attachmentID, nowMs: nowMs)
+        }
 
         let tagJSONToSave = b.tagJSON
 

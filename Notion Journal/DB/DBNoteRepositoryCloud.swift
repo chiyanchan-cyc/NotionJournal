@@ -28,6 +28,9 @@ extension DBNoteRepository {
         case "block":
             for (_, f) in rows { applyRemoteUpsert(entity: "block", fields: f) }
 
+        case "attachment":
+            for (_, f) in rows { applyRemoteUpsert(entity: "attachment", fields: f) }
+
         case "note_block":
             func noteID(_ f: [String: Any]) -> String { (f["note_id"] as? String) ?? (f["noteID"] as? String) ?? "" }
             func blockID(_ f: [String: Any]) -> String { (f["block_id"] as? String) ?? (f["blockID"] as? String) ?? "" }

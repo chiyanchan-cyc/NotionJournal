@@ -14,6 +14,7 @@ final class DBNoteRepository {
     private let noteTable: DBNoteTable
     private let blockTable: DBBlockTable
     private let noteBlockTable: DBNoteBlockTable
+    let attachmentTable: DBAttachmentTable
     let goalTable: DBGoalTable
     private let cloudBridge: DBCloudBridge
     
@@ -27,6 +28,8 @@ final class DBNoteRepository {
         self.blockTable = DBBlockTable(db: db, enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) })
         
         self.noteBlockTable = DBNoteBlockTable(db: db, enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) })
+
+        self.attachmentTable = DBAttachmentTable(db: db, enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) })
         
         self.noteTable = DBNoteTable(
             db: db,
@@ -38,7 +41,13 @@ final class DBNoteRepository {
             nowMs: { Self.nowMs() }
         )
         self.goalTable = DBGoalTable(db: db)
-        self.cloudBridge = DBCloudBridge(noteTable: self.noteTable, blockTable: self.blockTable, noteBlockTable: self.noteBlockTable, goalTable: self.goalTable)
+        self.cloudBridge = DBCloudBridge(
+            noteTable: self.noteTable,
+            blockTable: self.blockTable,
+            noteBlockTable: self.noteBlockTable,
+            attachmentTable: self.attachmentTable,
+            goalTable: self.goalTable
+        )
     }
     
     func listOrphanClipBlocks(limit: Int = 200) -> [DBBlockTable.NJOrphanClipRow] {
@@ -97,7 +106,10 @@ final class DBNoteRepository {
             
         case "block":
             for (_, f) in rows { applyRemoteUpsert(entity: "block", fields: f) }
-            
+
+        case "attachment":
+            for (_, f) in rows { applyRemoteUpsert(entity: "attachment", fields: f) }
+
         case "note_block":
             func noteID(_ f: [String: Any]) -> String { (f["note_id"] as? String) ?? (f["noteID"] as? String) ?? "" }
             func blockID(_ f: [String: Any]) -> String { (f["block_id"] as? String) ?? (f["blockID"] as? String) ?? "" }
@@ -201,6 +213,10 @@ final class DBNoteRepository {
     
     func takeDirtyBatch(limit: Int) -> [(String, String)] {
         (try? dirtyQueue.takeDirtyBatch(limit: limit))?.map { ($0.entity, $0.entityID) } ?? []
+    }
+
+    func takeDirtyBatchDetailed(limit: Int) -> [NJDirtyItem] {
+        (try? dirtyQueue.takeDirtyBatch(limit: limit)) ?? []
     }
     
     

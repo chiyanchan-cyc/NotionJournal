@@ -12,5 +12,9 @@
 	<string>Notion Journal does not write Health data, but needs permission to read and sync your Health records.</string>
 	<key>NSHealthClinicalHealthRecordsShareUsageDescription</key>
 	<string>Notion Journal reads your clinical Health Records (medications) to sync into your local database.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Notion Journal needs access to your photo library to attach photos to notes.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Notion Journal saves photo thumbnails when you attach photos to notes.</string>
 </dict>
 </plist>
