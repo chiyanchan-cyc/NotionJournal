@@ -129,6 +129,7 @@ final class NJAudioIngestor {
         }
 
         let destAudio = destDir.appendingPathComponent("\(item.blockID).\(item.audioExt)", isDirectory: false)
+        let destPDF = destDir.appendingPathComponent("\(item.blockID).pdf", isDirectory: false)
         let audioOK = copyFile(fm: fm, src: item.audioURL, dst: destAudio, label: "AUDIO", blockID: item.blockID)
 
         if !audioOK {
@@ -138,6 +139,10 @@ final class NJAudioIngestor {
 
         let placeholderText = "Audio Recording\n\n(Transcript pending)"
         let rtfBase64 = NJPayloadConverterV1.makeRTFBase64(placeholderText)
+        let pdfOK = writePlaceholderPDF(text: placeholderText, dst: destPDF, blockID: item.blockID)
+        if !pdfOK {
+            print("NJ_AUDIO_INGEST pdf_placeholder_failed blockID=\(item.blockID)")
+        }
 
         let payloadObj: [String: Any] = [
             "v": 1,
@@ -149,6 +154,7 @@ final class NJAudioIngestor {
                         "recorded_at_ms": recordedAtMs,
                         "recorded_at_iso": recordedAtISO,
                         "audio_path": "Documents/\(yyyy)/\(mm)/\(item.blockID).\(item.audioExt)",
+                        "pdf_path": "Documents/\(yyyy)/\(mm)/\(item.blockID).pdf",
                         "audio_ext": item.audioExt,
                         "original_filename": originalName,
                         "transcript_txt": ""
@@ -234,6 +240,7 @@ final class NJAudioIngestor {
         }
     }
 
+
     static func dbHasBlock(store: AppStore, blockID: String) -> Bool {
         store.db.withDB { dbp in
             var stmt: OpaquePointer?
@@ -254,6 +261,36 @@ final class NJAudioIngestor {
             sqlite3_bind_text(stmt, 1, entity, -1, SQLITE_TRANSIENT)
             sqlite3_bind_text(stmt, 2, entityID, -1, SQLITE_TRANSIENT)
             return sqlite3_step(stmt) == SQLITE_ROW
+        }
+    }
+
+    static func writePlaceholderPDF(text: String, dst: URL, blockID: String) -> Bool {
+        let fmt = UIGraphicsPDFRendererFormat()
+        let pageRect = CGRect(x: 0, y: 0, width: 612, height: 792)
+        let renderer = UIGraphicsPDFRenderer(bounds: pageRect, format: fmt)
+
+        do {
+            let data = renderer.pdfData { ctx in
+                ctx.beginPage()
+                let pStyle = NSMutableParagraphStyle()
+                pStyle.lineBreakMode = .byWordWrapping
+                let attrs: [NSAttributedString.Key: Any] = [
+                    .font: UIFont.systemFont(ofSize: 15),
+                    .paragraphStyle: pStyle
+                ]
+                let inset: CGFloat = 36
+                let drawRect = CGRect(x: inset, y: inset, width: pageRect.width - inset * 2, height: pageRect.height - inset * 2)
+                text.draw(in: drawRect, withAttributes: attrs)
+            }
+            if FileManager.default.fileExists(atPath: dst.path) {
+                try FileManager.default.removeItem(at: dst)
+            }
+            try data.write(to: dst, options: .atomic)
+            print("NJ_AUDIO_INGEST pdf_placeholder_ok blockID=\(blockID) dst=\(dst.path)")
+            return true
+        } catch {
+            print("NJ_AUDIO_INGEST pdf_placeholder_fail blockID=\(blockID) dst=\(dst.path) err=\(error)")
+            return false
         }
     }
 

@@ -118,6 +118,7 @@ struct NJAudioDataV1: Codable, Equatable {
     var recorded_at_ms: Int64
     var recorded_at_iso: String?
     var audio_path: String?
+    var pdf_path: String?
     var audio_ext: String?
     var original_filename: String?
     var transcript_txt: String?

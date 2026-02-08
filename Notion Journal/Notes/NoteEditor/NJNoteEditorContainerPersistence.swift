@@ -109,13 +109,34 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
     init() { }
 
     private func extractClipPDFRelFromPayload(_ payloadJSON: String) -> String {
+        if let normalized = try? NJPayloadConverterV1.convertToV1(payloadJSON),
+           let data = normalized.data(using: .utf8),
+           let v1 = try? JSONDecoder().decode(NJPayloadV1.self, from: data) {
+            if let clip = try? v1.clipData(), let p = clip.pdf_path, !p.isEmpty {
+                return p.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            if let audio = try? v1.audioData(), let p = audio.pdf_path, !p.isEmpty {
+                return p.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+
         guard let data = payloadJSON.data(using: .utf8) else { return "" }
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return "" }
         guard let sections = root["sections"] as? [String: Any] else { return "" }
-        guard let clip = sections["clip"] as? [String: Any] else { return "" }
-        guard let clipData = clip["data"] as? [String: Any] else { return "" }
-        guard let pdfPath = clipData["pdf_path"] as? String else { return "" }
-        return pdfPath.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let clip = sections["clip"] as? [String: Any],
+           let clipData = clip["data"] as? [String: Any],
+           let pdfPath = (clipData["pdf_path"] as? String) ?? (clipData["PDF_Path"] as? String) {
+            return pdfPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        if let audio = sections["audio"] as? [String: Any],
+           let audioData = audio["data"] as? [String: Any],
+           let pdfPath = (audioData["pdf_path"] as? String) ?? (audioData["PDF_Path"] as? String) {
+            return pdfPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        return ""
     }
 
     private func extractPhotoAttachments(from attr: NSAttributedString) -> [NJPhotoAttachmentView] {

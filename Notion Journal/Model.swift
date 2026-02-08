@@ -105,3 +105,14 @@ struct NJCalendarItem: Identifiable, Codable, Hashable {
         )
     }
 }
+
+struct NJGoalSummary: Identifiable, Hashable {
+    let goalID: String
+    let name: String
+    let goalTag: String
+    let status: String
+    let createdAtMs: Int64
+    let updatedAtMs: Int64
+
+    var id: String { goalID }
+}

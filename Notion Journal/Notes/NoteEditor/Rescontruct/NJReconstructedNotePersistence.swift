@@ -43,6 +43,26 @@ final class NJReconstructedNotePersistence: ObservableObject {
         self.tab = spec.tab
     }
 
+    private func collapseKey(blockID: String) -> String {
+        "nj.reconstructed.collapse.\(blockID)"
+    }
+
+    func loadCollapsed(blockID: String) -> Bool {
+        UserDefaults.standard.bool(forKey: collapseKey(blockID: blockID))
+    }
+
+    func saveCollapsed(blockID: String, collapsed: Bool) {
+        UserDefaults.standard.set(collapsed, forKey: collapseKey(blockID: blockID))
+    }
+
+    func setCollapsed(id: UUID, collapsed: Bool) {
+        guard let i = blocks.firstIndex(where: { $0.id == id }) else { return }
+        var arr = blocks
+        arr[i].isCollapsed = collapsed
+        blocks = arr
+        saveCollapsed(blockID: arr[i].blockID, collapsed: collapsed)
+    }
+
     func configure(store: AppStore) {
         if didConfigure { return }
         self.store = store
@@ -55,36 +75,9 @@ final class NJReconstructedNotePersistence: ObservableObject {
         self.tab = spec.tab
     }
 
-    private func mainDomainKey(_ s: String) -> String {
-        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
-        if t.isEmpty { return "" }
-        let parts = t.split(separator: ".")
-        if parts.count == 0 { return "" }
-        if parts.first == "zz", parts.count >= 2 {
-            return "\(parts[0]).\(parts[1])"
-        }
-        return String(parts[0])
-    }
-
-    private func pastelColorForMainDomain(_ key: String) -> Color {
-        let baseHue: [String: Double] = [
-            "me": 55,
-            "zz.edu": 330,
-            "zz.adhd": 28
-        ]
-
-        let hueDeg: Double = {
-            if let h = baseHue[key] { return h }
-            let v = abs(key.hashValue) % 360
-            return Double(v)
-        }()
-
-        return Color(hue: hueDeg / 360.0, saturation: 0.30, brightness: 0.97)
-    }
-
     func rowBackgroundColor(blockID: String) -> Color? {
         guard let key = blockMainDomainByBlockID[blockID], !key.isEmpty else { return nil }
-        return pastelColorForMainDomain(key).opacity(0.22)
+        return NJDomainColorConfig.color(for: key)?.opacity(0.22)
     }
 
     private func dbLoadNoteDomainForBlockID(_ blockID: String) -> String {
@@ -200,10 +193,19 @@ final class NJReconstructedNotePersistence: ObservableObject {
 
         let timeExpr: String = {
             switch spec.timeField {
-            case .blockCreatedAtMs: return "b.created_at_ms"
-            case .tagCreatedAtMs: return "t.created_at_ms"
+            case .blockCreatedAtMs:
+                return "b.created_at_ms"
+            case .tagCreatedAtMs:
+                return "t.created_at_ms"
             }
         }()
+
+        let fmt: (Int64?) -> String = { ms in
+            guard let ms else { return "nil" }
+            let d = Date(timeIntervalSince1970: Double(ms) / 1000.0)
+            return "\(ms) (\(d))"
+        }
+        print("NJ_RECON_SPEC id=\(spec.id) match=\(spec.match) timeField=\(spec.timeField) startMs=\(fmt(startMs)) endMs=\(fmt(endMs)) timeExpr=\(timeExpr)")
 
         switch spec.match {
         case .exact(let tagRaw):
@@ -229,6 +231,7 @@ final class NJReconstructedNotePersistence: ObservableObject {
                     sqlite3_bind_int64(stmt, i, endMs); i += 1
                 }
             }
+            print("NJ_RECON_WHERE exact sql=\(whereSQL) tagA=\(tagA) tagB=\(tagB)")
             return (whereSQL, binder)
 
         case .prefix(let prefixRaw):
@@ -254,6 +257,7 @@ final class NJReconstructedNotePersistence: ObservableObject {
                     sqlite3_bind_int64(stmt, i, endMs); i += 1
                 }
             }
+            print("NJ_RECON_WHERE prefix sql=\(whereSQL) like1=\(like1) like2=\(like2)")
             return (whereSQL, binder)
         }
     }
@@ -348,12 +352,14 @@ final class NJReconstructedNotePersistence: ObservableObject {
             let (whereSQL, binder) = sqlWhereForSpec()
             let orderSQL = spec.newestFirst ? "DESC" : "ASC"
 
-            let timeExpr: String = {
-                switch spec.timeField {
-                case .blockCreatedAtMs: return "b.created_at_ms"
-                case .tagCreatedAtMs: return "t.created_at_ms"
-                }
-            }()
+        let timeExpr: String = {
+            switch spec.timeField {
+            case .blockCreatedAtMs:
+                return "b.created_at_ms"
+            case .tagCreatedAtMs:
+                return "t.created_at_ms"
+            }
+        }()
 
             let sql = """
             SELECT t.block_id
@@ -365,6 +371,27 @@ final class NJReconstructedNotePersistence: ObservableObject {
             ORDER BY \(timeExpr) \(orderSQL)
             LIMIT ?;
             """
+            print("NJ_RECON_QUERY sql=\(sql) limit=\(spec.limit) newestFirst=\(spec.newestFirst)")
+
+            // Debug counts for tag-only vs tag+time
+            do {
+                var stmtCount: OpaquePointer?
+                let countSQL = """
+                SELECT COUNT(*)
+                FROM nj_block_tag t
+                LEFT JOIN nj_block b
+                  ON b.block_id = t.block_id COLLATE NOCASE
+                WHERE \(whereSQL);
+                """
+                if sqlite3_prepare_v2(dbp, countSQL, -1, &stmtCount, nil) == SQLITE_OK {
+                    defer { sqlite3_finalize(stmtCount) }
+                    binder(stmtCount)
+                    if sqlite3_step(stmtCount) == SQLITE_ROW {
+                        let c = sqlite3_column_int64(stmtCount, 0)
+                        print("NJ_RECON_COUNT where_count=\(c)")
+                    }
+                }
+            }
 
             let rc0 = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
             if rc0 != SQLITE_OK {
@@ -427,7 +454,7 @@ final class NJReconstructedNotePersistence: ObservableObject {
 
         for r in rows {
             let noteDomain = dbLoadNoteDomainForBlockID(r.blockID)
-            let mainKey = mainDomainKey(noteDomain)
+            let mainKey = NJDomainColorConfig.normalizedSecondTierKey(noteDomain)
             if !mainKey.isEmpty {
                 blockMainDomainByBlockID[r.blockID] = mainKey
             }
@@ -458,7 +485,7 @@ final class NJReconstructedNotePersistence: ObservableObject {
                     domainPreview: domainPreview,
                     attr: attr,
                     sel: NSRange(location: 0, length: 0),
-                    isCollapsed: false,
+                    isCollapsed: loadCollapsed(blockID: r.blockID),
                     protonHandle: h,
                     isDirty: false,
                     loadedUpdatedAtMs: 0,

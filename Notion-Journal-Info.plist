@@ -17,23 +17,9 @@
 			</array>
 		</dict>
 	</array>
-	<key>LSSupportsOpeningDocumentsInPlace</key>
-	<true/>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>location</string>
 	</array>
-	<key>NSHealthShareUsageDescription</key>
-	<string>Notion Journal reads your Health data to sync sleep, workouts, blood pressure, weight, and medications into your local database.</string>
-	<key>NSHealthUpdateUsageDescription</key>
-	<string>Notion Journal does not write Health data, but needs permission to read and sync your Health records.</string>
-	<key>NSHealthClinicalHealthRecordsShareUsageDescription</key>
-	<string>Notion Journal reads your clinical Health Records (medications) to sync into your local database.</string>
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Notion Journal needs access to your photo library to attach photos to notes.</string>
-	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>Notion Journal saves photo thumbnails when you attach photos to notes.</string>
-	<key>NSCalendarsUsageDescription</key>
-	<string>Notion Journal reads your iOS calendar events (calendar named "Calendar") to show them in the in-app calendar. It never writes to your calendars.</string>
 </dict>
 </plist>

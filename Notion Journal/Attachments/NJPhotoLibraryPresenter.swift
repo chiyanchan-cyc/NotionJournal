@@ -42,6 +42,13 @@ final class NJPhotoLibraryPresenter {
         }
     }
 
+    static func presentFullPhoto(image: UIImage) {
+        guard let vc = topViewController() else { return }
+        let viewer = NJPhotoFullScreenViewController(image: image)
+        viewer.modalPresentationStyle = .fullScreen
+        vc.present(viewer, animated: true)
+    }
+
     private static func topViewController() -> UIViewController? {
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
         for scene in scenes {

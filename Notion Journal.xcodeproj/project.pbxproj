@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		040FA2DB2F16107300E3B042 /* Proton in Frameworks */ = {isa = PBXBuildFile; productRef = 040FA2DA2F16107300E3B042 /* Proton */; };
 		046E84E02F109E9600030095 /* NotionJournalClipper.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 046E84132F0DFE1000030095 /* NotionJournalClipper.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		37B25A08E0BB4E8BB40A1DAD /* NotionJournalShareExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B04395B2369B4342A51E2DDD /* NotionJournalShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -26,6 +27,13 @@
 			remoteGlobalIDString = 046E84122F0DFE1000030095;
 			remoteInfo = NotionJournalClipper;
 		};
+		6A7ED5E38A424A8A93D596EF /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 046793E32F03C62100C5221D /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = C34C4631C0E04DDA9F00FBA8;
+			remoteInfo = NotionJournalShareExtension;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -36,6 +44,7 @@
 			dstSubfolderSpec = 13;
 			files = (
 				046E84E02F109E9600030095 /* NotionJournalClipper.appex in Embed Foundation Extensions */,
+				37B25A08E0BB4E8BB40A1DAD /* NotionJournalShareExtension.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -45,6 +54,7 @@
 /* Begin PBXFileReference section */
 		046793EB2F03C62100C5221D /* Notion Journal.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Notion Journal.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		046E84132F0DFE1000030095 /* NotionJournalClipper.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NotionJournalClipper.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		B04395B2369B4342A51E2DDD /* NotionJournalShareExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NotionJournalShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -64,6 +74,13 @@
 				"Resources/universal-clipper.js",
 			);
 			target = 046E84122F0DFE1000030095 /* NotionJournalClipper */;
+		};
+		F0AF53E773B24BBFB7433784 /* Exceptions for "NotionJournalShareExtension" folder in "NotionJournalShareExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = C34C4631C0E04DDA9F00FBA8 /* NotionJournalShareExtension */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
@@ -99,6 +116,14 @@
 			path = NotionJournalClipper;
 			sourceTree = "<group>";
 		};
+		FA7C9AA85BE54CDCA133E1DE /* NotionJournalShareExtension */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				F0AF53E773B24BBFB7433784 /* Exceptions for "NotionJournalShareExtension" folder in "NotionJournalShareExtension" target */,
+			);
+			path = NotionJournalShareExtension;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -117,6 +142,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		5FDD275BCC3F4C16B84FAF10 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -124,6 +156,7 @@
 			isa = PBXGroup;
 			children = (
 				046793ED2F03C62100C5221D /* Notion Journal */,
+				FA7C9AA85BE54CDCA133E1DE /* NotionJournalShareExtension */,
 				046E84142F0DFE1000030095 /* NotionJournalClipper */,
 				046E84DF2F109E9600030095 /* Frameworks */,
 				046793EC2F03C62100C5221D /* Products */,
@@ -135,6 +168,7 @@
 			children = (
 				046793EB2F03C62100C5221D /* Notion Journal.app */,
 				046E84132F0DFE1000030095 /* NotionJournalClipper.appex */,
+				B04395B2369B4342A51E2DDD /* NotionJournalShareExtension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -163,6 +197,7 @@
 			dependencies = (
 				046E84E22F109E9600030095 /* PBXTargetDependency */,
 				046E84E52F109E9C00030095 /* PBXTargetDependency */,
+				D242750419564F7990F6E650 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				046793ED2F03C62100C5221D /* Notion Journal */,
@@ -197,6 +232,28 @@
 			productReference = 046E84132F0DFE1000030095 /* NotionJournalClipper.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		C34C4631C0E04DDA9F00FBA8 /* NotionJournalShareExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 2E3045B4FA0E4A48A9E4E4B8 /* Build configuration list for PBXNativeTarget "NotionJournalShareExtension" */;
+			buildPhases = (
+				F6EC53FBAB0947658E4CB52A /* Sources */,
+				5FDD275BCC3F4C16B84FAF10 /* Frameworks */,
+				05BBA78D1E364E24878F3BA6 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				FA7C9AA85BE54CDCA133E1DE /* NotionJournalShareExtension */,
+			);
+			name = NotionJournalShareExtension;
+			packageProductDependencies = (
+			);
+			productName = NotionJournalShareExtension;
+			productReference = B04395B2369B4342A51E2DDD /* NotionJournalShareExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -211,6 +268,9 @@
 						CreatedOnToolsVersion = 26.2;
 					};
 					046E84122F0DFE1000030095 = {
+						CreatedOnToolsVersion = 26.2;
+					};
+					C34C4631C0E04DDA9F00FBA8 = {
 						CreatedOnToolsVersion = 26.2;
 					};
 				};
@@ -234,6 +294,7 @@
 			targets = (
 				046793EA2F03C62100C5221D /* Notion Journal */,
 				046E84122F0DFE1000030095 /* NotionJournalClipper */,
+				C34C4631C0E04DDA9F00FBA8 /* NotionJournalShareExtension */,
 			);
 		};
 /* End PBXProject section */
@@ -247,6 +308,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		046E84112F0DFE1000030095 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		05BBA78D1E364E24878F3BA6 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -270,6 +338,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F6EC53FBAB0947658E4CB52A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -282,6 +357,11 @@
 			isa = PBXTargetDependency;
 			target = 046E84122F0DFE1000030095 /* NotionJournalClipper */;
 			targetProxy = 046E84E42F109E9C00030095 /* PBXContainerItemProxy */;
+		};
+		D242750419564F7990F6E650 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = C34C4631C0E04DDA9F00FBA8 /* NotionJournalShareExtension */;
+			targetProxy = 6A7ED5E38A424A8A93D596EF /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -413,17 +493,23 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = "Notion Journal/Notion Journal.entitlements";
+				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 5LZ6X4HA3F;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Notion-Journal-Info.plist";
+				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
+				INFOPLIST_KEY_NSCalendarsUsageDescription = "Notion Journal reads your iOS calendar events (calendar named \"Calendar\") to show them in the in-app calendar. It never writes to your calendars.";
+				INFOPLIST_KEY_NSHealthClinicalHealthRecordsShareUsageDescription = "Notion Journal reads your clinical Health Records (medications) to sync into your local database.";
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "Notion Journal reads your Health data to sync sleep, workouts, blood pressure, weight, and medications into your local database.";
 				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Notion Journal does not write Health data, but needs permission to read and sync your Health records.";
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Used to log approximate location in the background for geotag backup.";
 				INFOPLIST_KEY_NSLocationAlwaysUsageDescription = "Used to record approximate location for photo/video geotag backup.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Used to record approximate location for photo/video geotag backup.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Notion Journal saves photo thumbnails when you attach photos to notes.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Notion Journal needs access to your photo library to attach photos to notes.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -436,6 +522,7 @@
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = LLMJournal.NotionJournal;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
@@ -454,17 +541,23 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = "Notion Journal/Notion Journal.entitlements";
+				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 5LZ6X4HA3F;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Notion-Journal-Info.plist";
+				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
+				INFOPLIST_KEY_NSCalendarsUsageDescription = "Notion Journal reads your iOS calendar events (calendar named \"Calendar\") to show them in the in-app calendar. It never writes to your calendars.";
+				INFOPLIST_KEY_NSHealthClinicalHealthRecordsShareUsageDescription = "Notion Journal reads your clinical Health Records (medications) to sync into your local database.";
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "Notion Journal reads your Health data to sync sleep, workouts, blood pressure, weight, and medications into your local database.";
 				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Notion Journal does not write Health data, but needs permission to read and sync your Health records.";
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Used to log approximate location in the background for geotag backup.";
 				INFOPLIST_KEY_NSLocationAlwaysUsageDescription = "Used to record approximate location for photo/video geotag backup.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Used to record approximate location for photo/video geotag backup.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Notion Journal saves photo thumbnails when you attach photos to notes.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Notion Journal needs access to your photo library to attach photos to notes.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -477,6 +570,7 @@
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = LLMJournal.NotionJournal;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
@@ -557,6 +651,64 @@
 			};
 			name = Release;
 		};
+		3D059760F90740399139445B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = NotionJournalShareExtension/NotionJournalShareExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 5LZ6X4HA3F;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = NotionJournalShareExtension/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = NotionJournalShareExtension;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = LLMJournal.NotionJournal.NotionJournalShareExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		7329CD007A6B4AB4B493D500 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = NotionJournalShareExtension/NotionJournalShareExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 5LZ6X4HA3F;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = NotionJournalShareExtension/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = NotionJournalShareExtension;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = LLMJournal.NotionJournal.NotionJournalShareExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -583,6 +735,15 @@
 			buildConfigurations = (
 				046E842D2F0DFE1000030095 /* Debug */,
 				046E842E2F0DFE1000030095 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		2E3045B4FA0E4A48A9E4E4B8 /* Build configuration list for PBXNativeTarget "NotionJournalShareExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7329CD007A6B4AB4B493D500 /* Debug */,
+				3D059760F90740399139445B /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

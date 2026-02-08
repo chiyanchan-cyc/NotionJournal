@@ -23,8 +23,10 @@ struct Sidebar: View {
     @State private var showWeeklyReconstructed = false
     @State private var showManualReconstructed = false // <-- ADD THIS
     @State private var showCalendarView = false
+    @State private var showGoalSeedlingList = false
     @State private var showGPSLogger = false
     @State private var showHealthLogger = false
+    @State private var showHealthWeeklySummary = false
     @State private var showExport = false
 
 
@@ -135,6 +137,12 @@ struct Sidebar: View {
                         Button("Export", systemImage: "square.and.arrow.up") {
                             showExport = true
                         }
+
+                        Divider()
+
+                        Button("Rebuild Tag Index", systemImage: "arrow.triangle.2.circlepath") {
+                            NJLocalBLRunner(db: store.db).runDeriveBlockTagIndexAndDomainV1All(limit: 8000)
+                        }
                     } label: {
                         Image(systemName: "slider.horizontal.3")
                     }
@@ -229,6 +237,14 @@ struct Sidebar: View {
                     openCalendarView()
                 }
 
+                SidebarSquareButton(systemName: "target") {
+                    showGoalSeedlingList = true
+                }
+
+                SidebarSquareButton(systemName: "heart.text.square") {
+                    showHealthWeeklySummary = true
+                }
+
                 Spacer()
             }
             .padding(.horizontal, 10)
@@ -305,6 +321,13 @@ struct Sidebar: View {
                 NJHealthLoggerPage()
             }
         }
+
+        .sheet(isPresented: $showHealthWeeklySummary) {
+            NavigationStack {
+                NJHealthWeeklySummaryView()
+                    .environmentObject(store)
+            }
+        }
         
         .sheet(isPresented: $showExport) {
             NJExportView().environmentObject(store)
@@ -329,6 +352,12 @@ struct Sidebar: View {
                     .environmentObject(store)
             }
         }
+        .sheet(isPresented: $showGoalSeedlingList) {
+            NavigationStack {
+                NJGoalSeedlingListSheet()
+                    .environmentObject(store)
+            }
+        }
         .sheet(isPresented: $store.showDBDebugPanel) {
             NJDebugSQLConsole(db: store.db)
         }
@@ -336,7 +365,15 @@ struct Sidebar: View {
 
     private func openWeeklyReconstructed() {
         if shouldUseWindowForReconstructed {
+            #if os(macOS)
+            if #available(macOS 13.0, *) {
+                openWindow(id: "reconstructed-weekly")
+            } else {
+                showWeeklyReconstructed = true
+            }
+            #else
             openWindow(id: "reconstructed-weekly")
+            #endif
         } else {
             showWeeklyReconstructed = true
         }
@@ -344,7 +381,15 @@ struct Sidebar: View {
 
     private func openManualReconstructed() {
         if shouldUseWindowForReconstructed {
+            #if os(macOS)
+            if #available(macOS 13.0, *) {
+                openWindow(id: "reconstructed-manual")
+            } else {
+                showManualReconstructed = true
+            }
+            #else
             openWindow(id: "reconstructed-manual")
+            #endif
         } else {
             showManualReconstructed = true
         }
@@ -352,7 +397,15 @@ struct Sidebar: View {
 
     private func openCalendarView() {
         if shouldUseWindowForReconstructed {
+            #if os(macOS)
+            if #available(macOS 13.0, *) {
+                openWindow(id: "calendar")
+            } else {
+                showCalendarView = true
+            }
+            #else
             openWindow(id: "calendar")
+            #endif
         } else {
             showCalendarView = true
         }

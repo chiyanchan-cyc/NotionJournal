@@ -38,5 +38,9 @@ struct Notion_JournalApp: App {
             NJCalendarView()
                 .environmentObject(store)
         }
+
+        WindowGroup(id: "photo-viewer", for: String.self) { id in
+            NJPhotoWindow(localIdentifier: id.wrappedValue)
+        }
     }
 }

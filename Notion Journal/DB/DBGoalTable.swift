@@ -189,4 +189,60 @@ final class DBGoalTable {
         ])
     }
 
+    func listGoalSummaries(includeDeleted: Bool = false) -> [NJGoalSummary] {
+        db.withDB { dbp in
+            var out: [NJGoalSummary] = []
+            var stmt: OpaquePointer?
+            let whereDeleted = includeDeleted ? "" : "WHERE deleted=0"
+            let sql = """
+            SELECT goal_id, goal_tag, status, payload_json, created_at_ms, updated_at_ms
+            FROM nj_goal
+            \(whereDeleted)
+            ORDER BY updated_at_ms DESC;
+            """
+            let rc0 = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
+            if rc0 != SQLITE_OK { return [] }
+            defer { sqlite3_finalize(stmt) }
+
+            func colText(_ i: Int32) -> String {
+                guard let c = sqlite3_column_text(stmt, i) else { return "" }
+                return String(cString: c)
+            }
+
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let goalID = colText(0)
+                let goalTag = colText(1).trimmingCharacters(in: .whitespacesAndNewlines)
+                let status = colText(2)
+                let payloadJSON = colText(3)
+                let createdAt = sqlite3_column_int64(stmt, 4)
+                let updatedAt = sqlite3_column_int64(stmt, 5)
+
+                let name = decodeGoalName(payloadJSON: payloadJSON)
+
+                out.append(NJGoalSummary(
+                    goalID: goalID,
+                    name: name.isEmpty ? "Untitled" : name,
+                    goalTag: goalTag,
+                    status: status,
+                    createdAtMs: createdAt,
+                    updatedAtMs: updatedAt
+                ))
+            }
+
+            return out
+        }
+    }
+
+    private func decodeGoalName(payloadJSON: String) -> String {
+        if let data = payloadJSON.data(using: .utf8),
+           let payload = try? JSONDecoder().decode(NJGoalPayloadV1.self, from: data) {
+            return payload.name
+        }
+        if let data = payloadJSON.data(using: .utf8),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let name = obj["name"] as? String {
+            return name
+        }
+        return ""
+    }
 }

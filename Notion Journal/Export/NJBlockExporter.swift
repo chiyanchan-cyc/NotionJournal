@@ -28,8 +28,9 @@ struct NJBlockExporter {
         for r in rows {
             let body = plainTextFromPayloadJSON(r.payloadJSON)
             let rtf = rtfBase64FromPayloadJSON(r.payloadJSON)
+            let includePayload = shouldIncludePayloadJSON(r.payloadJSON)
 
-            blocks.append([
+            var block: [String: Any] = [
                 "block_id": r.blockID,
                 "note_id": r.noteID,
                 "note_domain": r.noteDomain,
@@ -38,7 +39,13 @@ struct NJBlockExporter {
                 "ts_ms": r.tsMs,
                 "body": body,
                 "rtf_base64": rtf
-            ])
+            ]
+
+            if includePayload {
+                block["payload_json"] = r.payloadJSON
+            }
+
+            blocks.append(block)
         }
 
         let df = DateFormatter()
@@ -150,6 +157,13 @@ struct NJBlockExporter {
         }
 
         return ""
+    }
+
+    private static func shouldIncludePayloadJSON(_ s: String) -> Bool {
+        guard let data = s.data(using: .utf8) else { return false }
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        guard let sections = root["sections"] as? [String: Any] else { return false }
+        return sections["audio"] != nil || sections["clip"] != nil
     }
 
     private static func plainTextFromRTFBase64(_ b64: String) -> String {

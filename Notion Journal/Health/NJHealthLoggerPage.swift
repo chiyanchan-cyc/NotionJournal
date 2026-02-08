@@ -5,6 +5,12 @@ struct NJHealthLoggerPage: View {
 
     var body: some View {
         Form {
+            Section {
+                Text("HealthKit is disabled in this build.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Permission") {
                 Button("Request Health Access") {
                     NJHealthLogger.shared.requestAuthorization()
@@ -20,14 +26,12 @@ struct NJHealthLoggerPage: View {
                     Text("Enable on this device")
                 }
 
-                Toggle(isOn: Binding(get: { logger.healthRecordsEnabled }, set: { NJHealthLogger.shared.setHealthRecordsEnabled($0) })) {
-                    Text("Enable Health Records (Medications)")
-                }
-                .disabled(!logger.healthRecordsAvailable)
-                .foregroundStyle(logger.healthRecordsAvailable ? .primary : .secondary)
-
                 Button("Sync Now") {
                     NJHealthLogger.shared.syncNow()
+                }
+
+                Button("Reset & Resync (Clears Health Samples)") {
+                    NJHealthLogger.shared.resetHealthSamplesAndResync()
                 }
             }
 
@@ -37,7 +41,6 @@ struct NJHealthLoggerPage: View {
                 if !logger.writerLabel.isEmpty {
                     row("Writer device", logger.writerLabel)
                 }
-                row("Health Records", logger.healthRecordsAvailable ? (logger.healthRecordsEnabled ? "ENABLED" : "AVAILABLE") : "NO")
                 if logger.lastSyncTsMs > 0 {
                     row("Last sync", fmtMs(logger.lastSyncTsMs))
                 }

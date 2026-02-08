@@ -77,6 +77,15 @@ final class AppStore: ObservableObject {
 
         self.sync.start()
         Task { await runInitialPullGate() }
+
+        NotificationCenter.default.addObserver(
+            forName: .njPullCompleted,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            NJLocalBLRunner(db: self.db).run(.deriveBlockTagIndexAndDomainV1, limit: 2000)
+        }
     }
 
     private func runAttachmentCacheCleanupIfNeeded() {

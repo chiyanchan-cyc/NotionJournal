@@ -50,6 +50,9 @@ struct NJReconstructedNoteView: View {
         }
         .toolbar { toolbar() }
         .task { onLoadOnce() }
+        .onChange(of: store.sync.initialPullCompleted) { _ in
+            onLoadOnce()
+        }
         .onDisappear { forceCommitFocusedIfAny() }
         // Add these lines to allow it to resize/popup on iPadOS
         .presentationDetents([.height(600), .large])
@@ -174,8 +177,10 @@ struct NJReconstructedNoteView: View {
     
     private func onLoadOnce() {
         if loaded { return }
+        if !store.sync.initialPullCompleted { return }
         loaded = true
         persistence.configure(store: store)
+        NJLocalBLRunner(db: store.db).run(.deriveBlockTagIndexAndDomainV1)
         persistence.updateSpec(spec)
         persistence.reload(makeHandle: {
             let h = NJProtonEditorHandle()
@@ -202,11 +207,7 @@ struct NJReconstructedNoteView: View {
         Binding(
             get: { persistence.blocks.first(where: { $0.id == id })?.isCollapsed ?? false },
             set: { v in
-                if let i = persistence.blocks.firstIndex(where: { $0.id == id }) {
-                    var arr = persistence.blocks
-                    arr[i].isCollapsed = v
-                    persistence.blocks = arr
-                }
+                persistence.setCollapsed(id: id, collapsed: v)
             }
         )
     }

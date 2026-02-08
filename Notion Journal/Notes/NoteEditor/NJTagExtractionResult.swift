@@ -59,5 +59,6 @@ enum NJTagExtraction {
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+            .filter { $0 != "#" }
     }
 }

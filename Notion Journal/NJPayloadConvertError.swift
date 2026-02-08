@@ -27,6 +27,7 @@ struct NJPayloadConverterV1 {
             guard v == 1 else { throw NJPayloadConvertError.unsupportedTopLevelV(v) }
             guard let sections = obj["sections"] as? [String: Any] else { throw NJPayloadConvertError.missingSections }
             if let clip = sections["clip"] as? [String: Any], let sv = clip["v"] as? Int, sv != 1 { throw NJPayloadConvertError.unsupportedSectionVersion("clip", sv) }
+            if let audio = sections["audio"] as? [String: Any], let sv = audio["v"] as? Int, sv != 1 { throw NJPayloadConvertError.unsupportedSectionVersion("audio", sv) }
             if let p = sections["proton1"] as? [String: Any], let sv = p["v"] as? Int, sv != 1 { throw NJPayloadConvertError.unsupportedSectionVersion("proton1", sv) }
             return try normalizeV1Envelope(obj)
         }
@@ -117,6 +118,15 @@ struct NJPayloadConverterV1 {
             dataOut.removeValue(forKey: "proton_v")
             dataOut.removeValue(forKey: "proton_json")
             sectionsOut["clip"] = ["v": 1, "data": dataOut]
+        }
+
+        if let audio = sectionsAny["audio"] as? [String: Any] {
+            let sv = (audio["v"] as? Int) ?? 1
+            if sv != 1 { throw NJPayloadConvertError.unsupportedSectionVersion("audio", sv) }
+            let data = (audio["data"] as? [String: Any]) ?? [:]
+            var dataOut = data
+            if dataOut["pdf_path"] == nil, let p = dataOut["PDF_Path"] { dataOut["pdf_path"] = p; dataOut.removeValue(forKey: "PDF_Path") }
+            sectionsOut["audio"] = ["v": 1, "data": dataOut]
         }
 
         if let p = sectionsAny["proton1"] as? [String: Any] {

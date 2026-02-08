@@ -58,8 +58,16 @@ struct NJReconstructedManualView: View {
         }
         .toolbar { toolbar() }
         .onAppear {
+            if !store.sync.initialPullCompleted { return }
             persistence.configure(store: store)
+            NJLocalBLRunner(db: store.db).run(.deriveBlockTagIndexAndDomainV1)
             performSearch() // Load initial data
+        }
+        .onChange(of: store.sync.initialPullCompleted) { _ in
+            if !store.sync.initialPullCompleted { return }
+            persistence.configure(store: store)
+            NJLocalBLRunner(db: store.db).run(.deriveBlockTagIndexAndDomainV1)
+            performSearch()
         }
         .onDisappear {
             // Commit any pending changes
@@ -137,16 +145,7 @@ struct NJReconstructedManualView: View {
             hasClipPDF: false,
             onOpenClipPDF: { },
             protonHandle: h,
-            isCollapsed: Binding(
-                get: { persistence.blocks.first(where: { $0.id == id })?.isCollapsed ?? false },
-                set: { v in
-                    if let i = persistence.blocks.firstIndex(where: { $0.id == id }) {
-                        var arr = persistence.blocks
-                        arr[i].isCollapsed = v
-                        persistence.blocks = arr
-                    }
-                }
-            ),
+            isCollapsed: bindingCollapsed(id),
             isFocused: id == persistence.focusedBlockID,
             attr: Binding(
                 get: { persistence.blocks.first(where: { $0.id == id })?.attr ?? NSAttributedString(string: "\u{200B}") },
@@ -194,14 +193,24 @@ struct NJReconstructedManualView: View {
 
     // Logic to bridge UI inputs to the Spec
     private func performSearch() {
-        let startMs = useDateRange ? Int64(startDate.timeIntervalSince1970 * 1000) : nil
-        let endMs = useDateRange ? Int64(endDate.timeIntervalSince1970 * 1000) : nil
+        let (startMs, endMs): (Int64?, Int64?) = {
+            guard useDateRange else { return (nil, nil) }
+            var cal = Calendar(identifier: .gregorian)
+            cal.timeZone = .current
+            let start = cal.startOfDay(for: startDate)
+            let endStart = cal.startOfDay(for: endDate)
+            let endExclusive = cal.date(byAdding: .day, value: 1, to: endStart) ?? endStart
+            let s = Int64(start.timeIntervalSince1970 * 1000)
+            let e = Int64(endExclusive.timeIntervalSince1970 * 1000) - 1
+            return (s, e)
+        }()
         let tag = tagInput.trimmingCharacters(in: .whitespacesAndNewlines)
 
         let newSpec = NJReconstructedSpec.tagPrefix(
             tag,
             startMs: startMs,
             endMs: endMs,
+            timeField: .blockCreatedAtMs,
             limit: 500
         )
 
@@ -236,6 +245,15 @@ struct NJReconstructedManualView: View {
     private func focusedHandle() -> NJProtonEditorHandle? {
         guard let id = persistence.focusedBlockID else { return nil }
         return persistence.blocks.first(where: { $0.id == id })?.protonHandle
+    }
+
+    private func bindingCollapsed(_ id: UUID) -> Binding<Bool> {
+        Binding(
+            get: { persistence.blocks.first(where: { $0.id == id })?.isCollapsed ?? false },
+            set: { v in
+                persistence.setCollapsed(id: id, collapsed: v)
+            }
+        )
     }
 
 }

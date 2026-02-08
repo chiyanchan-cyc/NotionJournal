@@ -13,6 +13,7 @@ private enum NJCalendarDisplayMode: String, CaseIterable, Identifiable {
 struct NJCalendarView: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openWindow) private var openWindow
 
     @State private var displayMode: NJCalendarDisplayMode = .month
     @State private var focusedDate: Date = Date()
@@ -35,10 +36,8 @@ struct NJCalendarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            headerBar()
-            modePicker()
+            headerSection()
             if displayMode == .month {
-                weekdayHeader()
                 calendarGrid()
             } else {
                 calendarGrid()
@@ -74,24 +73,38 @@ struct NJCalendarView: View {
     }
 
     private func headerBar() -> some View {
-        HStack(spacing: 12) {
+        HStack {
+            Spacer(minLength: 0)
             if displayMode == .month {
-                Button { step(-1) } label: { Image(systemName: "chevron.left") }
-                    .buttonStyle(.plain)
+                HStack(spacing: 10) {
+                    Button { step(-1) } label: { Image(systemName: "chevron.left") }
+                        .buttonStyle(.plain)
+                    Text(headerTitle())
+                        .font(.headline)
+                    Button { step(1) } label: { Image(systemName: "chevron.right") }
+                        .buttonStyle(.plain)
+                }
+            } else {
+                Text(headerTitle())
+                    .font(.headline)
             }
-
-            Text(headerTitle())
-                .font(.headline)
-                .frame(maxWidth: .infinity)
-
-            if displayMode == .month {
-                Button { step(1) } label: { Image(systemName: "chevron.right") }
-                    .buttonStyle(.plain)
-            }
+            Spacer(minLength: 0)
         }
         .padding(.horizontal, 12)
         .padding(.top, 8)
         .padding(.bottom, 4)
+    }
+
+    private func headerSection() -> some View {
+        VStack(spacing: 0) {
+            headerBar()
+            modePicker()
+            if displayMode == .month {
+                weekdayHeader()
+            }
+        }
+        .background(Color(UIColor.systemBackground))
+        .zIndex(1)
     }
 
     private func modePicker() -> some View {
@@ -177,36 +190,36 @@ struct NJCalendarView: View {
         let textColor: Color = isInMonth ? .primary : .secondary
         let photo = selectedPhotoImage(item)
         let dayLabel = isWeekly ? "\(weekdayName(date)), \(dayNumber(date))" : dayNumber(date)
-        return Button {
-            selectedDate = date
-        } label: {
-            ZStack {
-                if let photo {
-                    if isWeekly {
-                        Image(uiImage: photo)
-                            .resizable()
-                            .scaledToFill()
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .clipped()
-                            .overlay(Color.black.opacity(0.15))
-                            .zIndex(0)
-                    } else {
-                        Image(uiImage: photo)
-                            .resizable()
-                            .scaledToFit()
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .overlay(Color.black.opacity(0.05))
-                            .zIndex(0)
-                    }
-                }
-
+        let photoLayer = Group {
+            if let photo {
                 if isWeekly {
-                    weekBlockLines()
-                        .zIndex(1)
+                    Image(uiImage: photo)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .clipped()
+                        .overlay(Color.black.opacity(0.15))
+                } else {
+                    Image(uiImage: photo)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .overlay(Color.black.opacity(0.05))
                 }
+            } else {
+                Color(UIColor.secondarySystemBackground)
+            }
+        }
 
-                VStack(alignment: .leading, spacing: 6) {
-                    if isWeekly {
+        return ZStack {
+            if isWeekly {
+                weekBlockLines()
+                    .zIndex(1)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                if isWeekly {
+                    HStack(alignment: .center, spacing: 8) {
                         Text(dayLabel)
                             .font(.headline)
                             .foregroundStyle(textColor)
@@ -214,43 +227,64 @@ struct NJCalendarView: View {
                             .padding(.vertical, 2)
                             .background(Color.accentColor.opacity(0.22))
                             .cornerRadius(4)
-                    } else {
-                        Text(dayLabel)
-                            .font(.caption2)
-                            .foregroundStyle(textColor)
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 2)
+                        Spacer(minLength: 0)
+                        if let localID = photoLocalIdentifier(for: item) {
+                            Button {
+                                openPhotoWindow(localIdentifier: localID)
+                            } label: {
+                                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                    .font(.subheadline)
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 4)
                             .background(Color(UIColor.systemBackground).opacity(0.9))
-                            .cornerRadius(2)
-                    }
-
-                    if !events.isEmpty {
-                        ForEach(events.prefix(isWeekly ? 6 : 2), id: \.eventIdentifier) { ev in
-                            Text(ev.title)
-                                .font(isWeekly ? .callout : .caption2)
-                                .lineLimit(1)
-                                .foregroundStyle(.secondary)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
                         }
-                    } else {
-                        Text(" ")
-                            .font(.caption2)
                     }
+                } else {
+                    Text(dayLabel)
+                        .font(.caption2)
+                        .foregroundStyle(textColor)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 2)
+                        .background(Color(UIColor.systemBackground).opacity(0.9))
+                        .cornerRadius(2)
                 }
-                .padding(8)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .zIndex(2)
+
+                if !events.isEmpty {
+                    ForEach(events.prefix(isWeekly ? 6 : 2), id: \.eventIdentifier) { ev in
+                        Text(ev.title)
+                            .font(isWeekly ? .callout : .caption2)
+                            .lineLimit(1)
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text(" ")
+                        .font(.caption2)
+                }
             }
-            .frame(maxWidth: .infinity, minHeight: isWeekly ? 120 : monthHeight, maxHeight: isWeekly ? .infinity : monthHeight)
-            .background(isSelected ? Color.accentColor.opacity(0.18) : Color(UIColor.secondarySystemBackground))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color(UIColor.separator).opacity(0.6), lineWidth: 1)
-            )
-            .opacity(displayMode == .month && !isInMonth ? 0.35 : 1.0)
+            .padding(8)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .zIndex(2)
         }
-        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, minHeight: isWeekly ? 120 : monthHeight, maxHeight: isWeekly ? .infinity : monthHeight)
+        .background(photoLayer)
+        .overlay(isSelected ? Color.accentColor.opacity(0.18) : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color(UIColor.separator).opacity(0.6), lineWidth: 1)
+        )
+        .opacity(displayMode == .month && !isInMonth ? 0.35 : 1.0)
+        .contentShape(RoundedRectangle(cornerRadius: 8))
+        .simultaneousGesture(TapGesture().onEnded { selectedDate = date })
         .contextMenu {
+            if item?.photoThumbPath.isEmpty == false {
+                if let localID = photoLocalIdentifier(for: item) {
+                    Button("Open Photo") { openPhotoWindow(localIdentifier: localID) }
+                }
+            }
             if isPastDate(date) {
                 Button("Add Photo") {
                     selectedDate = date
@@ -258,11 +292,6 @@ struct NJCalendarView: View {
                     showPhotoPicker = true
                 }
                 if item?.photoThumbPath.isEmpty == false {
-                    if let localID = item?.photoLocalID, !localID.isEmpty {
-                        Button("Open Photo") {
-                            NJPhotoLibraryPresenter.presentFullPhoto(localIdentifier: localID)
-                        }
-                    }
                     Button("Remove Photo", role: .destructive) {
                         selectedDate = date
                         removePhoto()
@@ -331,6 +360,24 @@ struct NJCalendarView: View {
             )
             store.notes.upsertAttachment(record, nowMs: now)
         }
+    }
+
+    private func openPhotoWindow(localIdentifier: String) {
+        let id = localIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty else { return }
+        openWindow(id: "photo-viewer", value: id)
+    }
+
+    private func photoLocalIdentifier(for item: NJCalendarItem?) -> String? {
+        guard let item, !item.photoThumbPath.isEmpty else { return nil }
+        let direct = item.photoLocalID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !direct.isEmpty { return direct }
+        if !item.photoAttachmentID.isEmpty,
+           let att = store.notes.attachmentByID(item.photoAttachmentID) {
+            let ref = att.fullPhotoRef.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !ref.isEmpty { return ref }
+        }
+        return nil
     }
 
     private func removePhoto() {
@@ -553,15 +600,20 @@ struct NJCalendarView: View {
                 Text("WEEK OF")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                HStack(spacing: 12) {
+                HStack(spacing: 10) {
                     Button { step(-1) } label: { Image(systemName: "chevron.left") }
                         .buttonStyle(.plain)
+                        .frame(minWidth: 36, minHeight: 36)
+                        .contentShape(Rectangle())
                     Text(weekRangeTitle())
                         .font(.callout)
                         .fontWeight(.semibold)
                     Button { step(1) } label: { Image(systemName: "chevron.right") }
                         .buttonStyle(.plain)
+                        .frame(minWidth: 36, minHeight: 36)
+                        .contentShape(Rectangle())
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .padding(10)

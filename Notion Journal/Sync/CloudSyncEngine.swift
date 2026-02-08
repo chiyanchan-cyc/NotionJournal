@@ -35,6 +35,7 @@ final class CloudSyncEngine: ObservableObject {
             await DBDirtyQueueTable.withPullScopeAsync {
                 await self.coordinator.pullAll(forceSinceZero: true)
             }
+            NotificationCenter.default.post(name: .njPullCompleted, object: nil)
 
             self.initialPullCompleted = true
 
@@ -53,6 +54,7 @@ final class CloudSyncEngine: ObservableObject {
                 await DBDirtyQueueTable.withPullScopeAsync {
                     await self.coordinator.pullAll(forceSinceZero: false)
                 }
+                NotificationCenter.default.post(name: .njPullCompleted, object: nil)
             }
         }
     }
@@ -61,6 +63,7 @@ final class CloudSyncEngine: ObservableObject {
         await DBDirtyQueueTable.withPullScopeAsync {
             await coordinator.pullAll(forceSinceZero: forceSinceZero)
         }
+        NotificationCenter.default.post(name: .njPullCompleted, object: nil)
     }
 
     func schedulePush(debounceMs: Int) {
@@ -79,8 +82,10 @@ final class CloudSyncEngine: ObservableObject {
             await coordinator.pullAll(forceSinceZero: false)
             initialPullCompleted = true
         }
+        NotificationCenter.default.post(name: .njPullCompleted, object: nil)
         await coordinator.pushAll()
         await coordinator.pullAll(forceSinceZero: false)
+        NotificationCenter.default.post(name: .njPullCompleted, object: nil)
     }
 
 }

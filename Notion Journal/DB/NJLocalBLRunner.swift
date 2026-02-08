@@ -57,6 +57,27 @@ final class NJLocalBLRunner {
         }
     }
 
+    func runDeriveBlockTagIndexAndDomainV1All(limit: Int = 5000) {
+        let rows = loadAllBlocks(limit: limit)
+        if rows.isEmpty { return }
+
+        for r in rows {
+            let blockID = r.blockID
+            if blockID.isEmpty { continue }
+
+            let jsonTags = parseTagJSON(r.tagJSON)
+            let noteDomains = loadNoteDomainsForBlock(blockID: blockID)
+
+            let merged = Array(Set(jsonTags + noteDomains)).filter { !$0.isEmpty }.sorted()
+
+            rebuildBlockTagIndex(blockID: blockID, tags: merged, nowMs: r.updatedAtMs)
+
+            let domain = deriveDomainPreferNote(noteDomains: noteDomains, tags: merged)
+
+            setDomainAndClearDirty(blockID: blockID, domainTag: domain, nowMs: r.updatedAtMs)
+        }
+    }
+
     private func runDeriveBlockTagIndexAndDomainV1(limit: Int) {
         let rows = loadDirtyBlocks(limit: limit)
         if rows.isEmpty { return }
@@ -94,6 +115,32 @@ final class NJLocalBLRunner {
             FROM nj_block
             WHERE deleted=0 AND dirty_bl=1
             ORDER BY updated_at_ms ASC
+            LIMIT ?;
+            """, -1, &stmt, nil)
+            if rc != SQLITE_OK { return out }
+            defer { sqlite3_finalize(stmt) }
+
+            sqlite3_bind_int64(stmt, 1, Int64(limit))
+
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let bid = sqlite3_column_text(stmt, 0).flatMap { String(cString: $0) } ?? ""
+                let tj = sqlite3_column_text(stmt, 1).flatMap { String(cString: $0) } ?? ""
+                let um = sqlite3_column_int64(stmt, 2)
+                out.append(DirtyBlockRow(blockID: bid, tagJSON: tj, updatedAtMs: um))
+            }
+            return out
+        }
+    }
+
+    private func loadAllBlocks(limit: Int) -> [DirtyBlockRow] {
+        db.withDB { dbp in
+            var out: [DirtyBlockRow] = []
+            var stmt: OpaquePointer?
+            let rc = sqlite3_prepare_v2(dbp, """
+            SELECT block_id, COALESCE(tag_json,''), updated_at_ms
+            FROM nj_block
+            WHERE deleted=0
+            ORDER BY updated_at_ms DESC
             LIMIT ?;
             """, -1, &stmt, nil)
             if rc != SQLITE_OK { return out }

@@ -104,11 +104,11 @@ struct NJClipboardInboxView: View {
                     }
 
                     Button("Open PDF") {
-                        guard let r = selectedRow, r.kind == .clip else { return }
+                        guard let r = selectedRow, !r.pdfPath.isEmpty else { return }
                         refreshICloudDiagForSelected()
                         openPDF(for: r)
                     }
-                    .disabled(selectedBlockID == nil || selectedRow?.kind != .clip || (selectedRow?.pdfPath.isEmpty ?? true))
+                    .disabled(selectedBlockID == nil || (selectedRow?.pdfPath.isEmpty ?? true))
 
                     Spacer()
 
@@ -195,8 +195,8 @@ struct NJClipboardInboxView: View {
                     createdAtMs: r.createdAtMs,
                     website: "Audio",
                     title: meta.title,
-                    pdfPath: "",
-                    jsonPath: "",
+                    pdfPath: meta.pdfPath,
+                    jsonPath: meta.jsonPath,
                     audioPath: meta.audioPath,
                     kind: .audio
                 )
@@ -224,7 +224,7 @@ struct NJClipboardInboxView: View {
     }
 
     func openPDF(for r: Row) {
-        if r.kind != .clip { return }
+        if r.pdfPath.isEmpty { return }
         guard let u = resolveICloudDocumentsPath(r.pdfPath) else {
             pdfURL = nil
             showPDF = true
@@ -237,7 +237,7 @@ struct NJClipboardInboxView: View {
         }
 
         Task {
-            let ready = await waitForICloudFile(u, maxWaitSeconds: 6.0)
+            let ready = await forceDownloadICloudFile(u, maxWaitSeconds: 6.0)
             await MainActor.run {
                 if shouldUseWindowForPDF {
                     openWindow(id: "clip-pdf", value: u)
@@ -268,6 +268,18 @@ struct NJClipboardInboxView: View {
         }
 
         return fm.fileExists(atPath: u.path)
+    }
+
+    func forceDownloadICloudFile(_ u: URL, maxWaitSeconds: Double) async -> Bool {
+        let fm = FileManager.default
+
+        // Best-effort: drop local copy so iCloud fetches the latest.
+        let isUbiquitous = (try? u.resourceValues(forKeys: [.isUbiquitousItemKey]).isUbiquitousItem) ?? false
+        if isUbiquitous {
+            try? fm.evictUbiquitousItem(at: u)
+        }
+
+        return await waitForICloudFile(u, maxWaitSeconds: maxWaitSeconds)
     }
 
 
@@ -302,11 +314,11 @@ struct NJClipboardInboxView: View {
         return (title, website, pdfPath, jsonPath)
     }
 
-    func parseAudioPayload(_ payload: String) -> (title: String, audioPath: String, transcript: String) {
+    func parseAudioPayload(_ payload: String) -> (title: String, audioPath: String, pdfPath: String, jsonPath: String, transcript: String) {
         guard
             let data = payload.data(using: .utf8),
             let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return ("", "", "") }
+        else { return ("", "", "", "", "") }
 
         if
             let sections = obj["sections"] as? [String: Any],
@@ -315,11 +327,21 @@ struct NJClipboardInboxView: View {
         {
             let title = (audioData["title"] as? String) ?? "Audio Recording"
             let audioPath = (audioData["audio_path"] as? String) ?? ""
+            var pdfPath = (audioData["pdf_path"] as? String) ?? ""
+            var jsonPath = (audioData["json_path"] as? String) ?? ""
+            if pdfPath.isEmpty, !audioPath.isEmpty {
+                pdfPath = URL(fileURLWithPath: audioPath).deletingPathExtension().path + ".pdf"
+            }
+            if jsonPath.isEmpty, !audioPath.isEmpty {
+                jsonPath = URL(fileURLWithPath: audioPath).deletingPathExtension().path + ".json"
+            }
+            if pdfPath.hasPrefix("/") { pdfPath.removeFirst() }
+            if jsonPath.hasPrefix("/") { jsonPath.removeFirst() }
             let transcript = (audioData["transcript_txt"] as? String) ?? ""
-            return (title, audioPath, transcript.trimmingCharacters(in: .whitespacesAndNewlines))
+            return (title, audioPath, pdfPath, jsonPath, transcript.trimmingCharacters(in: .whitespacesAndNewlines))
         }
 
-        return ("Audio Recording", "", "")
+        return ("Audio Recording", "", "", "", "")
     }
 
 
@@ -400,7 +422,7 @@ struct NJClipboardInboxView: View {
         if r.kind == .clip {
             deleteClipFiles(pdfPath: r.pdfPath, jsonPath: r.jsonPath)
         } else if r.kind == .audio {
-            deleteAudioFiles(audioPath: r.audioPath)
+            deleteAudioFiles(audioPath: r.audioPath, pdfPath: r.pdfPath, jsonPath: r.jsonPath)
         }
 
         rows.removeAll { $0.id == r.id }
@@ -409,14 +431,37 @@ struct NJClipboardInboxView: View {
         }
     }
 
-    func deleteAudioFiles(audioPath: String) {
+    func deleteAudioFiles(audioPath: String, pdfPath: String, jsonPath: String) {
         let fm = FileManager.default
         let audioURL = resolveICloudDocumentsPath(audioPath)
+        let resolvedPDF: URL? = {
+            if !pdfPath.isEmpty {
+                return resolveICloudDocumentsPath(pdfPath)
+            }
+            guard !audioPath.isEmpty else { return nil }
+            let rel = (audioPath as NSString).deletingPathExtension + ".pdf"
+            return resolveICloudDocumentsPath(rel)
+        }()
+        let resolvedJSON: URL? = {
+            if !jsonPath.isEmpty {
+                return resolveICloudDocumentsPath(jsonPath)
+            }
+            guard !audioPath.isEmpty else { return nil }
+            let rel = (audioPath as NSString).deletingPathExtension + ".json"
+            return resolveICloudDocumentsPath(rel)
+        }()
+
         if let u = audioURL {
             try? fm.removeItem(at: u)
-            if let dir = audioURL?.deletingLastPathComponent() {
-                pruneEmptyDirs(start: dir)
-            }
+        }
+        if let p = resolvedPDF {
+            try? fm.removeItem(at: p)
+        }
+        if let j = resolvedJSON {
+            try? fm.removeItem(at: j)
+        }
+        if let dir = (audioURL ?? resolvedPDF ?? resolvedJSON)?.deletingLastPathComponent() {
+            pruneEmptyDirs(start: dir)
         }
     }
 

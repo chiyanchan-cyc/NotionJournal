@@ -68,6 +68,10 @@ final class DBNoteRepository {
         blockTable.listAudioBlocks(limit: limit)
     }
 
+    func listGoalSummaries(includeDeleted: Bool = false) -> [NJGoalSummary] {
+        goalTable.listGoalSummaries(includeDeleted: includeDeleted)
+    }
+
     func markBlockDeleted(blockID: String) {
         blockTable.markBlockDeleted(blockID: blockID)
     }

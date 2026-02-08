@@ -384,4 +384,5 @@ final class DBDirtyQueueTable {
 extension Notification.Name {
     static let njDirtyEnqueued = Notification.Name("nj_dirty_enqueued")
     static let njForceReloadNote = Notification.Name("nj_force_reload_note")
+    static let njPullCompleted = Notification.Name("nj_pull_completed")
 }
