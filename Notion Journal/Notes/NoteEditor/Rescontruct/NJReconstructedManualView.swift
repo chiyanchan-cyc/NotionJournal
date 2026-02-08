@@ -97,6 +97,12 @@ struct NJReconstructedManualView: View {
             HStack {
                 Toggle("Filter by Date", isOn: $useDateRange.animation())
                 Spacer()
+                Button {
+                    performSearch()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
                 Button("Search") {
                     performSearch()
                 }

@@ -57,6 +57,27 @@ final class NJLocalBLRunner {
         }
     }
 
+    func markBlocksMissingTagIndexDirty(limit: Int = 8000) {
+        db.withDB { dbp in
+            let sql = """
+            UPDATE nj_block
+            SET dirty_bl=1
+            WHERE deleted=0
+              AND COALESCE(tag_json,'') <> ''
+              AND block_id NOT IN (
+                SELECT DISTINCT block_id FROM nj_block_tag
+              )
+            LIMIT ?;
+            """
+            var stmt: OpaquePointer?
+            let rc = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
+            if rc != SQLITE_OK { return }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_int(stmt, 1, Int32(limit))
+            _ = sqlite3_step(stmt)
+        }
+    }
+
     func runDeriveBlockTagIndexAndDomainV1All(limit: Int = 5000) {
         let rows = loadAllBlocks(limit: limit)
         if rows.isEmpty { return }

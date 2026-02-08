@@ -61,11 +61,20 @@ struct NJReconstructedNoteView: View {
     
     private func header() -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(persistence.tab.isEmpty ? "" : persistence.tab)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.top, 10)
-            
+            HStack(alignment: .center) {
+                Text(persistence.tab.isEmpty ? "" : persistence.tab)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    reloadNow()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(.top, 10)
+
             Text(persistence.title)
                 .font(.title2)
                 .fontWeight(.semibold)
@@ -156,23 +165,28 @@ struct NJReconstructedNoteView: View {
         ToolbarItemGroup(placement: .topBarTrailing) {
             Button {
                 forceCommitFocusedIfAny()
-                persistence.reload(makeHandle: {
-                    let h = NJProtonEditorHandle()
-                    h.attachmentResolver = { [weak store] id in
-                        store?.notes.attachmentByID(id)
-                    }
-                    h.attachmentThumbPathCleaner = { [weak store] id in
-                        store?.notes.clearAttachmentThumbPath(attachmentID: id, nowMs: DBNoteRepository.nowMs())
-                    }
-                    h.onOpenFullPhoto = { id in
-                        NJPhotoLibraryPresenter.presentFullPhoto(localIdentifier: id)
-                    }
-                    return h
-                })
+                reloadNow()
             } label: {
                 Image(systemName: "arrow.clockwise")
             }
         }
+    }
+
+    private func reloadNow() {
+        forceCommitFocusedIfAny()
+        persistence.reload(makeHandle: {
+            let h = NJProtonEditorHandle()
+            h.attachmentResolver = { [weak store] id in
+                store?.notes.attachmentByID(id)
+            }
+            h.attachmentThumbPathCleaner = { [weak store] id in
+                store?.notes.clearAttachmentThumbPath(attachmentID: id, nowMs: DBNoteRepository.nowMs())
+            }
+            h.onOpenFullPhoto = { id in
+                NJPhotoLibraryPresenter.presentFullPhoto(localIdentifier: id)
+            }
+            return h
+        })
     }
     
     private func onLoadOnce() {

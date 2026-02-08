@@ -498,6 +498,14 @@ final class NJReconstructedNotePersistence: ObservableObject {
             ok += 1
         }
 
+        // Sort by first line (case-insensitive), then by created time (newest first).
+        out.sort {
+            let a = firstLineKey($0.attr).lowercased()
+            let b = firstLineKey($1.attr).lowercased()
+            if a != b { return a < b }
+            return $0.createdAtMs > $1.createdAtMs
+        }
+
         blocks = out
         assert(Set(blocks.map { $0.id }).count == blocks.count)
         focusedBlockID = blocks.first?.id
@@ -506,6 +514,15 @@ final class NJReconstructedNotePersistence: ObservableObject {
     private func makeTypedFromPlain(_ s: String) -> NSAttributedString {
         let cleaned = s.isEmpty ? "\u{200B}" : s
         return NSAttributedString(string: cleaned)
+    }
+
+    private func firstLineKey(_ attr: NSAttributedString) -> String {
+        let s = attr.string
+            .replacingOccurrences(of: "\u{FFFC}", with: "")
+            .replacingOccurrences(of: "\u{200B}", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.isEmpty { return "" }
+        return s.split(whereSeparator: \.isNewline).first.map { String($0) } ?? ""
     }
 
     private func extractPhotoAttachments(from attr: NSAttributedString) -> [NJPhotoAttachmentView] {

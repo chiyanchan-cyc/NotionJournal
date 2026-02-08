@@ -84,7 +84,9 @@ final class AppStore: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             guard let self else { return }
-            NJLocalBLRunner(db: self.db).run(.deriveBlockTagIndexAndDomainV1, limit: 2000)
+            let bl = NJLocalBLRunner(db: self.db)
+            bl.markBlocksMissingTagIndexDirty(limit: 8000)
+            bl.run(.deriveBlockTagIndexAndDomainV1, limit: 2000)
         }
     }
 
