@@ -119,7 +119,7 @@ extension DBNoteRepository {
         return found
     }
     
-    func saveSingleProtonBlock(blockID: String, protonJSON: String, tagJSON: String) {
+    func saveSingleProtonBlock(blockID: String, protonJSON: String, tagJSON: String, goalID: String? = nil) {
         let now = DBNoteRepository.nowMs()
 
         print("NJ_SAVE_SINGLE_PROTON_BLOCK block_id=\(blockID) proton_json_bytes=\(protonJSON.utf8.count)")
@@ -157,17 +157,21 @@ extension DBNoteRepository {
                 return nil
             }
 
-            func upsertBlock(_ blockID: String, _ payload: String, _ tagJSON: String, _ now: Int64) -> Int32 {
+            func upsertBlock(_ blockID: String, _ payload: String, _ tagJSON: String, _ now: Int64, _ goalID: String?) -> Int32 {
                 var stmt: OpaquePointer?
                 let sql = """
                 INSERT INTO nj_block
-                (block_id, block_type, payload_json, domain_tag, tag_json, lineage_id, parent_block_id, created_at_ms, updated_at_ms, deleted, dirty_bl)
-                VALUES (?, 'text', ?, '', ?, '', '', ?, ?, 0, 0)
+                (block_id, block_type, payload_json, domain_tag, tag_json, goal_id, lineage_id, parent_block_id, created_at_ms, updated_at_ms, deleted, dirty_bl)
+                VALUES (?, 'text', ?, '', ?, ?, '', '', ?, ?, 0, 0)
                 ON CONFLICT(block_id) DO UPDATE SET
                     payload_json = excluded.payload_json,
                     tag_json = CASE
                         WHEN excluded.tag_json = '' THEN nj_block.tag_json
                         ELSE excluded.tag_json
+                    END,
+                    goal_id = CASE
+                        WHEN excluded.goal_id IS NULL OR excluded.goal_id = '' THEN nj_block.goal_id
+                        ELSE excluded.goal_id
                     END,
                     updated_at_ms = excluded.updated_at_ms,
                     deleted = 0,
@@ -184,8 +188,13 @@ extension DBNoteRepository {
                 sqlite3_bind_text(stmt, 1, blockID, -1, SQLITE_TRANSIENT)
                 sqlite3_bind_text(stmt, 2, payload, -1, SQLITE_TRANSIENT)
                 sqlite3_bind_text(stmt, 3, tagJSON, -1, SQLITE_TRANSIENT)
-                sqlite3_bind_int64(stmt, 4, now)
+                if let gid = goalID, !gid.isEmpty {
+                    sqlite3_bind_text(stmt, 4, gid, -1, SQLITE_TRANSIENT)
+                } else {
+                    sqlite3_bind_null(stmt, 4)
+                }
                 sqlite3_bind_int64(stmt, 5, now)
+                sqlite3_bind_int64(stmt, 6, now)
 
                 return sqlite3_step(stmt)
             }
@@ -243,7 +252,7 @@ extension DBNoteRepository {
                 print("NJ_SAVE_SINGLE_PROTON_BLOCK payload_bytes=\(newPayload.utf8.count)")
                 print("NJ_SAVE_SINGLE_PROTON_BLOCK payload_preview=\(String(newPayload.prefix(260)))")
 
-                let rcBlock = upsertBlock(blockID, newPayload, tagJSON, now)
+                let rcBlock = upsertBlock(blockID, newPayload, tagJSON, now, goalID)
                 if rcBlock != SQLITE_DONE {
                     _ = exec("ROLLBACK;")
                     if isBusy(rcBlock) { backoff(attempt); continue }

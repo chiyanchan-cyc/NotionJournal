@@ -36,6 +36,10 @@ final class NJCloudKitTransport {
         if let i = v as? Int64 { return i }
         if let d = v as? Double { return Int64(d) }
         if let f = v as? Float { return Int64(f) }
+        if let s = v as? String {
+            if let i = Int64(s) { return i }
+            if let d = Double(s) { return Int64(d) }
+        }
         if let dt = v as? Date { return Int64(dt.timeIntervalSince1970 * 1000.0) }
         return 0
     }
@@ -108,8 +112,6 @@ final class NJCloudKitTransport {
 
         var cursor: CKQueryOperation.Cursor? = nil
 
-        if entity == "block" {
-        }
 
         while true {
             let op: CKQueryOperation
@@ -158,10 +160,6 @@ final class NJCloudKitTransport {
                 if u <= sinceMs { continue }
 
                 let f = recordToFields(entity: entity, record: r)
-                if entity == "block" {
-                    let tj = (f["tag_json"] as? String) ?? ""
-                    let dom = (f["domain_tag"] as? String) ?? ""
-                }
 
                 if let fm = f["updated_at_ms"] as? NSNumber { u = fm.int64Value }
                 if let fm = f["updated_at_ms"] as? Int64 { u = fm }
@@ -175,8 +173,6 @@ final class NJCloudKitTransport {
             cursor = nextCursor
         }
 
-        if entity == "block" {
-        }
         return (rows, newMax)
     }
 

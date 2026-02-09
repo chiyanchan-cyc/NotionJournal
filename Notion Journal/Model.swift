@@ -111,6 +111,7 @@ struct NJGoalSummary: Identifiable, Hashable {
     let name: String
     let goalTag: String
     let status: String
+    let domainTagsJSON: String
     let createdAtMs: Int64
     let updatedAtMs: Int64
 

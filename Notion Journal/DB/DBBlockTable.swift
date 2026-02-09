@@ -203,6 +203,32 @@ final class DBBlockTable {
         return out
     }
 
+    func lastJournaledAtMsForTag(_ tag: String) -> Int64 {
+        let trimmed = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return 0 }
+        return db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT b.created_at_ms
+            FROM nj_block_tag t
+            JOIN nj_block b
+              ON b.block_id = t.block_id
+            WHERE t.tag = ? COLLATE NOCASE
+              AND b.deleted = 0
+            ORDER BY b.created_at_ms DESC
+            LIMIT 1;
+            """
+            let rc = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
+            if rc != SQLITE_OK { return 0 }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, trimmed, -1, SQLITE_TRANSIENT)
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                return sqlite3_column_int64(stmt, 0)
+            }
+            return 0
+        }
+    }
+
     func markBlockDeleted(blockID: String) {
         let now = DBNoteRepository.nowMs()
         db.withDB { dbp in
@@ -246,6 +272,30 @@ final class DBBlockTable {
 
             let rc2 = sqlite3_step(stmt)
             if rc2 != SQLITE_DONE { db.dbgErr(dbp, "updateBlockPayloadJSON.step", rc2) }
+        }
+        enqueueDirty(entity: "block", entityID: blockID, op: "upsert", updatedAtMs: updatedAtMs)
+    }
+
+    func setGoalID(blockID: String, goalID: String, updatedAtMs: Int64) {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let rc = sqlite3_prepare_v2(dbp, """
+            UPDATE nj_block
+            SET goal_id=?,
+                updated_at_ms=?,
+                dirty_bl=1,
+                deleted=0
+            WHERE block_id=?;
+            """, -1, &stmt, nil)
+            if rc != SQLITE_OK { db.dbgErr(dbp, "setGoalID.prepare", rc); return }
+            defer { sqlite3_finalize(stmt) }
+
+            sqlite3_bind_text(stmt, 1, goalID, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int64(stmt, 2, updatedAtMs)
+            sqlite3_bind_text(stmt, 3, blockID, -1, SQLITE_TRANSIENT)
+
+            let rc2 = sqlite3_step(stmt)
+            if rc2 != SQLITE_DONE { db.dbgErr(dbp, "setGoalID.step", rc2) }
         }
         enqueueDirty(entity: "block", entityID: blockID, op: "upsert", updatedAtMs: updatedAtMs)
     }
@@ -316,6 +366,7 @@ final class DBBlockTable {
               payload_json,
               domain_tag,
               tag_json,
+              goal_id,
               lineage_id,
               parent_block_id,
               created_at_ms,
@@ -336,11 +387,12 @@ final class DBBlockTable {
                 "payload_json": sqlite3_column_text(stmt, 2).flatMap { String(cString: $0) } ?? "",
                 "domain_tag": sqlite3_column_text(stmt, 3).flatMap { String(cString: $0) } ?? "",
                 "tag_json": sqlite3_column_text(stmt, 4).flatMap { String(cString: $0) } ?? "",
-                "lineage_id": sqlite3_column_text(stmt, 5).flatMap { String(cString: $0) } ?? "",
-                "parent_block_id": sqlite3_column_text(stmt, 6).flatMap { String(cString: $0) } ?? "",
-                "created_at_ms": sqlite3_column_int64(stmt, 7),
-                "updated_at_ms": sqlite3_column_int64(stmt, 8),
-                "deleted": sqlite3_column_int64(stmt, 9)
+                "goal_id": sqlite3_column_text(stmt, 5).flatMap { String(cString: $0) } ?? "",
+                "lineage_id": sqlite3_column_text(stmt, 6).flatMap { String(cString: $0) } ?? "",
+                "parent_block_id": sqlite3_column_text(stmt, 7).flatMap { String(cString: $0) } ?? "",
+                "created_at_ms": sqlite3_column_int64(stmt, 8),
+                "updated_at_ms": sqlite3_column_int64(stmt, 9),
+                "deleted": sqlite3_column_int64(stmt, 10)
             ]
         }
     }
@@ -387,6 +439,7 @@ final class DBBlockTable {
         }()
         let domainTag = (f["domain_tag"] as? String) ?? ""
         let tagJSON = (f["tag_json"] as? String) ?? ""
+        let goalID = (f["goal_id"] as? String) ?? ""
         let lineageID = (f["lineage_id"] as? String) ?? ""
         let parentBlockID = (f["parent_block_id"] as? String) ?? ""
         let createdAtMs = (f["created_at_ms"] as? Int64) ?? 0
@@ -403,6 +456,7 @@ final class DBBlockTable {
               payload_json,
               domain_tag,
               tag_json,
+              goal_id,
               lineage_id,
               parent_block_id,
               created_at_ms,
@@ -410,12 +464,16 @@ final class DBBlockTable {
               deleted,
               dirty_bl
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
             ON CONFLICT(block_id) DO UPDATE SET
               block_type=excluded.block_type,
               payload_json=excluded.payload_json,
               domain_tag=excluded.domain_tag,
               tag_json=excluded.tag_json,
+              goal_id=CASE
+                WHEN excluded.goal_id = '' THEN nj_block.goal_id
+                ELSE excluded.goal_id
+              END,
               lineage_id=excluded.lineage_id,
               parent_block_id=excluded.parent_block_id,
               created_at_ms=excluded.created_at_ms,
@@ -434,11 +492,12 @@ final class DBBlockTable {
             sqlite3_bind_text(stmt, 3, payloadJSON, -1, SQLITE_TRANSIENT)
             sqlite3_bind_text(stmt, 4, domainTag, -1, SQLITE_TRANSIENT)
             sqlite3_bind_text(stmt, 5, tagJSON, -1, SQLITE_TRANSIENT)
-            sqlite3_bind_text(stmt, 6, lineageID, -1, SQLITE_TRANSIENT)
-            sqlite3_bind_text(stmt, 7, parentBlockID, -1, SQLITE_TRANSIENT)
-            sqlite3_bind_int64(stmt, 8, createdAtMs)
-            sqlite3_bind_int64(stmt, 9, updatedAtMs)
-            sqlite3_bind_int64(stmt, 10, deleted)
+            sqlite3_bind_text(stmt, 6, goalID, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 7, lineageID, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 8, parentBlockID, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int64(stmt, 9, createdAtMs)
+            sqlite3_bind_int64(stmt, 10, updatedAtMs)
+            sqlite3_bind_int64(stmt, 11, deleted)
 
             let rc1 = sqlite3_step(stmt)
             if rc1 != SQLITE_DONE { db.dbgErr(dbp, "applyNJBlock.step", rc1) }

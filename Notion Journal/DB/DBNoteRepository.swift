@@ -68,6 +68,10 @@ final class DBNoteRepository {
         blockTable.listAudioBlocks(limit: limit)
     }
 
+    func lastJournaledAtMsForTag(_ tag: String) -> Int64 {
+        blockTable.lastJournaledAtMsForTag(tag)
+    }
+
     func listGoalSummaries(includeDeleted: Bool = false) -> [NJGoalSummary] {
         goalTable.listGoalSummaries(includeDeleted: includeDeleted)
     }
@@ -78,6 +82,10 @@ final class DBNoteRepository {
 
     func updateBlockPayloadJSON(blockID: String, payloadJSON: String, updatedAtMs: Int64) {
         blockTable.updateBlockPayloadJSON(blockID: blockID, payloadJSON: payloadJSON, updatedAtMs: updatedAtMs)
+    }
+
+    func setBlockGoalID(blockID: String, goalID: String) {
+        blockTable.setGoalID(blockID: blockID, goalID: goalID, updatedAtMs: Self.nowMs())
     }
     
     func upsertTagsForNoteBlockInstanceID(
@@ -129,7 +137,10 @@ final class DBNoteRepository {
             
         case "note":
             for (_, f) in rows { applyRemoteUpsert(entity: "note", fields: f) }
-            
+
+        case "goal":
+            for (_, f) in rows { applyRemoteUpsert(entity: "goal", fields: f) }
+
         case "block":
             for (_, f) in rows { applyRemoteUpsert(entity: "block", fields: f) }
 

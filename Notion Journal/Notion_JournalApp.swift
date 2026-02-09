@@ -39,6 +39,11 @@ struct Notion_JournalApp: App {
                 .environmentObject(store)
         }
 
+        WindowGroup(id: "goals") {
+            NJGoalWorkspaceView()
+                .environmentObject(store)
+        }
+
         WindowGroup(id: "photo-viewer", for: String.self) { id in
             NJPhotoWindow(localIdentifier: id.wrappedValue)
         }

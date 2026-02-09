@@ -206,6 +206,7 @@ enum DBSchemaInstaller {
                     payload_json TEXT NOT NULL,
                     domain_tag TEXT,
                     tag_json TEXT,
+                    goal_id TEXT,
                     lineage_id TEXT,
                     parent_block_id TEXT,
                     created_at_ms INTEGER NOT NULL,
@@ -220,6 +221,7 @@ enum DBSchemaInstaller {
                     ColumnSpec(name: "payload_json", declForAlter: "TEXT NOT NULL DEFAULT ''"),
                     ColumnSpec(name: "domain_tag", declForAlter: "TEXT"),
                     ColumnSpec(name: "tag_json", declForAlter: "TEXT"),
+                    ColumnSpec(name: "goal_id", declForAlter: "TEXT"),
                     ColumnSpec(name: "lineage_id", declForAlter: "TEXT"),
                     ColumnSpec(name: "parent_block_id", declForAlter: "TEXT"),
                     ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
@@ -228,7 +230,8 @@ enum DBSchemaInstaller {
                     ColumnSpec(name: "dirty_bl", declForAlter: "INTEGER NOT NULL DEFAULT 1")
                 ],
                 indexes: [
-                    "CREATE INDEX IF NOT EXISTS idx_nj_block_updated ON nj_block(updated_at_ms DESC);"
+                    "CREATE INDEX IF NOT EXISTS idx_nj_block_updated ON nj_block(updated_at_ms DESC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_block_goal ON nj_block(goal_id);"
                 ]
             ),
 

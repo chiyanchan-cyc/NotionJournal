@@ -159,6 +159,15 @@ final class NJReconstructedNotePersistence: ObservableObject {
         }
     }
 
+    private func domainPreviewFromTagJSON(_ tagJSON: String) -> String {
+        if tagJSON.isEmpty { return "" }
+        if let data = tagJSON.data(using: .utf8),
+           let arr = try? JSONDecoder().decode([String].self, from: data) {
+            return arr.joined(separator: ", ")
+        }
+        return ""
+    }
+
     private struct Row {
         let blockID: String
         let protonJSON: String
@@ -472,8 +481,12 @@ final class NJReconstructedNotePersistence: ObservableObject {
                 return makeTypedFromPlain("")
             }()
 
-            let domainPreview = dbLoadDomainPreview3FromBlockTag(r.blockID)
             let tagJSON = dbLoadBlockTagJSON(r.blockID)
+            let domainPreview = {
+                let fromIndex = dbLoadDomainPreview3FromBlockTag(r.blockID)
+                if !fromIndex.isEmpty { return fromIndex }
+                return domainPreviewFromTagJSON(tagJSON)
+            }()
 
             out.append(
                 NJNoteEditorContainerPersistence.BlockState(

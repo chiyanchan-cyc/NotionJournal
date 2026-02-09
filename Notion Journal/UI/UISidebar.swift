@@ -72,6 +72,14 @@ struct Sidebar: View {
         return f.string(from: d)
     }
 
+    private var isPhone: Bool {
+        #if os(iOS)
+        return UIDevice.current.userInterfaceIdiom == .phone
+        #else
+        return false
+        #endif
+    }
+
     private func addMenu() -> some View {
         Menu {
             Button(action: {
@@ -98,157 +106,194 @@ struct Sidebar: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ZStack(alignment: .topTrailing) {
-                NotebookTopBar(
-                    notebooks: store.notebooks,
-                    selectedID: store.selectedNotebookID,
-                    onSelect: { nbID in
-                        store.selectNotebook(nbID)
-                        NJLocalBLRunner(db: store.db).run(.deriveBlockTagIndexAndDomainV1)
+            VStack(spacing: 0) {
+                if store.selectedModule == .note {
+                    HStack(spacing: 10) {
+                        Spacer()
+
+                        Button(action: createNote) { Image(systemName: "plus") }
+                            .disabled(store.selectedTabID == nil || store.selectedNotebookID == nil)
+
+                        addMenu()
+
+                        Menu {
+                            Button("GPS Logger", systemImage: "location.circle") {
+                                showGPSLogger = true
+                            }
+
+                            Button("Health Logger", systemImage: "heart.circle") {
+                                showHealthLogger = true
+                            }
+
+                            Button("DB Debug", systemImage: "terminal") {
+                                store.showDBDebugPanel = true
+                            }
+
+                            Button("Force Pull", systemImage: "arrow.down.circle") {
+                                store.forcePullNow(forceSinceZero: true)
+                            }
+
+                            Button("Export", systemImage: "square.and.arrow.up") {
+                                showExport = true
+                            }
+
+                            Divider()
+
+                            Button("Rebuild Tag Index", systemImage: "arrow.triangle.2.circlepath") {
+                                NJLocalBLRunner(db: store.db).runDeriveBlockTagIndexAndDomainV1All(limit: 8000)
+                            }
+                        } label: {
+                            Image(systemName: "slider.horizontal.3")
+                        }
+                    }
+                    .padding(.trailing, 10)
+                    .padding(.top, 6)
+                    .padding(.bottom, 6)
+                    .frame(height: 36)
+                    .background(Color(UIColor.systemBackground))
+                }
+
+                if store.selectedModule == .note {
+                    Divider()
+                    if isPhone {
+                        Color.clear.frame(height: 6)
+                    }
+                    NotebookTopBar(
+                        notebooks: store.notebooks,
+                        selectedID: store.selectedNotebookID,
+                        onSelect: { nbID in
+                            store.selectNotebook(nbID)
+                            NJLocalBLRunner(db: store.db).run(.deriveBlockTagIndexAndDomainV1)
+                            selectedNoteID = nil
+                            noteListResetKey = UUID()
+                        }
+                    )
+                }
+            }
+
+            Divider()
+
+            if store.selectedModule == .note {
+                HStack(spacing: 0) {
+                    Rail(onChanged: { selectedNoteID = nil })
+                    Divider()
+
+                    List(selection: $selectedNoteID) {
+                        if store.selectedNotebookID == nil {
+                            ContentUnavailableView("Create a notebook", systemImage: "books.vertical")
+                                .frame(maxWidth: .infinity, alignment: .center)
+                        } else if store.selectedTabID == nil {
+                            ContentUnavailableView("Create a tab", systemImage: "rectangle.on.rectangle")
+                                .frame(maxWidth: .infinity, alignment: .center)
+                        } else if notesInScope.isEmpty {
+                            Text("No notes")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(notesInScope, id: \.id) { n in
+                                NavigationLink(value: n.id) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        HStack(spacing: 6) {
+                                            Text(n.title.isEmpty ? "Untitled" : n.title)
+                                                .lineLimit(1)
+                                            if n.pinned > 0 {
+                                                Image(systemName: "pin.fill")
+                                                    .font(.caption2)
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                        }
+
+                                        if n.createdAtMs > 0 {
+                                            Text(njDateSubscript(n.createdAtMs))
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                        }
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                .tag(n.id)
+                                .simultaneousGesture(TapGesture().onEnded {
+                                    selectedNoteID = nil
+                                    DispatchQueue.main.async { selectedNoteID = n.id }
+                                })
+                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                    Button {
+                                        store.notes.setPinned(noteID: n.id.raw, pinned: n.pinned == 0)
+                                        store.objectWillChange.send()
+                                    } label: {
+                                        Label(n.pinned == 0 ? "Pin" : "Unpin", systemImage: n.pinned == 0 ? "pin" : "pin.slash")
+                                    }
+                                    .tint(n.pinned == 0 ? .orange : .gray)
+                                }
+                            }
+                        }
+                    }
+                    .id(noteListResetKey)
+                    .onChange(of: store.selectedTabID) { _, _ in
                         selectedNoteID = nil
                         noteListResetKey = UUID()
                     }
+                    .onChange(of: store.selectedNotebookID) { _, _ in
+                        selectedNoteID = nil
+                        noteListResetKey = UUID()
+                    }
+                    .safeAreaInset(edge: .bottom) {
+                        Color.clear.frame(height: 56)
+                    }
+                    .listStyle(.sidebar)
+                }
+            } else if store.selectedModule == .goal {
+                NJGoalSidebarView()
+                    .environmentObject(store)
+            } else {
+                Spacer(minLength: 0)
+            }
+
+            Divider()
+
+            if store.selectedModule == .note {
+                HStack(spacing: 12) {
+                    SidebarSquareButton(systemName: "target") {
+                        openWeeklyReconstructed()
+                    }
+
+                    SidebarSquareButton(systemName: "magnifyingglass") {
+                        openManualReconstructed()
+                    }
+
+                    SidebarSquareButton(systemName: "calendar") {
+                        openCalendarView()
+                    }
+
+                    SidebarSquareButton(systemName: "heart.text.square") {
+                        showHealthWeeklySummary = true
+                    }
+
+                    Spacer()
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                ModuleToolbarButtons(
+                    items: [
+                        ModuleToolbarButtons.Item(id: "note", title: "Note", isOn: store.selectedModule == .note, action: {
+                            store.selectedModule = .note
+                            selectedNoteID = nil
+                        }),
+                        ModuleToolbarButtons.Item(id: "goal", title: "Goal", isOn: store.selectedModule == .goal, action: {
+                            store.selectedModule = .goal
+                            selectedNoteID = nil
+                        }),
+                        ModuleToolbarButtons.Item(id: "outline", title: "Outline", isOn: store.selectedModule == .outline, action: {
+                            store.selectedModule = .outline
+                            selectedNoteID = nil
+                        })
+                    ]
                 )
-                .padding(.top, 34)
-
-                HStack(spacing: 10) {
-                    Button(action: createNote) { Image(systemName: "plus") }
-                        .disabled(store.selectedTabID == nil || store.selectedNotebookID == nil)
-
-                    addMenu()
-
-                    Menu {
-                        Button("GPS Logger", systemImage: "location.circle") {
-                            showGPSLogger = true
-                        }
-
-                        Button("Health Logger", systemImage: "heart.circle") {
-                            showHealthLogger = true
-                        }
-
-                        Button("DB Debug", systemImage: "terminal") {
-                            store.showDBDebugPanel = true
-                        }
-
-                        Button("Force Pull", systemImage: "arrow.down.circle") {
-                            store.forcePullNow(forceSinceZero: true)
-                        }
-
-                        Button("Export", systemImage: "square.and.arrow.up") {
-                            showExport = true
-                        }
-
-                        Divider()
-
-                        Button("Rebuild Tag Index", systemImage: "arrow.triangle.2.circlepath") {
-                            NJLocalBLRunner(db: store.db).runDeriveBlockTagIndexAndDomainV1All(limit: 8000)
-                        }
-                    } label: {
-                        Image(systemName: "slider.horizontal.3")
-                    }
-                }
-                .padding(.trailing, 10)
-                .padding(.top, 8)
             }
-
-            Divider()
-
-            HStack(spacing: 0) {
-                Rail(onChanged: { selectedNoteID = nil })
-                Divider()
-
-                List(selection: $selectedNoteID) {
-                    if store.selectedNotebookID == nil {
-                        ContentUnavailableView("Create a notebook", systemImage: "books.vertical")
-                            .frame(maxWidth: .infinity, alignment: .center)
-                    } else if store.selectedTabID == nil {
-                        ContentUnavailableView("Create a tab", systemImage: "rectangle.on.rectangle")
-                            .frame(maxWidth: .infinity, alignment: .center)
-                    } else if notesInScope.isEmpty {
-                        Text("No notes")
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ForEach(notesInScope, id: \.id) { n in
-                            NavigationLink(value: n.id) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    HStack(spacing: 6) {
-                                        Text(n.title.isEmpty ? "Untitled" : n.title)
-                                            .lineLimit(1)
-                                        if n.pinned > 0 {
-                                            Image(systemName: "pin.fill")
-                                                .font(.caption2)
-                                                .foregroundStyle(.secondary)
-                                        }
-                                    }
-
-                                    if n.createdAtMs > 0 {
-                                        Text(njDateSubscript(n.createdAtMs))
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
-                                            .lineLimit(1)
-                                    }
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                            .tag(n.id)
-                            .simultaneousGesture(TapGesture().onEnded {
-                                selectedNoteID = nil
-                                DispatchQueue.main.async { selectedNoteID = n.id }
-                            })
-                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                Button {
-                                    store.notes.setPinned(noteID: n.id.raw, pinned: n.pinned == 0)
-                                    store.objectWillChange.send()
-                                } label: {
-                                    Label(n.pinned == 0 ? "Pin" : "Unpin", systemImage: n.pinned == 0 ? "pin" : "pin.slash")
-                                }
-                                .tint(n.pinned == 0 ? .orange : .gray)
-                            }
-                        }
-                    }
-                }
-                .id(noteListResetKey)
-                .onChange(of: store.selectedTabID) { _ in
-                    selectedNoteID = nil
-                    noteListResetKey = UUID()
-                }
-                .onChange(of: store.selectedNotebookID) { _ in
-                    selectedNoteID = nil
-                    noteListResetKey = UUID()
-                }
-                .safeAreaInset(edge: .bottom) {
-                    Color.clear.frame(height: 56)
-                }
-                .listStyle(.sidebar)
-            }
-
-            Divider()
-
-            HStack(spacing: 12) {
-                SidebarSquareButton(systemName: "viewfinder") {
-                    openWeeklyReconstructed()
-                }
-
-                SidebarSquareButton(systemName: "magnifyingglass") {
-                    openManualReconstructed()
-                }
-
-                SidebarSquareButton(systemName: "calendar") {
-                    openCalendarView()
-                }
-
-                SidebarSquareButton(systemName: "target") {
-                    showGoalSeedlingList = true
-                }
-
-                SidebarSquareButton(systemName: "heart.text.square") {
-                    showHealthWeeklySummary = true
-                }
-
-                Spacer()
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
         }
         .sheet(isPresented: $showNewNotebook) {
             NavigationStack {
@@ -354,7 +399,7 @@ struct Sidebar: View {
         }
         .sheet(isPresented: $showGoalSeedlingList) {
             NavigationStack {
-                NJGoalSeedlingListSheet()
+                NJGoalWorkspaceView()
                     .environmentObject(store)
             }
         }
@@ -410,6 +455,7 @@ struct Sidebar: View {
             showCalendarView = true
         }
     }
+
 }
 
 private extension Sidebar {

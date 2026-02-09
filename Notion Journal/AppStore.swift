@@ -31,9 +31,13 @@ final class AppStore: ObservableObject {
     @Published var tabs: [NJTab]
     @Published var selectedNotebookID: String?
     @Published var selectedTabID: String?
+    @Published var selectedModule: NJUIModule = .note
+    @Published var selectedGoalID: String? = nil
     @Published var showDBDebugPanel = false
     @Published var didFinishInitialPull = false
     @Published var initialPullError: String? = nil
+    @Published var showGoalMigrationAlert = false
+    @Published var goalMigrationCount: Int = 0
 
     @StateObject var ui = UIState()
 
@@ -88,6 +92,19 @@ final class AppStore: ObservableObject {
             bl.markBlocksMissingTagIndexDirty(limit: 8000)
             bl.run(.deriveBlockTagIndexAndDomainV1, limit: 2000)
         }
+
+        runGoalStatusMigrationIfNeeded()
+    }
+
+    private func runGoalStatusMigrationIfNeeded() {
+        let key = "nj_migrate_goal_status_tagged_v1"
+        if UserDefaults.standard.bool(forKey: key) { return }
+        let count = notes.migrateGoalStatusForTaggedGoals()
+        if count > 0 {
+            goalMigrationCount = count
+            showGoalMigrationAlert = true
+        }
+        UserDefaults.standard.set(true, forKey: key)
     }
 
     private func runAttachmentCacheCleanupIfNeeded() {
@@ -319,4 +336,10 @@ final class AppStore: ObservableObject {
         }
     }
 
+}
+
+enum NJUIModule: String, CaseIterable {
+    case note
+    case goal
+    case outline
 }

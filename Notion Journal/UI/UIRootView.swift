@@ -6,6 +6,7 @@ struct RootView: View {
     @EnvironmentObject var store: AppStore
     @State private var selectedNoteID: NJNoteID?
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openWindow) private var openWindow
     @State private var syncTick: Int = 0
     @State private var showProtonListLab: Bool = false
 
@@ -17,25 +18,37 @@ struct RootView: View {
                 NavigationSplitView {
                     Sidebar(selectedNoteID: $selectedNoteID)
                 } detail: {
-                    if let id = selectedNoteID {
-                        NJNoteEditorContainerView(noteID: id)
-                            .id(String(describing: id))
-//                            .toolbar {
-//                                ToolbarItem(placement: .topBarTrailing) {
-//                                    Button {
-//                                        showProtonListLab = true
-//                                    } label: {
-//                                        Image(systemName: "ladybug")
-//                                    }
-//                                }
-//                            }
-                            .sheet(isPresented: $showProtonListLab) {
-//                                NavigationStack {
-//                                    NJProtonListLabView()
-//                                }
-                            }
-                    } else {
-                        ContentUnavailableView("Select a note", systemImage: "doc.text")
+                    switch store.selectedModule {
+                    case .note:
+                        if let id = selectedNoteID {
+                            NJNoteEditorContainerView(noteID: id)
+                                .id(String(describing: id))
+    //                            .toolbar {
+    //                                ToolbarItem(placement: .topBarTrailing) {
+    //                                    Button {
+    //                                        showProtonListLab = true
+    //                                    } label: {
+    //                                        Image(systemName: "ladybug")
+    //                                    }
+    //                                }
+    //                            }
+                                .sheet(isPresented: $showProtonListLab) {
+    //                                NavigationStack {
+    //                                    NJProtonListLabView()
+    //                                }
+                                }
+                        } else {
+                            ContentUnavailableView("Select a note", systemImage: "doc.text")
+                        }
+                    case .goal:
+                        if let gid = store.selectedGoalID {
+                            NJGoalDetailWorkspaceView(goalID: gid)
+                                .environmentObject(store)
+                        } else {
+                            ContentUnavailableView("Select a goal", systemImage: "target")
+                        }
+                    case .outline:
+                        ContentUnavailableView("Outline", systemImage: "list.bullet.rectangle")
                     }
                 }
                 .onAppear {
@@ -74,6 +87,11 @@ struct RootView: View {
         }
         .onReceive(store.sync.objectWillChange) { _ in
             syncTick += 1
+        }
+        .alert("Goals Updated", isPresented: $store.showGoalMigrationAlert) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("Updated \(store.goalMigrationCount) goal(s) to In Progress based on goal tags.")
         }
     }
 }

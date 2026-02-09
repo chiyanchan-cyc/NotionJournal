@@ -91,6 +91,85 @@ extension NJNoteEditorContainerView {
         persistence.scheduleCommit(new.id)
     }
 
+    func addTaggedBlocks(after id: UUID?, tags: [String]) {
+        var insertAfter = id
+        for tag in tags {
+            insertAfter = addTaggedBlock(after: insertAfter, tag: tag)
+        }
+    }
+
+    @discardableResult
+    func addTaggedBlock(after id: UUID?, tag: String) -> UUID? {
+        let newID = UUID()
+        let handle = makeWiredHandle()
+        handle.ownerBlockUUID = newID
+
+        let insertAt: Int
+        if let id, let i = persistence.blocks.firstIndex(where: { $0.id == id }) {
+            insertAt = i + 1
+        } else {
+            insertAt = persistence.blocks.count
+        }
+
+        let prevKey: Double = (insertAt - 1 >= 0 && insertAt - 1 < persistence.blocks.count) ? persistence.blocks[insertAt - 1].orderKey : 0
+        let nextKey: Double = (insertAt >= 0 && insertAt < persistence.blocks.count) ? persistence.blocks[insertAt].orderKey : 0
+
+        var newKey: Double = 1000
+        if prevKey > 0 && nextKey > 0 {
+            newKey = (prevKey + nextKey) / 2.0
+        } else if prevKey > 0 {
+            newKey = prevKey + 1000
+        } else if nextKey > 0 {
+            newKey = max(1000, nextKey - 1000)
+        } else {
+            newKey = 1000
+        }
+
+        let trimmedTag = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tagJSON: String = {
+            guard !trimmedTag.isEmpty,
+                  let data = try? JSONSerialization.data(withJSONObject: [trimmedTag]),
+                  let s = String(data: data, encoding: .utf8)
+            else { return "" }
+            return s
+        }()
+        let attr = makeGoalReflectBlockAttr(tag: trimmedTag)
+
+        let new = NJNoteEditorContainerPersistence.BlockState(
+            id: newID,
+            blockID: UUID().uuidString,
+            instanceID: "",
+            orderKey: newKey,
+            attr: attr,
+            sel: NSRange(location: 0, length: 0),
+            isCollapsed: false,
+            protonHandle: handle,
+            isDirty: true,
+            tagJSON: tagJSON
+        )
+
+        persistence.blocks.insert(new, at: insertAt)
+
+        pendingFocusID = new.id
+        pendingFocusToStart = true
+
+        persistence.scheduleCommit(new.id)
+        return new.id
+    }
+
+    private func makeGoalReflectBlockAttr(tag: String) -> NSAttributedString {
+        let trimmed = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return makeEmptyBlockAttr() }
+        let d = Date()
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyyMMdd"
+        let dateStr = f.string(from: d)
+        let line = "\(trimmed) \(dateStr) Progress Report\n"
+        let zwsp = String(UnicodeScalar(Int(NJ_ZWSP))!)
+        return NSAttributedString(string: line + zwsp, attributes: baseAttrs())
+    }
+
 
     func deleteBlock(_ id: UUID) {
         if persistence.focusedBlockID == id {

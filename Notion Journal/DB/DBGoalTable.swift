@@ -195,7 +195,7 @@ final class DBGoalTable {
             var stmt: OpaquePointer?
             let whereDeleted = includeDeleted ? "" : "WHERE deleted=0"
             let sql = """
-            SELECT goal_id, goal_tag, status, payload_json, created_at_ms, updated_at_ms
+            SELECT goal_id, goal_tag, status, domain_tags_json, payload_json, created_at_ms, updated_at_ms
             FROM nj_goal
             \(whereDeleted)
             ORDER BY updated_at_ms DESC;
@@ -213,9 +213,10 @@ final class DBGoalTable {
                 let goalID = colText(0)
                 let goalTag = colText(1).trimmingCharacters(in: .whitespacesAndNewlines)
                 let status = colText(2)
-                let payloadJSON = colText(3)
-                let createdAt = sqlite3_column_int64(stmt, 4)
-                let updatedAt = sqlite3_column_int64(stmt, 5)
+                let domainTagsJSON = colText(3)
+                let payloadJSON = colText(4)
+                let createdAt = sqlite3_column_int64(stmt, 5)
+                let updatedAt = sqlite3_column_int64(stmt, 6)
 
                 let name = decodeGoalName(payloadJSON: payloadJSON)
 
@@ -224,12 +225,34 @@ final class DBGoalTable {
                     name: name.isEmpty ? "Untitled" : name,
                     goalTag: goalTag,
                     status: status,
+                    domainTagsJSON: domainTagsJSON,
                     createdAtMs: createdAt,
                     updatedAtMs: updatedAt
                 ))
             }
 
             return out
+        }
+    }
+
+    func goalTagExists(_ tag: String, excludingGoalID: String) -> Bool {
+        let trimmed = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return false }
+        return db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT goal_id
+            FROM nj_goal
+            WHERE goal_tag = ? COLLATE NOCASE
+              AND deleted = 0
+              AND goal_id != ?
+            LIMIT 1;
+            """
+            if sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) != SQLITE_OK { return false }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, trimmed, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 2, excludingGoalID, -1, SQLITE_TRANSIENT)
+            return sqlite3_step(stmt) == SQLITE_ROW
         }
     }
 

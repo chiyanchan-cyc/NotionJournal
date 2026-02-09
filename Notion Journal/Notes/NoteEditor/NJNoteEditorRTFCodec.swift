@@ -28,6 +28,14 @@ func makeEmptyBlockAttr() -> NSAttributedString {
     NSAttributedString(string: String(UnicodeScalar(Int(NJ_ZWSP))!), attributes: baseAttrs())
 }
 
+func makeTaggedBlockAttr(tag: String) -> NSAttributedString {
+    let trimmed = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed.isEmpty { return makeEmptyBlockAttr() }
+    let line = "@tag: \(trimmed)\n"
+    let zwsp = String(UnicodeScalar(Int(NJ_ZWSP))!)
+    return NSAttributedString(string: line + zwsp, attributes: baseAttrs())
+}
+
 func ensureNonEmptyTyped(_ a: NSAttributedString) -> NSAttributedString {
     if a.length == 0 { return makeEmptyBlockAttr() }
     if a.length == 1 {
