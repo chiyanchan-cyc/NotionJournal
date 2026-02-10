@@ -17,7 +17,6 @@ struct NJGoalSidebarView: View {
     @State private var domainFilter: String = "ALL"
     @State private var showGoalCreate = false
 
-    private let excludedGoalTag = "g.zz.adhd.efinitiation"
     private let staleDays: Int = 14
     private let railWidth: CGFloat = 72
 
@@ -181,7 +180,6 @@ struct NJGoalSidebarView: View {
     private func filteredGoals() -> [NJGoalSummary] {
         let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return goals.filter { item in
-            if item.goalTag == excludedGoalTag { return false }
             if statusFor(item.status, goalTag: item.goalTag) != statusTab { return false }
             if domainFilter != "ALL" {
                 let domains = parseDomainTags(item.domainTagsJSON).map { $0.lowercased() }
@@ -219,7 +217,7 @@ struct NJGoalSidebarView: View {
         if ["archive", "archived", "done", "closed"].contains(s) { return .archive }
         let trimmedTag = goalTag.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedTag.isEmpty { return .inProgress }
-        if ["in_progress", "progress", "active", "working"].contains(s) { return .inProgress }
+        if ["in_progress", "in progress", "in-progress", "progress", "active", "working"].contains(s) { return .inProgress }
         if s.isEmpty { return .seedling }
         if s == "open" { return .seedling }
         return .seedling

@@ -17,6 +17,8 @@ struct NJGoalCreateSheet: View {
     @State private var desc: String = ""
     @State private var domainTagsText: String = ""
     @State private var goalTagText: String = ""
+    @State private var allGoalTags: [String] = []
+    @State private var goalTagSuggestions: [String] = []
 
     var body: some View {
         NavigationView {
@@ -36,6 +38,28 @@ struct NJGoalCreateSheet: View {
                     TextField("e.g. g.dev.llm.YTCrawler", text: $goalTagText)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                    if !goalTagSuggestions.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(goalTagSuggestions, id: \.self) { t in
+                                Button {
+                                    goalTagText = t
+                                    goalTagSuggestions = []
+                                } label: {
+                                    Text(t)
+                                        .font(.caption)
+                                        .foregroundStyle(.primary)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(.vertical, 6)
+                                        .padding(.horizontal, 8)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color(UIColor.secondarySystemBackground))
+                        )
+                    }
                 }
 
                 Section(header: Text("Description")) {
@@ -72,6 +96,36 @@ struct NJGoalCreateSheet: View {
                     .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
+            .onAppear {
+                allGoalTags = loadActiveGoalTags()
+                refreshGoalTagSuggestions()
+            }
+            .onChange(of: goalTagText) { _, _ in
+                refreshGoalTagSuggestions()
+            }
         }
+    }
+
+    private func loadActiveGoalTags() -> [String] {
+        let goals = repo.listGoalSummaries()
+        var set = Set<String>()
+        for g in goals {
+            let t = g.goalTag.trimmingCharacters(in: .whitespacesAndNewlines)
+            if t.isEmpty { continue }
+            let s = g.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if ["archive", "archived", "done", "closed"].contains(s) { continue }
+            set.insert(t)
+        }
+        return Array(set).sorted()
+    }
+
+    private func refreshGoalTagSuggestions() {
+        let q = goalTagText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if q.isEmpty {
+            goalTagSuggestions = []
+            return
+        }
+        let filtered = allGoalTags.filter { $0.lowercased().hasPrefix(q) }
+        goalTagSuggestions = Array(filtered.prefix(6))
     }
 }

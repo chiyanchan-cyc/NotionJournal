@@ -15,6 +15,8 @@ struct NJGoalDetailWorkspaceView: View {
     @State private var showTagConflict = false
     @State private var pickedPhotoItem: PhotosPickerItem? = nil
     @State private var focusedHandle: NJProtonEditorHandle? = nil
+    @State private var allGoalTags: [String] = []
+    @State private var goalTagSuggestions: [String] = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -36,6 +38,9 @@ struct NJGoalDetailWorkspaceView: View {
             if !headerExpanded {
                 goalTagDraft = newValue
             }
+        }
+        .onChange(of: goalTagDraft) { _, _ in
+            refreshGoalTagSuggestions()
         }
         .onChange(of: persistence.goalComment) { _, newValue in
             if !headerExpanded {
@@ -151,6 +156,28 @@ struct NJGoalDetailWorkspaceView: View {
                             persistence.updateGoalTag(trimmed)
                         }
                         .buttonStyle(.bordered)
+                    }
+                    if !goalTagSuggestions.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(goalTagSuggestions, id: \.self) { t in
+                                Button {
+                                    goalTagDraft = t
+                                    goalTagSuggestions = []
+                                } label: {
+                                    Text(t)
+                                        .font(.caption)
+                                        .foregroundStyle(.primary)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(.vertical, 6)
+                                        .padding(.horizontal, 8)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color(UIColor.secondarySystemBackground))
+                        )
                     }
 
                     VStack(alignment: .leading, spacing: 6) {
@@ -343,6 +370,8 @@ struct NJGoalDetailWorkspaceView: View {
         persistence.reload(makeHandle: makeHandle)
         goalTagDraft = persistence.goalTag
         commentDraft = persistence.goalComment
+        allGoalTags = loadActiveGoalTags()
+        refreshGoalTagSuggestions()
         if focusedHandle == nil {
             if let first = persistence.progressBlocks.first {
                 persistence.focusProgress(first.id)
@@ -361,6 +390,29 @@ struct NJGoalDetailWorkspaceView: View {
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyy-MM-dd"
         return f.string(from: d)
+    }
+
+    private func loadActiveGoalTags() -> [String] {
+        let goals = store.notes.listGoalSummaries()
+        var set = Set<String>()
+        for g in goals {
+            let t = g.goalTag.trimmingCharacters(in: .whitespacesAndNewlines)
+            if t.isEmpty { continue }
+            let s = g.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if ["archive", "archived", "done", "closed"].contains(s) { continue }
+            set.insert(t)
+        }
+        return Array(set).sorted()
+    }
+
+    private func refreshGoalTagSuggestions() {
+        let q = goalTagDraft.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if q.isEmpty {
+            goalTagSuggestions = []
+            return
+        }
+        let filtered = allGoalTags.filter { $0.lowercased().hasPrefix(q) }
+        goalTagSuggestions = Array(filtered.prefix(6))
     }
 
     private func inheritedGoalTags() -> [String] {

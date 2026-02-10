@@ -12,7 +12,6 @@ struct NJGoalQuickPickSheet: View {
     @State private var domainFilter: String = ""
     @State private var lastJournaledByTag: [String: Int64] = [:]
 
-    private let excludedGoalTag = "g.zz.adhd.efinitiation"
     private let staleDays: Int = 14
 
     var body: some View {
@@ -104,7 +103,6 @@ struct NJGoalQuickPickSheet: View {
         let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let domFilter = domainFilter.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return goals.filter { item in
-            if item.goalTag == excludedGoalTag { return false }
             if isArchived(item.status) { return false }
             if item.goalTag.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return false }
             if !domFilter.isEmpty {

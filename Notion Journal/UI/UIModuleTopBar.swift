@@ -46,6 +46,7 @@ struct ModuleToolbarButtons: View {
     struct Item: Identifiable {
         let id: String
         let title: String
+        let systemImage: String
         let isOn: Bool
         let action: () -> Void
     }
@@ -58,14 +59,18 @@ struct ModuleToolbarButtons: View {
                 Button {
                     item.action()
                 } label: {
-                    Text(item.title)
-                        .font(.system(size: 12, weight: .semibold))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(item.isOn ? Color.accentColor.opacity(0.22) : Color(UIColor.secondarySystemBackground))
-                        )
+                    HStack(spacing: 6) {
+                        Image(systemName: item.systemImage)
+                            .font(.system(size: 12, weight: .semibold))
+                        Text(item.title)
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(item.isOn ? Color.accentColor.opacity(0.22) : Color(UIColor.secondarySystemBackground))
+                    )
                 }
                 .buttonStyle(.plain)
                 .disabled(item.id == "outline")

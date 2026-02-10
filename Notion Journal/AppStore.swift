@@ -103,6 +103,7 @@ final class AppStore: ObservableObject {
         if count > 0 {
             goalMigrationCount = count
             showGoalMigrationAlert = true
+            sync.schedulePush(debounceMs: 0)
         }
         UserDefaults.standard.set(true, forKey: key)
     }

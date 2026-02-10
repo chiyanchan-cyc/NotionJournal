@@ -107,6 +107,30 @@ struct Sidebar: View {
     var body: some View {
         VStack(spacing: 0) {
             VStack(spacing: 0) {
+                if isPhone {
+                    HStack {
+                        ModuleToolbarButtons(
+                            items: [
+                                ModuleToolbarButtons.Item(id: "note", title: "Note", systemImage: "doc.text", isOn: store.selectedModule == .note, action: {
+                                    store.selectedModule = .note
+                                    selectedNoteID = nil
+                                }),
+                                ModuleToolbarButtons.Item(id: "goal", title: "Goal", systemImage: "target", isOn: store.selectedModule == .goal, action: {
+                                    store.selectedModule = .goal
+                                    selectedNoteID = nil
+                                }),
+                                ModuleToolbarButtons.Item(id: "outline", title: "Outline", systemImage: "list.bullet.rectangle", isOn: store.selectedModule == .outline, action: {
+                                    store.selectedModule = .outline
+                                    selectedNoteID = nil
+                                })
+                            ]
+                        )
+                        Spacer()
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.top, 4)
+                    .padding(.bottom, 6)
+                }
                 if store.selectedModule == .note {
                     HStack(spacing: 10) {
                         Spacer()
@@ -276,25 +300,28 @@ struct Sidebar: View {
             }
         }
         .toolbar {
-            ToolbarItem(placement: .navigationBarLeading) {
-                ModuleToolbarButtons(
-                    items: [
-                        ModuleToolbarButtons.Item(id: "note", title: "Note", isOn: store.selectedModule == .note, action: {
-                            store.selectedModule = .note
-                            selectedNoteID = nil
-                        }),
-                        ModuleToolbarButtons.Item(id: "goal", title: "Goal", isOn: store.selectedModule == .goal, action: {
-                            store.selectedModule = .goal
-                            selectedNoteID = nil
-                        }),
-                        ModuleToolbarButtons.Item(id: "outline", title: "Outline", isOn: store.selectedModule == .outline, action: {
-                            store.selectedModule = .outline
-                            selectedNoteID = nil
-                        })
-                    ]
-                )
+            if !isPhone {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    ModuleToolbarButtons(
+                        items: [
+                            ModuleToolbarButtons.Item(id: "note", title: "Note", systemImage: "doc.text", isOn: store.selectedModule == .note, action: {
+                                store.selectedModule = .note
+                                selectedNoteID = nil
+                            }),
+                            ModuleToolbarButtons.Item(id: "goal", title: "Goal", systemImage: "target", isOn: store.selectedModule == .goal, action: {
+                                store.selectedModule = .goal
+                                selectedNoteID = nil
+                            }),
+                            ModuleToolbarButtons.Item(id: "outline", title: "Outline", systemImage: "list.bullet.rectangle", isOn: store.selectedModule == .outline, action: {
+                                store.selectedModule = .outline
+                                selectedNoteID = nil
+                            })
+                        ]
+                    )
+                }
             }
         }
+        .toolbar(isPhone ? .hidden : .automatic, for: .navigationBar)
         .sheet(isPresented: $showNewNotebook) {
             NavigationStack {
                 Form {

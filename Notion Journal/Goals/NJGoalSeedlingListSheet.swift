@@ -7,8 +7,6 @@ struct NJGoalSeedlingListSheet: View {
     @State private var goals: [NJGoalSummary] = []
     @State private var searchText: String = ""
 
-    private let excludedGoalTag = "g.zz.adhd.efinitiation"
-
     var body: some View {
         List {
             let filtered = filteredGoals()
@@ -63,7 +61,6 @@ struct NJGoalSeedlingListSheet: View {
     private func filteredGoals() -> [NJGoalSummary] {
         let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return goals.filter { item in
-            if item.goalTag == excludedGoalTag { return false }
             if trimmedSearch.isEmpty { return true }
             if item.name.lowercased().contains(trimmedSearch) { return true }
             if item.goalTag.lowercased().contains(trimmedSearch) { return true }
