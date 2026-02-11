@@ -99,6 +99,7 @@ extension DBNoteRepository {
             _ = sqlite3_step(stmt)
         }
         upsertDirtyGoal(goalID: goalID, updatedAtMs: now)
+        NotificationCenter.default.post(name: .njGoalUpdated, object: nil)
     }
 
     func updateGoalTag(goalID: String, goalTag: String, setInProgress: Bool) {
@@ -140,6 +141,7 @@ extension DBNoteRepository {
             _ = sqlite3_step(stmt)
         }
         upsertDirtyGoal(goalID: goalID, updatedAtMs: now)
+        NotificationCenter.default.post(name: .njGoalUpdated, object: nil)
     }
 
     func updateGoalComment(goalID: String, commentPlainText: String) {
@@ -181,6 +183,7 @@ extension DBNoteRepository {
         }
 
         upsertDirtyGoal(goalID: goalID, updatedAtMs: now)
+        NotificationCenter.default.post(name: .njGoalUpdated, object: nil)
     }
 
     func migrateGoalStatusForTaggedGoals() -> Int {

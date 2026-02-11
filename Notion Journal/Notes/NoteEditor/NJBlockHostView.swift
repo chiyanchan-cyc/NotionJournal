@@ -23,6 +23,7 @@ struct NJBlockHostView: View {
     let protonHandle: NJProtonEditorHandle
     let onHydrateProton: () -> Void
     let onCommitProton: () -> Void
+    let onMoveToClipboard: (() -> Void)?
 
     @Binding var isCollapsed: Bool
 
@@ -62,6 +63,7 @@ struct NJBlockHostView: View {
         onDelete: @escaping () -> Void,
         onHydrateProton: @escaping () -> Void,
         onCommitProton: @escaping () -> Void,
+        onMoveToClipboard: (() -> Void)? = nil,
         inheritedTags: [String] = [],
         editableTags: [String] = [],
         tagJSON: String? = nil,
@@ -88,6 +90,7 @@ struct NJBlockHostView: View {
         self.onCtrlReturn = onCtrlReturn
         self.onHydrateProton = onHydrateProton
         self.onCommitProton = onCommitProton
+        self.onMoveToClipboard = onMoveToClipboard
         self.onDelete = onDelete
     }
 
@@ -144,6 +147,12 @@ struct NJBlockHostView: View {
 
         tagNewText = ""
         showTagSheet = true
+    }
+
+    private func replaceTag(_ from: String, with to: String) {
+        guard !from.isEmpty, !to.isEmpty else { return }
+        let updated = tagDraft.map { $0 == from ? to : $0 }
+        tagDraft = uniqPreserveOrder(updated)
     }
 
     var body: some View {
@@ -248,6 +257,12 @@ struct NJBlockHostView: View {
                         .disabled(onAddGoal == nil)
 
                         Divider()
+                        Button { onMoveToClipboard?() } label: {
+                            Label("Move Block…", systemImage: "arrow.up.doc")
+                        }
+                        .disabled(onMoveToClipboard == nil)
+
+                        Divider()
                         Button {
                             showClipMenu = true
                         } label: {
@@ -299,6 +314,25 @@ struct NJBlockHostView: View {
                     }
 
                     Section("Block Tags") {
+                        let hasRemind = tagDraft.contains("#REMIND")
+                        let hasPlanning = tagDraft.contains("#PLANNING")
+                        if hasRemind || hasPlanning {
+                            HStack(spacing: 10) {
+                                if hasRemind {
+                                    Button("Reminded") {
+                                        replaceTag("#REMIND", with: "#REMINDED")
+                                    }
+                                    .buttonStyle(.bordered)
+                                }
+                                if hasPlanning {
+                                    Button("Planned") {
+                                        replaceTag("#PLANNING", with: "#PLANNED")
+                                    }
+                                    .buttonStyle(.bordered)
+                                }
+                            }
+                        }
+
                         if tagDraft.isEmpty {
                             Text("(none)")
                                 .foregroundStyle(.secondary)

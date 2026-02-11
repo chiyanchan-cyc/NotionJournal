@@ -33,8 +33,28 @@ extension DBNoteRepository {
         noteTable.listNotes(tabDomainKey: tabDomainKey)
     }
 
+    func listNotesByDateRange(startMs: Int64, endMs: Int64) -> [NJNote] {
+        noteTable.listNotesByDateRange(startMs: startMs, endMs: endMs)
+    }
+
+    func loadBlock(blockID: String) -> [String: Any]? {
+        blockTable.loadNJBlock(blockID: blockID)
+    }
+
     func getNote(_ id: NJNoteID) -> NJNote? {
         noteTable.getNote(id)
+    }
+
+    func loadBlockTagJSON(blockID: String) -> String {
+        blockTable.loadNJBlock(blockID: blockID)?["tag_json"] as? String ?? ""
+    }
+
+    func updateBlockTagJSON(blockID: String, tagJSON: String, nowMs: Int64) {
+        blockTable.updateBlockTagJSON(blockID: blockID, tagJSON: tagJSON, updatedAtMs: nowMs)
+    }
+
+    func markNoteBlockDeleted(instanceID: String, nowMs: Int64) {
+        noteBlockTable.markNoteBlockDeleted(instanceID: instanceID, nowMs: nowMs)
     }
 
     func createNote(notebook: String, tabDomain: String, title: String) -> NJNote {

@@ -48,7 +48,12 @@ struct RootView: View {
                             ContentUnavailableView("Select a goal", systemImage: "target")
                         }
                     case .outline:
-                        ContentUnavailableView("Outline", systemImage: "list.bullet.rectangle")
+                        if let id = store.selectedOutlineNodeID {
+                            NJOutlineDetailView(outline: store.outline, nodeID: id)
+                                .environmentObject(store)
+                        } else {
+                            ContentUnavailableView("Select a node", systemImage: "list.bullet.rectangle")
+                        }
                     }
                 }
                 .onAppear {

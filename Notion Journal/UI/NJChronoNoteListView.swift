@@ -1,44 +1,35 @@
-//
-//  NJReconstructedNoteView.swift
-//  Notion Journal
-//
-//  Created by Mac on 2026/1/23.
-//
-
 import SwiftUI
-import Combine
-import UIKit
 import Proton
-import os
 import PhotosUI
 
-private let NJShortcutLog = Logger(subsystem: "NotionJournal", category: "Shortcuts")
-
-
-struct NJReconstructedNoteView: View {
+struct NJChronoNoteListView: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) private var dismiss
-    
-    let spec: NJReconstructedSpec
-    
+
+    @State private var fromDate: Date = Date()
+    @State private var toDate: Date = Date()
+    @State private var newestFirst: Bool = true
+    @State private var excludeTagsText: String = "#WEEKLY"
+
     @StateObject private var persistence: NJReconstructedNotePersistence
-    
+
     @State private var loaded = false
     @State private var pendingFocusID: UUID? = nil
     @State private var pendingFocusToStart: Bool = false
     @State private var pickedPhotoItem: PhotosPickerItem? = nil
-    
-    init(spec: NJReconstructedSpec) {
-        self.spec = spec
+
+    init() {
+        let spec = NJReconstructedSpec.all()
         _persistence = StateObject(wrappedValue: NJReconstructedNotePersistence(spec: spec))
     }
-    
+
     var body: some View {
         VStack(spacing: 0) {
-            header()
+            filterBar()
             Divider()
             list()
         }
+        .navigationTitle("Chrono Blocks")
         .overlay(NJHiddenShortcuts(getHandle: { focusedHandle() }))
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if let h = focusedHandle() {
@@ -48,50 +39,60 @@ struct NJReconstructedNoteView: View {
                     .background(.ultraThinMaterial)
             }
         }
-        .toolbar { toolbar() }
-        .task { onLoadOnce() }
-        .onChange(of: store.sync.initialPullCompleted) { _ in
-            onLoadOnce()
-        }
-        .onDisappear { forceCommitFocusedIfAny() }
-        // Add these lines to allow it to resize/popup on iPadOS
-        .presentationDetents([.height(600), .large])
-        .presentationDragIndicator(.visible)
-    }
-    
-    private func header() -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .center) {
-                Text(persistence.tab.isEmpty ? "" : persistence.tab)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Close") { dismiss() }
+            }
+            ToolbarItem(placement: .confirmationAction) {
                 Button {
                     reloadNow()
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
-                .buttonStyle(.bordered)
             }
-            .padding(.top, 10)
+        }
+        .task { onLoadOnce() }
+        .onChange(of: store.sync.initialPullCompleted) { _ in onLoadOnce() }
+        .onChange(of: fromDate) { _, _ in reloadNow() }
+        .onChange(of: toDate) { _, _ in reloadNow() }
+        .onChange(of: newestFirst) { _, _ in reloadNow() }
+        .onChange(of: excludeTagsText) { _, _ in reloadNow() }
+        .onDisappear { forceCommitFocusedIfAny() }
+        .presentationDetents([.height(650), .large])
+        .presentationDragIndicator(.visible)
+    }
 
-            Text(persistence.title)
-                .font(.title2)
-                .fontWeight(.semibold)
+    private func filterBar() -> some View {
+        HStack(spacing: 12) {
+            DatePicker("From", selection: $fromDate, displayedComponents: .date)
+                .datePickerStyle(.compact)
+            DatePicker("To", selection: $toDate, displayedComponents: .date)
+                .datePickerStyle(.compact)
+            Toggle("Newest first", isOn: $newestFirst)
+                .toggleStyle(.switch)
+            TextField("Exclude tags (comma)", text: $excludeTagsText)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled(true)
+            Spacer()
         }
         .padding(.horizontal, 12)
-        .padding(.bottom, 10)
+        .padding(.vertical, 8)
     }
-    
+
     private func list() -> some View {
         List {
-            ForEach(persistence.blocks, id: \.id) { b in
-                row(b)
+            if persistence.blocks.isEmpty {
+                Text("No blocks in range")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(persistence.blocks, id: \.id) { b in
+                    row(b)
+                }
             }
         }
         .listStyle(.plain)
     }
-    
+
     private func row(_ b: NJNoteEditorContainerPersistence.BlockState) -> some View {
         let id = b.id
         let h = b.protonHandle
@@ -107,7 +108,7 @@ struct NJReconstructedNoteView: View {
             persistence.markDirty(id)
             persistence.scheduleCommit(id)
         }
-        
+
         return NJBlockHostView(
             index: rowIndex,
             createdAtMs: b.createdAtMs,
@@ -166,51 +167,32 @@ struct NJReconstructedNoteView: View {
             }
         }
     }
-    
-    @ToolbarContentBuilder
-    private func toolbar() -> some ToolbarContent {
-        ToolbarItem(placement: .topBarLeading) {
-            Button {
-                forceCommitFocusedIfAny()
-                dismiss()
-            } label: {
-                Image(systemName: "xmark")
-            }
-        }
-        
-        ToolbarItemGroup(placement: .topBarTrailing) {
-            Button {
-                forceCommitFocusedIfAny()
-                reloadNow()
-            } label: {
-                Image(systemName: "arrow.clockwise")
-            }
-        }
-    }
 
-    private func reloadNow() {
-        forceCommitFocusedIfAny()
-        persistence.reload(makeHandle: {
-            let h = NJProtonEditorHandle()
-            h.attachmentResolver = { [weak store] id in
-                store?.notes.attachmentByID(id)
-            }
-            h.attachmentThumbPathCleaner = { [weak store] id in
-                store?.notes.clearAttachmentThumbPath(attachmentID: id, nowMs: DBNoteRepository.nowMs())
-            }
-            h.onOpenFullPhoto = { id in
-                NJPhotoLibraryPresenter.presentFullPhoto(localIdentifier: id)
-            }
-            return h
-        })
-    }
-    
     private func onLoadOnce() {
         if loaded { return }
         if !store.sync.initialPullCompleted { return }
         loaded = true
+        let (start, end) = weekRange(for: Date())
+        fromDate = start
+        toDate = end
         persistence.configure(store: store)
         NJLocalBLRunner(db: store.db).run(.deriveBlockTagIndexAndDomainV1)
+        reloadNow()
+    }
+
+    private func reloadNow() {
+        if !loaded { return }
+        forceCommitFocusedIfAny()
+        let start = startOfDayMs(fromDate)
+        let end = endOfDayMs(toDate)
+        let excludeTags = parseExcludeTags(excludeTagsText)
+        let spec = NJReconstructedSpec.all(
+            startMs: start,
+            endMs: end,
+            limit: 3000,
+            newestFirst: newestFirst,
+            excludeTags: excludeTags
+        )
         persistence.updateSpec(spec)
         persistence.reload(makeHandle: {
             let h = NJProtonEditorHandle()
@@ -226,13 +208,13 @@ struct NJReconstructedNoteView: View {
             return h
         })
     }
-    
+
     private func forceCommitFocusedIfAny() {
         if let id = persistence.focusedBlockID {
             persistence.forceEndEditingAndCommitNow(id)
         }
     }
-    
+
     private func bindingCollapsed(_ id: UUID) -> Binding<Bool> {
         Binding(
             get: { persistence.blocks.first(where: { $0.id == id })?.isCollapsed ?? false },
@@ -241,7 +223,7 @@ struct NJReconstructedNoteView: View {
             }
         )
     }
-    
+
     private func bindingAttr(_ id: UUID) -> Binding<NSAttributedString> {
         Binding(
             get: { persistence.blocks.first(where: { $0.id == id })?.attr ?? NSAttributedString(string: "\u{200B}") },
@@ -259,7 +241,7 @@ struct NJReconstructedNoteView: View {
             }
         )
     }
-    
+
     private func bindingSel(_ id: UUID) -> Binding<NSRange> {
         Binding(
             get: { persistence.blocks.first(where: { $0.id == id })?.sel ?? NSRange(location: 0, length: 0) },
@@ -278,10 +260,38 @@ struct NJReconstructedNoteView: View {
         return persistence.blocks.first(where: { $0.id == id })?.protonHandle
     }
 
-    
+    private func startOfDayMs(_ date: Date) -> Int64 {
+        let cal = Calendar(identifier: .gregorian)
+        let d = cal.startOfDay(for: date)
+        return Int64(d.timeIntervalSince1970 * 1000.0)
+    }
+
+    private func endOfDayMs(_ date: Date) -> Int64 {
+        var cal = Calendar(identifier: .gregorian)
+        cal.locale = Locale(identifier: "en_US_POSIX")
+        let start = cal.startOfDay(for: date)
+        let next = cal.date(byAdding: .day, value: 1, to: start) ?? start
+        let end = next.addingTimeInterval(-1)
+        return Int64(end.timeIntervalSince1970 * 1000.0)
+    }
+
+    private func weekRange(for date: Date) -> (Date, Date) {
+        var cal = Calendar(identifier: .gregorian)
+        cal.firstWeekday = 1 // Sunday
+        let startOfDay = cal.startOfDay(for: date)
+        let weekday = cal.component(.weekday, from: startOfDay)
+        let delta = weekday - cal.firstWeekday
+        let start = cal.date(byAdding: .day, value: -delta, to: startOfDay) ?? startOfDay
+        let end = cal.date(byAdding: .day, value: 6, to: start) ?? start
+        return (start, end)
+    }
+
+    private func parseExcludeTags(_ raw: String) -> [String] {
+        raw.split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
 }
-
-
 
 private struct NJHiddenShortcuts: View {
     let getHandle: () -> NJProtonEditorHandle?
@@ -311,11 +321,6 @@ private struct NJHiddenShortcuts: View {
 
             Button("") { fire { $0.outdent() } }
                 .keyboardShortcut("[", modifiers: .command)
-            Button("") {
-                NJShortcutLog.info("SHORTCUT TEST CMD+K HIT")
-            }
-            .keyboardShortcut("k", modifiers: .command)
-
         }
         .opacity(0.001)
         .frame(width: 1, height: 1)
@@ -323,16 +328,8 @@ private struct NJHiddenShortcuts: View {
     }
 
     private func fire(_ f: (NJProtonEditorHandle) -> Void) {
-        NJShortcutLog.info("SHORTCUT HIT (SwiftUI layer)")
-
-        guard let h = getHandle() else {
-            NJShortcutLog.error("SHORTCUT: getHandle() returned nil")
-            return
-        }
-
-        NJShortcutLog.info("SHORTCUT: has handle owner=\(String(describing: h.ownerBlockUUID)) editor_nil=\(h.editor == nil) tv_nil=\(h.textView == nil)")
+        guard let h = getHandle() else { return }
         f(h)
         h.snapshot()
     }
-
 }

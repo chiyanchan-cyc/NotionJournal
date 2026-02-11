@@ -11,6 +11,7 @@ import Foundation
 enum NJReconstructedTagMatch: Equatable {
     case exact(String)
     case prefix(String)
+    case all
 }
 
 enum NJReconstructedTimeField: Equatable {
@@ -32,6 +33,7 @@ struct NJReconstructedSpec: Equatable, Identifiable {
 
     var limit: Int
     var newestFirst: Bool
+    var excludeTags: [String]
 
     static func weekly() -> NJReconstructedSpec {
         var calendar = Calendar(identifier: .gregorian)
@@ -57,7 +59,8 @@ struct NJReconstructedSpec: Equatable, Identifiable {
             startMs: startMs,
             endMs: endMs,
             limit: 500,
-            newestFirst: true
+            newestFirst: true,
+            excludeTags: []
         )
     }
 
@@ -71,7 +74,8 @@ struct NJReconstructedSpec: Equatable, Identifiable {
             startMs: startMs,
             endMs: endMs,
             limit: limit,
-            newestFirst: newestFirst
+            newestFirst: newestFirst,
+            excludeTags: []
         )
     }
 
@@ -85,7 +89,24 @@ struct NJReconstructedSpec: Equatable, Identifiable {
             startMs: startMs,
             endMs: endMs,
             limit: limit,
-            newestFirst: newestFirst
+            newestFirst: newestFirst,
+            excludeTags: []
+        )
+    }
+
+    static func all(startMs: Int64? = nil, endMs: Int64? = nil, limit: Int = 1000, newestFirst: Bool = true, excludeTags: [String] = []) -> NJReconstructedSpec {
+        let excludeKey = excludeTags.map { $0.lowercased() }.joined(separator: "|")
+        return NJReconstructedSpec(
+            id: "recon:all:\(startMs ?? 0):\(endMs ?? 0):\(excludeKey)",
+            title: "ALL",
+            tab: "RECONSTRUCTED",
+            match: .all,
+            timeField: .blockCreatedAtMs,
+            startMs: startMs,
+            endMs: endMs,
+            limit: limit,
+            newestFirst: newestFirst,
+            excludeTags: excludeTags
         )
     }
 }

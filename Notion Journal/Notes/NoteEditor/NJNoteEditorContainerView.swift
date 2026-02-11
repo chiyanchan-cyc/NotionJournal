@@ -108,18 +108,38 @@ struct NJNoteEditorContainerView: View {
                     let onDeleteBlock: () -> Void = { blockBus.delete(id) }
                     let onHydrateBlock: () -> Void = { persistence.hydrateProton(id) }
 
-                    let inherited: [String] = []
+                    let inherited: [String] = {
+                        let t = persistence.tab.trimmingCharacters(in: .whitespacesAndNewlines)
+                        return t.isEmpty ? [] : [t]
+                    }()
                     let editable: [String] = []
 
                     let liveTagJSON: String? = persistence.blocks.first(where: { $0.id == id })?.tagJSON
 
                     let onSaveTags: (String) -> Void = { newJSON in
+                        let merged = mergeTagJSONWithInherited(json: newJSON, inheritedTags: inherited)
                         if let i = persistence.blocks.firstIndex(where: { $0.id == id }) {
-                            persistence.blocks[i].tagJSON = newJSON
+                            persistence.blocks[i].tagJSON = merged
                             persistence.blocks = Array(persistence.blocks)
                         }
                         persistence.markDirty(id)
                         persistence.scheduleCommit(id)
+                    }
+                    
+                    let onMoveToClipboard: () -> Void = {
+                        persistence.forceEndEditingAndCommitNow(id)
+                        guard let i = persistence.blocks.firstIndex(where: { $0.id == id }) else { return }
+                        let b = persistence.blocks[i]
+                        guard !b.instanceID.isEmpty else { return }
+                        let preview = firstLinePreview(b.attr)
+                        let fromDomain = persistence.tab.trimmingCharacters(in: .whitespacesAndNewlines)
+                        store.pendingMoveBlock = NJPendingMoveBlock(
+                            blockID: b.blockID,
+                            instanceID: b.instanceID,
+                            fromNoteID: noteID.raw,
+                            fromNoteDomain: fromDomain,
+                            preview: preview
+                        )
                     }
 
                     let rel = b.clipPDFRel.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -146,6 +166,7 @@ struct NJNoteEditorContainerView: View {
                         onDelete: onDeleteBlock,
                         onHydrateProton: onHydrateBlock,
                         onCommitProton: onCommitBlock,
+                        onMoveToClipboard: onMoveToClipboard,
                         inheritedTags: inherited,
                         editableTags: editable,
                         tagJSON: liveTagJSON,
@@ -196,6 +217,10 @@ struct NJNoteEditorContainerView: View {
                     showClipboardInbox = true
                 } label: {
                     Image(systemName: "doc.on.clipboard")
+                        .overlay(alignment: .topTrailing) {
+                            NJBadgeCountView(count: store.quickClipboardCount)
+                                .offset(x: 6, y: -6)
+                        }
                 }
 
                 Button {
@@ -211,7 +236,7 @@ struct NJNoteEditorContainerView: View {
                 }
 
                 Button {
-                    addBlock(after: persistence.focusedBlockID)
+                    addBlock(after: nil)
                 } label: {
                     Image(systemName: persistence.focusedBlockID == nil ? "plus.square" : "square.on.square")
                 }
@@ -311,6 +336,15 @@ struct NJNoteEditorContainerView: View {
         return ext == "pdf"
     }
 
+    private func firstLinePreview(_ attr: NSAttributedString) -> String {
+        let s = attr.string
+            .replacingOccurrences(of: "\u{FFFC}", with: "")
+            .replacingOccurrences(of: "\u{200B}", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.isEmpty { return "" }
+        return s.split(whereSeparator: \.isNewline).first.map { String($0) } ?? ""
+    }
+
     private func clipPDFURLFromRel(_ rel: String) -> URL? {
         let r = rel.trimmingCharacters(in: .whitespacesAndNewlines)
         if r.isEmpty { return nil }
@@ -357,6 +391,28 @@ struct NJNoteEditorContainerView: View {
     private func focusedHandle() -> NJProtonEditorHandle? {
         guard let id = persistence.focusedBlockID else { return nil }
         return persistence.blocks.first(where: { $0.id == id })?.protonHandle
+    }
+
+    private func mergeTagJSONWithInherited(json: String, inheritedTags: [String]) -> String {
+        let base: [String] = {
+            guard let data = json.data(using: .utf8),
+                  let arr = try? JSONSerialization.jsonObject(with: data) as? [String]
+            else { return [] }
+            return arr
+        }()
+        if inheritedTags.isEmpty { return json }
+        var merged = base
+        for t in inheritedTags {
+            let tt = t.trimmingCharacters(in: .whitespacesAndNewlines)
+            if tt.isEmpty { continue }
+            if merged.contains(where: { $0.caseInsensitiveCompare(tt) == .orderedSame }) { continue }
+            merged.append(tt)
+        }
+        if let data = try? JSONSerialization.data(withJSONObject: merged),
+           let s = String(data: data, encoding: .utf8) {
+            return s
+        }
+        return json
     }
 
     func bindingAttr(_ id: UUID) -> Binding<NSAttributedString> {

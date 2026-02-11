@@ -71,6 +71,8 @@ extension NJNoteEditorContainerView {
             newKey = 1000
         }
 
+        let inheritedTagJSON = inheritedNoteTagJSON()
+
         let new = NJNoteEditorContainerPersistence.BlockState(
             id: newID,
             blockID: UUID().uuidString,
@@ -80,7 +82,8 @@ extension NJNoteEditorContainerView {
             sel: NSRange(location: 0, length: 0),
             isCollapsed: false,
             protonHandle: handle,
-            isDirty: true
+            isDirty: true,
+            tagJSON: inheritedTagJSON
         )
 
         persistence.blocks.insert(new, at: insertAt)
@@ -170,6 +173,16 @@ extension NJNoteEditorContainerView {
         return NSAttributedString(string: line + zwsp, attributes: baseAttrs())
     }
 
+    private func inheritedNoteTagJSON() -> String {
+        let t = persistence.tab.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.isEmpty { return "" }
+        if let data = try? JSONSerialization.data(withJSONObject: [t]),
+           let s = String(data: data, encoding: .utf8) {
+            return s
+        }
+        return ""
+    }
+
 
     func deleteBlock(_ id: UUID) {
         if persistence.focusedBlockID == id {
@@ -236,6 +249,9 @@ extension NJNoteEditorContainerView {
     }
 
     func moveBlocks(from source: IndexSet, to destination: Int) {
+        if let fid = persistence.focusedBlockID {
+            persistence.forceEndEditingAndCommitNow(fid)
+        }
         persistence.blocks.move(fromOffsets: source, toOffset: destination)
 
         for idx in persistence.blocks.indices {
@@ -248,6 +264,7 @@ extension NJNoteEditorContainerView {
                 }
             }
         }
+        persistence.blocks = Array(persistence.blocks)
     }
 
 }

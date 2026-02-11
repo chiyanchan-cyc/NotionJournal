@@ -34,7 +34,6 @@ struct ModuleTopBar: View {
                     .frame(width: itemW, height: itemH)
                 }
                 .buttonStyle(.plain)
-                .disabled(item.id == "outline")
             }
         }
         .padding(.horizontal, 6)
@@ -59,21 +58,17 @@ struct ModuleToolbarButtons: View {
                 Button {
                     item.action()
                 } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: item.systemImage)
-                            .font(.system(size: 12, weight: .semibold))
-                        Text(item.title)
-                            .font(.system(size: 12, weight: .semibold))
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(item.isOn ? Color.accentColor.opacity(0.22) : Color(UIColor.secondarySystemBackground))
-                    )
+                    Label(item.title, systemImage: item.systemImage)
+                        .labelStyle(.iconOnly)
+                        .font(.system(size: 12, weight: .semibold))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(item.isOn ? Color.accentColor.opacity(0.22) : Color(UIColor.secondarySystemBackground))
+                        )
                 }
                 .buttonStyle(.plain)
-                .disabled(item.id == "outline")
             }
         }
     }

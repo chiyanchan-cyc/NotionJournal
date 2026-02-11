@@ -91,6 +91,10 @@ struct NJGoalDetailWorkspaceView: View {
                     showClipboardAttach = true
                 } label: {
                     Image(systemName: "doc.on.clipboard")
+                        .overlay(alignment: .topTrailing) {
+                            NJBadgeCountView(count: store.quickClipboardCount)
+                                .offset(x: 6, y: -6)
+                        }
                 }
                 .buttonStyle(.bordered)
                 Button(role: .destructive) {
@@ -269,6 +273,7 @@ struct NJGoalDetailWorkspaceView: View {
             onDelete: { persistence.deleteProgressBlock(id) },
             onHydrateProton: { persistence.hydrateProgress(id) },
             onCommitProton: { persistence.commitProgress(id) },
+            onMoveToClipboard: nil,
             inheritedTags: inherited,
             editableTags: [],
             tagJSON: b.tagJSON,
@@ -280,7 +285,7 @@ struct NJGoalDetailWorkspaceView: View {
         .id(id)
         .fixedSize(horizontal: false, vertical: true)
         .listRowInsets(EdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 12))
-        .listRowBackground(Color.green.opacity(0.08))
+        .listRowBackground(Color.green.opacity(0.16))
         .listRowSeparator(.hidden)
         .onAppear { persistence.hydrateProgress(id) }
         return AnyView(view)
@@ -315,6 +320,7 @@ struct NJGoalDetailWorkspaceView: View {
             onDelete: { },
             onHydrateProton: { persistence.hydrateTimeline(id) },
             onCommitProton: { persistence.commitTimeline(id) },
+            onMoveToClipboard: nil,
             inheritedTags: inherited,
             editableTags: [],
             tagJSON: b.tagJSON,

@@ -186,6 +186,7 @@ final class NJReconstructedNotePersistence: ObservableObject {
 
 
     private func sqlWhereForSpec() -> (whereSQL: String, binder: (OpaquePointer?) -> Void) {
+        let spec = self.spec
         var startMs = spec.startMs
         var endMs = spec.endMs
 
@@ -201,6 +202,9 @@ final class NJReconstructedNotePersistence: ObservableObject {
         }
 
         let timeExpr: String = {
+            if case .all = spec.match {
+                return "b.created_at_ms"
+            }
             switch spec.timeField {
             case .blockCreatedAtMs:
                 return "b.created_at_ms"
@@ -214,7 +218,7 @@ final class NJReconstructedNotePersistence: ObservableObject {
             let d = Date(timeIntervalSince1970: Double(ms) / 1000.0)
             return "\(ms) (\(d))"
         }
-        print("NJ_RECON_SPEC id=\(spec.id) match=\(spec.match) timeField=\(spec.timeField) startMs=\(fmt(startMs)) endMs=\(fmt(endMs)) timeExpr=\(timeExpr)")
+        print("NJ_RECON_SPEC id=\(spec.id) match=\(spec.match) timeField=\(spec.timeField) startMs=\(fmt(startMs)) endMs=\(fmt(endMs)) timeExpr=\(timeExpr) exclude=\(spec.excludeTags)")
 
         switch spec.match {
         case .exact(let tagRaw):
@@ -227,6 +231,9 @@ final class NJReconstructedNotePersistence: ObservableObject {
             whereParts.append("(lower(t.tag)=lower(?) OR lower(t.tag)=lower(?))")
             if startMs != nil { whereParts.append("\(timeExpr) >= ?") }
             if endMs != nil { whereParts.append("\(timeExpr) <= ?") }
+            for _ in spec.excludeTags {
+                whereParts.append("t.block_id NOT IN (SELECT block_id FROM nj_block_tag WHERE lower(tag)=lower(?))")
+            }
             let whereSQL = whereParts.joined(separator: " AND ")
             let binder: (OpaquePointer?) -> Void = { stmt in
                 guard let stmt else { return }
@@ -238,6 +245,9 @@ final class NJReconstructedNotePersistence: ObservableObject {
                 }
                 if let endMs {
                     sqlite3_bind_int64(stmt, i, endMs); i += 1
+                }
+                for t in spec.excludeTags {
+                    sqlite3_bind_text(stmt, i, t, -1, SQLITE_TRANSIENT); i += 1
                 }
             }
             print("NJ_RECON_WHERE exact sql=\(whereSQL) tagA=\(tagA) tagB=\(tagB)")
@@ -253,6 +263,9 @@ final class NJReconstructedNotePersistence: ObservableObject {
             whereParts.append("(lower(t.tag) LIKE ? OR lower(t.tag) LIKE ?)")
             if startMs != nil { whereParts.append("\(timeExpr) >= ?") }
             if endMs != nil { whereParts.append("\(timeExpr) <= ?") }
+            for _ in spec.excludeTags {
+                whereParts.append("t.block_id NOT IN (SELECT block_id FROM nj_block_tag WHERE lower(tag)=lower(?))")
+            }
             let whereSQL = whereParts.joined(separator: " AND ")
             let binder: (OpaquePointer?) -> Void = { stmt in
                 guard let stmt else { return }
@@ -265,8 +278,35 @@ final class NJReconstructedNotePersistence: ObservableObject {
                 if let endMs {
                     sqlite3_bind_int64(stmt, i, endMs); i += 1
                 }
+                for t in spec.excludeTags {
+                    sqlite3_bind_text(stmt, i, t, -1, SQLITE_TRANSIENT); i += 1
+                }
             }
             print("NJ_RECON_WHERE prefix sql=\(whereSQL) like1=\(like1) like2=\(like2)")
+            return (whereSQL, binder)
+        case .all:
+            var whereParts: [String] = []
+            whereParts.append("(b.deleted IS NULL OR b.deleted = 0)")
+            if startMs != nil { whereParts.append("\(timeExpr) >= ?") }
+            if endMs != nil { whereParts.append("\(timeExpr) <= ?") }
+            for _ in spec.excludeTags {
+                whereParts.append("b.block_id NOT IN (SELECT block_id FROM nj_block_tag WHERE lower(tag)=lower(?))")
+            }
+            let whereSQL = whereParts.joined(separator: " AND ")
+            let binder: (OpaquePointer?) -> Void = { stmt in
+                guard let stmt else { return }
+                var i: Int32 = 1
+                if let startMs {
+                    sqlite3_bind_int64(stmt, i, startMs); i += 1
+                }
+                if let endMs {
+                    sqlite3_bind_int64(stmt, i, endMs); i += 1
+                }
+                for t in spec.excludeTags {
+                    sqlite3_bind_text(stmt, i, t, -1, SQLITE_TRANSIENT); i += 1
+                }
+            }
+            print("NJ_RECON_WHERE all sql=\(whereSQL)")
             return (whereSQL, binder)
         }
     }
@@ -361,64 +401,92 @@ final class NJReconstructedNotePersistence: ObservableObject {
             let (whereSQL, binder) = sqlWhereForSpec()
             let orderSQL = spec.newestFirst ? "DESC" : "ASC"
 
-        let timeExpr: String = {
-            switch spec.timeField {
-            case .blockCreatedAtMs:
-                return "b.created_at_ms"
-            case .tagCreatedAtMs:
-                return "t.created_at_ms"
-            }
-        }()
+            switch spec.match {
+            case .all:
+                let sql = """
+                SELECT b.block_id
+                FROM nj_block b
+                WHERE \(whereSQL)
+                ORDER BY b.created_at_ms \(orderSQL)
+                LIMIT ?;
+                """
+                print("NJ_RECON_QUERY all sql=\(sql) limit=\(spec.limit) newestFirst=\(spec.newestFirst)")
+                let rc0 = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
+                if rc0 != SQLITE_OK {
+                    let msg = String(cString: sqlite3_errmsg(dbp))
+                    print("NJ_RECON IDS_PREP_FAIL rc=\(rc0) msg=\(msg)")
+                    return []
+                }
+                defer { sqlite3_finalize(stmt) }
+                binder(stmt)
+                let n = sqlite3_bind_parameter_count(stmt)
+                sqlite3_bind_int(stmt, n, Int32(max(1, spec.limit)))
+                while sqlite3_step(stmt) == SQLITE_ROW {
+                    if let c = sqlite3_column_text(stmt, 0) {
+                        let s = String(cString: c).trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !s.isEmpty { out.append(s) }
+                    }
+                }
+            default:
+                let timeExpr: String = {
+                    switch spec.timeField {
+                    case .blockCreatedAtMs:
+                        return "b.created_at_ms"
+                    case .tagCreatedAtMs:
+                        return "t.created_at_ms"
+                    }
+                }()
 
-            let sql = """
-            SELECT t.block_id
-            FROM nj_block_tag t
-            LEFT JOIN nj_block b
-              ON b.block_id = t.block_id COLLATE NOCASE
-            WHERE \(whereSQL)
-            GROUP BY t.block_id
-            ORDER BY \(timeExpr) \(orderSQL)
-            LIMIT ?;
-            """
-            print("NJ_RECON_QUERY sql=\(sql) limit=\(spec.limit) newestFirst=\(spec.newestFirst)")
-
-            // Debug counts for tag-only vs tag+time
-            do {
-                var stmtCount: OpaquePointer?
-                let countSQL = """
-                SELECT COUNT(*)
+                let sql = """
+                SELECT t.block_id
                 FROM nj_block_tag t
                 LEFT JOIN nj_block b
                   ON b.block_id = t.block_id COLLATE NOCASE
-                WHERE \(whereSQL);
+                WHERE \(whereSQL)
+                GROUP BY t.block_id
+                ORDER BY \(timeExpr) \(orderSQL)
+                LIMIT ?;
                 """
-                if sqlite3_prepare_v2(dbp, countSQL, -1, &stmtCount, nil) == SQLITE_OK {
-                    defer { sqlite3_finalize(stmtCount) }
-                    binder(stmtCount)
-                    if sqlite3_step(stmtCount) == SQLITE_ROW {
-                        let c = sqlite3_column_int64(stmtCount, 0)
-                        print("NJ_RECON_COUNT where_count=\(c)")
+                print("NJ_RECON_QUERY sql=\(sql) limit=\(spec.limit) newestFirst=\(spec.newestFirst)")
+
+                // Debug counts for tag-only vs tag+time
+                do {
+                    var stmtCount: OpaquePointer?
+                    let countSQL = """
+                    SELECT COUNT(*)
+                    FROM nj_block_tag t
+                    LEFT JOIN nj_block b
+                      ON b.block_id = t.block_id COLLATE NOCASE
+                    WHERE \(whereSQL);
+                    """
+                    if sqlite3_prepare_v2(dbp, countSQL, -1, &stmtCount, nil) == SQLITE_OK {
+                        defer { sqlite3_finalize(stmtCount) }
+                        binder(stmtCount)
+                        if sqlite3_step(stmtCount) == SQLITE_ROW {
+                            let c = sqlite3_column_int64(stmtCount, 0)
+                            print("NJ_RECON_COUNT where_count=\(c)")
+                        }
                     }
                 }
-            }
 
-            let rc0 = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
-            if rc0 != SQLITE_OK {
-                let msg = String(cString: sqlite3_errmsg(dbp))
-                print("NJ_RECON IDS_PREP_FAIL rc=\(rc0) msg=\(msg)")
-                return []
-            }
-            defer { sqlite3_finalize(stmt) }
+                let rc0 = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
+                if rc0 != SQLITE_OK {
+                    let msg = String(cString: sqlite3_errmsg(dbp))
+                    print("NJ_RECON IDS_PREP_FAIL rc=\(rc0) msg=\(msg)")
+                    return []
+                }
+                defer { sqlite3_finalize(stmt) }
 
-            binder(stmt)
+                binder(stmt)
 
-            let n = sqlite3_bind_parameter_count(stmt)
-            sqlite3_bind_int(stmt, n, Int32(max(1, spec.limit)))
+                let n = sqlite3_bind_parameter_count(stmt)
+                sqlite3_bind_int(stmt, n, Int32(max(1, spec.limit)))
 
-            while sqlite3_step(stmt) == SQLITE_ROW {
-                if let c = sqlite3_column_text(stmt, 0) {
-                    let s = String(cString: c).trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !s.isEmpty { out.append(s) }
+                while sqlite3_step(stmt) == SQLITE_ROW {
+                    if let c = sqlite3_column_text(stmt, 0) {
+                        let s = String(cString: c).trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !s.isEmpty { out.append(s) }
+                    }
                 }
             }
 
@@ -511,12 +579,16 @@ final class NJReconstructedNotePersistence: ObservableObject {
             ok += 1
         }
 
-        // Sort by first line (case-insensitive), then by created time (newest first).
-        out.sort {
-            let a = firstLineKey($0.attr).lowercased()
-            let b = firstLineKey($1.attr).lowercased()
-            if a != b { return a < b }
-            return $0.createdAtMs > $1.createdAtMs
+        if case .all = spec.match {
+            out.sort { spec.newestFirst ? ($0.createdAtMs > $1.createdAtMs) : ($0.createdAtMs < $1.createdAtMs) }
+        } else {
+            // Sort by first line (case-insensitive), then by created time (newest first).
+            out.sort {
+                let a = firstLineKey($0.attr).lowercased()
+                let b = firstLineKey($1.attr).lowercased()
+                if a != b { return a < b }
+                return $0.createdAtMs > $1.createdAtMs
+            }
         }
 
         blocks = out
@@ -653,13 +725,12 @@ final class NJReconstructedNotePersistence: ObservableObject {
         let originalSel  = editor.selectedRange
 
         if let cleaned = tagRes?.cleaned {
-            editor.attributedText = cleaned
+            editor.setAttributedTextSafely(cleaned, targetSelection: originalSel)
         }
 
         let protonJSON = b.protonHandle.exportProtonJSONString()
 
-        editor.attributedText = originalAttr
-        editor.selectedRange = originalSel
+        editor.setAttributedTextSafely(originalAttr, targetSelection: originalSel)
 
         b.protonJSON = protonJSON
         blocks[i].protonJSON = protonJSON

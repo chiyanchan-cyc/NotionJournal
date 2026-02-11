@@ -64,8 +64,20 @@ final class DBNoteRepository {
         blockTable.listOrphanAudioBlocks(limit: limit)
     }
 
+    func listOrphanQuickBlocks(limit: Int = 200) -> [DBBlockTable.NJOrphanQuickRow] {
+        blockTable.listOrphanQuickBlocks(limit: limit)
+    }
+
     func listAudioBlocks(limit: Int = 200) -> [DBBlockTable.NJAudioRow] {
         blockTable.listAudioBlocks(limit: limit)
+    }
+
+    func loadBlock(blockID: String) -> [String: Any]? {
+        blockTable.loadNJBlock(blockID: blockID)
+    }
+
+    func listNotesByDateRange(startMs: Int64, endMs: Int64) -> [NJNote] {
+        noteTable.listNotesByDateRange(startMs: startMs, endMs: endMs)
     }
 
     func lastJournaledAtMsForTag(_ tag: String) -> Int64 {
@@ -80,12 +92,49 @@ final class DBNoteRepository {
         blockTable.markBlockDeleted(blockID: blockID)
     }
 
+    func loadBlockTagJSON(blockID: String) -> String {
+        blockTable.loadNJBlock(blockID: blockID)?["tag_json"] as? String ?? ""
+    }
+
+    func updateBlockTagJSON(blockID: String, tagJSON: String, nowMs: Int64) {
+        blockTable.updateBlockTagJSON(blockID: blockID, tagJSON: tagJSON, updatedAtMs: nowMs)
+    }
+
+    func markNoteBlockDeleted(instanceID: String, nowMs: Int64) {
+        noteBlockTable.markNoteBlockDeleted(instanceID: instanceID, nowMs: nowMs)
+    }
+
     func updateBlockPayloadJSON(blockID: String, payloadJSON: String, updatedAtMs: Int64) {
         blockTable.updateBlockPayloadJSON(blockID: blockID, payloadJSON: payloadJSON, updatedAtMs: updatedAtMs)
     }
 
     func setBlockGoalID(blockID: String, goalID: String) {
         blockTable.setGoalID(blockID: blockID, goalID: goalID, updatedAtMs: Self.nowMs())
+    }
+
+    func createQuickNoteBlock(plainText: String) -> String? {
+        let trimmed = plainText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return nil }
+
+        let blockID = UUID().uuidString
+        let now = Self.nowMs()
+        let payloadJSON = NJQuickNotePayload.makePayloadJSON(from: trimmed)
+
+        blockTable.applyNJBlock([
+            "block_id": blockID,
+            "block_type": "quick",
+            "payload_json": payloadJSON,
+            "domain_tag": "",
+            "tag_json": "",
+            "goal_id": "",
+            "lineage_id": "",
+            "parent_block_id": "",
+            "created_at_ms": now,
+            "updated_at_ms": now,
+            "deleted": Int64(0)
+        ])
+
+        return blockID
     }
     
     func upsertTagsForNoteBlockInstanceID(

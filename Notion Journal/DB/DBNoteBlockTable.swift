@@ -167,4 +167,25 @@ final class DBNoteBlockTable {
             return (noteID, instanceID)
         }
     }
+
+    func markNoteBlockDeleted(instanceID: String, nowMs: Int64) {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let rc0 = sqlite3_prepare_v2(dbp, """
+            UPDATE nj_note_block
+            SET deleted=1,
+                updated_at_ms=?
+            WHERE instance_id=?;
+            """, -1, &stmt, nil)
+            if rc0 != SQLITE_OK { db.dbgErr(dbp, "markNoteBlockDeleted.prepare", rc0); return }
+            defer { sqlite3_finalize(stmt) }
+
+            sqlite3_bind_int64(stmt, 1, nowMs)
+            sqlite3_bind_text(stmt, 2, instanceID, -1, SQLITE_TRANSIENT)
+            let rc1 = sqlite3_step(stmt)
+            if rc1 != SQLITE_DONE { db.dbgErr(dbp, "markNoteBlockDeleted.step", rc1) }
+        }
+
+        enqueueDirty(entity: "note_block", entityID: instanceID, op: "upsert", updatedAtMs: nowMs)
+    }
 }

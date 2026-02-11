@@ -35,8 +35,9 @@ struct RichTextEditor: UIViewRepresentable {
         tv.textContainer.lineFragmentPadding = 0
         tv.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         tv.setContentHuggingPriority(.required, for: .vertical)
-        tv.attributedText = normalizeForAppearance(attributedText)
-        tv.selectedRange = selection
+        let normalized = normalizeForAppearance(attributedText)
+        tv.attributedText = normalized
+        tv.selectedRange = clampedRange(selection, in: normalized.length)
         tv.autocorrectionType = .yes
         tv.spellCheckingType = .yes
         tv.smartQuotesType = .yes
@@ -51,23 +52,33 @@ struct RichTextEditor: UIViewRepresentable {
         uiView.onCmdReturn = onCtrlReturn
 
         let normalized = normalizeForAppearance(attributedText)
+        let safeSelection = clampedRange(selection, in: normalized.length)
 
         if !context.coordinator.isProgrammatic {
             if uiView.attributedText != normalized {
                 context.coordinator.isProgrammatic = true
-                uiView.attributedText = normalized
+                uiView.setAttributedTextSafely(normalized, targetSelection: safeSelection)
                 context.coordinator.isProgrammatic = false
             }
 
-            if uiView.selectedRange.location != selection.location || uiView.selectedRange.length != selection.length {
+            if uiView.selectedRange.location != safeSelection.location || uiView.selectedRange.length != safeSelection.length {
                 context.coordinator.isProgrammatic = true
-                uiView.selectedRange = selection
+                uiView.selectedRange = safeSelection
                 context.coordinator.isProgrammatic = false
             }
         }
 
         uiView.applyBodyTypingDefaults()
         uiView.invalidateIntrinsicContentSize()
+    }
+
+    private func clampedRange(_ r: NSRange, in len: Int) -> NSRange {
+        if len <= 0 { return NSRange(location: 0, length: 0) }
+        var loc = r.location == NSNotFound ? 0 : r.location
+        loc = max(0, min(loc, len))
+        var l = max(0, r.length)
+        if loc + l > len { l = max(0, len - loc) }
+        return NSRange(location: loc, length: l)
     }
 
     func makeCoordinator() -> Coordinator {

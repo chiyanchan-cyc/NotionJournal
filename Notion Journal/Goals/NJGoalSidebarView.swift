@@ -32,6 +32,9 @@ struct NJGoalSidebarView: View {
         }
         .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always))
         .onAppear { reload() }
+        .onReceive(NotificationCenter.default.publisher(for: .njGoalUpdated)) { _ in
+            reload()
+        }
         .sheet(isPresented: $showGoalCreate, onDismiss: { reload() }) {
             NavigationStack {
                 NJGoalCreateSheet(repo: store.notes, originBlockID: nil)

@@ -25,13 +25,24 @@ struct NJReconstructedManualView: View {
     @State private var useDateRange: Bool = false
     @State private var pickedPhotoItem: PhotosPickerItem? = nil
 
-    init() {
-        let initialTag = "#REMIND"
+    private let onTitleChange: ((String) -> Void)?
+    private let onTagChange: ((String) -> Void)?
+    private let showsDismiss: Bool
+
+    init(
+        initialTag: String = "#REMIND",
+        showsDismiss: Bool = true,
+        onTitleChange: ((String) -> Void)? = nil,
+        onTagChange: ((String) -> Void)? = nil
+    ) {
         let initialSpec = NJReconstructedSpec.tagPrefix(initialTag)
         _persistence = StateObject(wrappedValue: NJReconstructedNotePersistence(spec: initialSpec))
         
         // You need to initialize the state variable here
         _tagInput = State(initialValue: initialTag)
+        self.onTitleChange = onTitleChange
+        self.onTagChange = onTagChange
+        self.showsDismiss = showsDismiss
     }
 
     var body: some View {
@@ -201,6 +212,7 @@ struct NJReconstructedManualView: View {
                 persistence.markDirty(id)
                 persistence.scheduleCommit(id)
             },
+            onMoveToClipboard: nil,
             inheritedTags: [],
             editableTags: [],
             tagJSON: liveTagJSON,
@@ -227,16 +239,62 @@ struct NJReconstructedManualView: View {
         }()
         let tag = tagInput.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        let newSpec = NJReconstructedSpec.tagPrefix(
-            tag,
-            startMs: startMs,
-            endMs: endMs,
-            timeField: .blockCreatedAtMs,
-            limit: 500
-        )
+        let newSpec: NJReconstructedSpec = {
+            if tag.isEmpty {
+                return NJReconstructedSpec.all(
+                    startMs: startMs,
+                    endMs: endMs,
+                    limit: 500,
+                    newestFirst: true,
+                    excludeTags: []
+                )
+            }
+
+            if tag.hasPrefix("#") {
+                return NJReconstructedSpec.tagExact(
+                    tag,
+                    startMs: startMs,
+                    endMs: endMs,
+                    timeField: .blockCreatedAtMs,
+                    limit: 500
+                )
+            }
+
+            if tag.contains("*") {
+                let prefix = tag.replacingOccurrences(of: "*", with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if prefix.isEmpty {
+                    return NJReconstructedSpec.all(
+                        startMs: startMs,
+                        endMs: endMs,
+                        limit: 500,
+                        newestFirst: true,
+                        excludeTags: []
+                    )
+                }
+                return NJReconstructedSpec.tagPrefix(
+                    prefix,
+                    startMs: startMs,
+                    endMs: endMs,
+                    timeField: .blockCreatedAtMs,
+                    limit: 500
+                )
+            }
+
+            return NJReconstructedSpec.tagExact(
+                tag,
+                startMs: startMs,
+                endMs: endMs,
+                timeField: .blockCreatedAtMs,
+                limit: 500
+            )
+        }()
 
         // Update the title shown in the header
         persistence.updateSpec(newSpec)
+        let title = tag.isEmpty ? "ALL" : tag
+        onTitleChange?(title)
+        onTagChange?(tag)
         // Trigger the reload using the existing Persistence logic
         persistence.reload(makeHandle: {
             let h = NJProtonEditorHandle()
@@ -256,7 +314,9 @@ struct NJReconstructedManualView: View {
     @ToolbarContentBuilder
     private func toolbar() -> some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
-            Button { dismiss() } label: { Image(systemName: "xmark") }
+            if showsDismiss {
+                Button { dismiss() } label: { Image(systemName: "xmark") }
+            }
         }
         ToolbarItem(placement: .topBarTrailing) {
             Button { performSearch() } label: { Image(systemName: "arrow.clockwise") }

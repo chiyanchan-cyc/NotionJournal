@@ -21,6 +21,14 @@ struct NJTab: Identifiable, Hashable {
     var id: String { tabID }
 }
 
+struct NJPendingMoveBlock: Hashable {
+    let blockID: String
+    let instanceID: String
+    let fromNoteID: String
+    let fromNoteDomain: String
+    let preview: String
+}
+
 final class UIState: ObservableObject {
     @Published var showDBDebug = false
 }
@@ -33,17 +41,21 @@ final class AppStore: ObservableObject {
     @Published var selectedTabID: String?
     @Published var selectedModule: NJUIModule = .note
     @Published var selectedGoalID: String? = nil
+    @Published var selectedOutlineNodeID: String? = nil
     @Published var showDBDebugPanel = false
     @Published var didFinishInitialPull = false
     @Published var initialPullError: String? = nil
     @Published var showGoalMigrationAlert = false
     @Published var goalMigrationCount: Int = 0
+    @Published var pendingMoveBlock: NJPendingMoveBlock? = nil
+    @Published var quickClipboardCount: Int = 0
 
     @StateObject var ui = UIState()
 
     let db: SQLiteDB
     let notes: DBNoteRepository
     let sync: CloudSyncEngine
+    let outline: NJOutlineStore
 
     init() {
         let dbPath = FileManager.default
@@ -56,6 +68,7 @@ final class AppStore: ObservableObject {
 
         self.db = db
         self.notes = DBNoteRepository(db: db)
+        self.outline = NJOutlineStore()
 
         let deviceID =
             UIDevice.current.identifierForVendor?.uuidString.lowercased()
@@ -78,6 +91,7 @@ final class AppStore: ObservableObject {
 
         runAttachmentCacheCleanupIfNeeded()
         notes.cleanupCalendarItemsOlderThan3Months()
+        refreshQuickClipboardCount()
 
         self.sync.start()
         Task { await runInitialPullGate() }
@@ -91,6 +105,7 @@ final class AppStore: ObservableObject {
             let bl = NJLocalBLRunner(db: self.db)
             bl.markBlocksMissingTagIndexDirty(limit: 8000)
             bl.run(.deriveBlockTagIndexAndDomainV1, limit: 2000)
+            self.refreshQuickClipboardCount()
         }
 
         runGoalStatusMigrationIfNeeded()
@@ -106,6 +121,16 @@ final class AppStore: ObservableObject {
             sync.schedulePush(debounceMs: 0)
         }
         UserDefaults.standard.set(true, forKey: key)
+    }
+
+    func refreshQuickClipboardCount() {
+        quickClipboardCount = notes.listOrphanQuickBlocks(limit: 2000).count
+    }
+
+    func createQuickNoteToClipboard(plainText: String) {
+        guard notes.createQuickNoteBlock(plainText: plainText) != nil else { return }
+        refreshQuickClipboardCount()
+        sync.schedulePush(debounceMs: 0)
     }
 
     private func runAttachmentCacheCleanupIfNeeded() {
@@ -335,6 +360,57 @@ final class AppStore: ObservableObject {
                 NotificationCenter.default.post(name: .njForceReloadNote, object: nil)
             }
         }
+    }
+
+    func movePendingBlock(toNoteID: String) -> Bool {
+        guard let pending = pendingMoveBlock else { return false }
+        if pending.blockID.isEmpty || pending.instanceID.isEmpty { return false }
+        if pending.fromNoteID == toNoteID { return false }
+        guard let targetNote = notes.getNote(NJNoteID(toNoteID)) else { return false }
+
+        let now = DBNoteRepository.nowMs()
+
+        notes.markNoteBlockDeleted(instanceID: pending.instanceID, nowMs: now)
+
+        let orderKey = notes.nextAppendOrderKey(noteID: toNoteID)
+        _ = notes.attachExistingBlockToNote(noteID: toNoteID, blockID: pending.blockID, orderKey: orderKey)
+
+        let existingTagJSON = notes.loadBlockTagJSON(blockID: pending.blockID)
+        let updatedTagJSON = mergeTagJSONForMove(
+            tagJSON: existingTagJSON,
+            removeTag: pending.fromNoteDomain,
+            addTag: targetNote.tabDomain
+        )
+        notes.updateBlockTagJSON(blockID: pending.blockID, tagJSON: updatedTagJSON, nowMs: now)
+
+        NJLocalBLRunner(db: db).run(.deriveBlockTagIndexAndDomainV1, limit: 2000)
+        sync.schedulePush(debounceMs: 0)
+        pendingMoveBlock = nil
+        NotificationCenter.default.post(name: .njForceReloadNote, object: nil)
+        return true
+    }
+
+    private func mergeTagJSONForMove(tagJSON: String, removeTag: String, addTag: String) -> String {
+        let decoded: [String] = {
+            guard let data = tagJSON.data(using: .utf8),
+                  let arr = try? JSONSerialization.jsonObject(with: data) as? [String]
+            else { return [] }
+            return arr
+        }()
+        var merged = decoded
+        let removeT = removeTag.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !removeT.isEmpty {
+            merged.removeAll { $0.caseInsensitiveCompare(removeT) == .orderedSame }
+        }
+        let addT = addTag.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !addT.isEmpty, !merged.contains(where: { $0.caseInsensitiveCompare(addT) == .orderedSame }) {
+            merged.append(addT)
+        }
+        if let data = try? JSONSerialization.data(withJSONObject: merged),
+           let s = String(data: data, encoding: .utf8) {
+            return s
+        }
+        return tagJSON
     }
 
 }

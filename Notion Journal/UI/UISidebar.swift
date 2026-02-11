@@ -22,12 +22,15 @@ struct Sidebar: View {
     @State private var showCKNoteBlockDebug = false
     @State private var showWeeklyReconstructed = false
     @State private var showManualReconstructed = false // <-- ADD THIS
+    @State private var showChronoNotes = false
     @State private var showCalendarView = false
     @State private var showGoalSeedlingList = false
     @State private var showGPSLogger = false
     @State private var showHealthLogger = false
     @State private var showHealthWeeklySummary = false
     @State private var showExport = false
+    @State private var showQuickNoteSheet = false
+    @State private var quickNoteText = ""
 
 
     private var notesInScope: [NJNote] {
@@ -106,7 +109,6 @@ struct Sidebar: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            VStack(spacing: 0) {
                 if isPhone {
                     HStack {
                         ModuleToolbarButtons(
@@ -193,7 +195,7 @@ struct Sidebar: View {
                         }
                     )
                 }
-            }
+            
 
             Divider()
 
@@ -269,6 +271,9 @@ struct Sidebar: View {
             } else if store.selectedModule == .goal {
                 NJGoalSidebarView()
                     .environmentObject(store)
+            } else if store.selectedModule == .outline {
+                NJOutlineSidebarView(outline: store.outline)
+                    .environmentObject(store)
             } else {
                 Spacer(minLength: 0)
             }
@@ -285,6 +290,10 @@ struct Sidebar: View {
                         openManualReconstructed()
                     }
 
+                    SidebarSquareButton(systemName: "clock") {
+                        openChronoView()
+                    }
+
                     SidebarSquareButton(systemName: "calendar") {
                         openCalendarView()
                     }
@@ -298,6 +307,21 @@ struct Sidebar: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
             }
+        }
+        .overlay(alignment: .bottomTrailing) {
+            Button {
+                showQuickNoteSheet = true
+            } label: {
+                Image(systemName: "square.and.pencil")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 46, height: 46)
+                    .background(Circle().fill(Color.accentColor))
+                    .shadow(color: .black.opacity(0.2), radius: 6, x: 0, y: 3)
+            }
+            .buttonStyle(.plain)
+            .padding(.trailing, 14)
+            .padding(.bottom, store.selectedModule == .note ? 64 : 14)
         }
         .toolbar {
             if !isPhone {
@@ -322,6 +346,38 @@ struct Sidebar: View {
             }
         }
         .toolbar(isPhone ? .hidden : .automatic, for: .navigationBar)
+        .sheet(isPresented: $showQuickNoteSheet) {
+            NavigationStack {
+                VStack(spacing: 12) {
+                    TextEditor(text: $quickNoteText)
+                        .padding(10)
+                        .frame(minHeight: 160)
+                        .background(Color(UIColor.secondarySystemBackground))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+
+                    Spacer()
+                }
+                .padding(16)
+                .navigationTitle("Quick Note")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") {
+                            quickNoteText = ""
+                            showQuickNoteSheet = false
+                        }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Add to Clipboard") {
+                            let trimmed = quickNoteText.trimmingCharacters(in: .whitespacesAndNewlines)
+                            guard !trimmed.isEmpty else { return }
+                            store.createQuickNoteToClipboard(plainText: trimmed)
+                            quickNoteText = ""
+                            showQuickNoteSheet = false
+                        }
+                    }
+                }
+            }
+        }
         .sheet(isPresented: $showNewNotebook) {
             NavigationStack {
                 Form {
@@ -414,7 +470,13 @@ struct Sidebar: View {
 
         .sheet(isPresented: $showManualReconstructed) {
             NavigationStack {
-                NJReconstructedManualView()
+                NJReconstructedWorkspaceView()
+                    .environmentObject(store)
+            }
+        }
+        .sheet(isPresented: $showChronoNotes) {
+            NavigationStack {
+                NJChronoNoteListView()
                     .environmentObject(store)
             }
         }
@@ -455,12 +517,12 @@ struct Sidebar: View {
         if shouldUseWindowForReconstructed {
             #if os(macOS)
             if #available(macOS 13.0, *) {
-                openWindow(id: "reconstructed-manual")
+                openWindow(id: "reconstructed-workspace")
             } else {
                 showManualReconstructed = true
             }
             #else
-            openWindow(id: "reconstructed-manual")
+            openWindow(id: "reconstructed-workspace")
             #endif
         } else {
             showManualReconstructed = true
@@ -480,6 +542,22 @@ struct Sidebar: View {
             #endif
         } else {
             showCalendarView = true
+        }
+    }
+
+    private func openChronoView() {
+        if shouldUseWindowForReconstructed {
+            #if os(macOS)
+            if #available(macOS 13.0, *) {
+                openWindow(id: "chrono")
+            } else {
+                showChronoNotes = true
+            }
+            #else
+            openWindow(id: "chrono")
+            #endif
+        } else {
+            showChronoNotes = true
         }
     }
 

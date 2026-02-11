@@ -30,6 +30,12 @@ final class DBBlockTable {
         let payloadJSON: String
     }
 
+    struct NJOrphanQuickRow: Identifiable {
+        let id: String
+        let createdAtMs: Int64
+        let payloadJSON: String
+    }
+
     struct NJAudioRow: Identifiable {
         let id: String
         let updatedAtMs: Int64
@@ -166,6 +172,38 @@ final class DBBlockTable {
                     let ms = sqlite3_column_int64(stmt, 1)
                     let payload = sqlite3_column_text(stmt, 2).flatMap { String(cString: $0) } ?? "{}"
                     out.append(NJOrphanAudioRow(id: bid, createdAtMs: ms, payloadJSON: payload))
+                }
+            }
+            sqlite3_finalize(stmt)
+        }
+
+        return out
+    }
+
+    func listOrphanQuickBlocks(limit: Int = 200) -> [NJOrphanQuickRow] {
+        var out: [NJOrphanQuickRow] = []
+
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT b.block_id, b.created_at_ms, b.payload_json
+            FROM nj_block b
+            LEFT JOIN nj_note_block nb
+              ON nb.block_id = b.block_id AND nb.deleted = 0
+            WHERE b.block_type = 'quick'
+              AND b.deleted = 0
+              AND nb.block_id IS NULL
+            ORDER BY b.created_at_ms DESC
+            LIMIT ?;
+            """
+            if sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) == SQLITE_OK {
+                sqlite3_bind_int(stmt, 1, Int32(limit))
+                while sqlite3_step(stmt) == SQLITE_ROW {
+                    let bid = sqlite3_column_text(stmt, 0).flatMap { String(cString: $0) } ?? ""
+                    if bid.isEmpty { continue }
+                    let ms = sqlite3_column_int64(stmt, 1)
+                    let payload = sqlite3_column_text(stmt, 2).flatMap { String(cString: $0) } ?? "{}"
+                    out.append(NJOrphanQuickRow(id: bid, createdAtMs: ms, payloadJSON: payload))
                 }
             }
             sqlite3_finalize(stmt)

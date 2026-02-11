@@ -31,11 +31,16 @@ struct NJClipboardInboxView: View {
     enum Kind: String, Equatable {
         case clip
         case audio
+        case quick
     }
 
     var selectedRow: Row? {
         guard let bid = selectedBlockID else { return nil }
         return rows.first(where: { $0.id == bid })
+    }
+
+    private var pendingMove: NJPendingMoveBlock? {
+        store.pendingMoveBlock
     }
 
     var body: some View {
@@ -54,6 +59,24 @@ struct NJClipboardInboxView: View {
                 }
 
                 List {
+                    if let p = pendingMove {
+                        Section("Move Block") {
+                            Button {
+                                movePendingHere()
+                            } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(p.preview.isEmpty ? p.blockID : p.preview)
+                                        .font(.body)
+                                        .lineLimit(2)
+                                    Text("From: \(p.fromNoteDomain.isEmpty ? p.fromNoteID : p.fromNoteDomain)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
                     ForEach(rows) { r in
                         Button {
                             selectedBlockID = r.id
@@ -112,6 +135,13 @@ struct NJClipboardInboxView: View {
 
                     Spacer()
 
+                    if pendingMove != nil {
+                        Button("Move Here") {
+                            movePendingHere()
+                        }
+                        .buttonStyle(.bordered)
+                    }
+
                     Button("Import") {
                         importSelected()
                     }
@@ -166,9 +196,10 @@ struct NJClipboardInboxView: View {
     func reload() {
         let raw = store.notes.listOrphanClipBlocks(limit: 500)
         let rawAudio = store.notes.listOrphanAudioBlocks(limit: 500)
+        let rawQuick = store.notes.listOrphanQuickBlocks(limit: 500)
 
         var out: [Row] = []
-        out.reserveCapacity(raw.count + rawAudio.count)
+        out.reserveCapacity(raw.count + rawAudio.count + rawQuick.count)
 
         for r in raw {
             let meta = parseClipPayload(r.payloadJSON)
@@ -203,12 +234,29 @@ struct NJClipboardInboxView: View {
             )
         }
 
+        for r in rawQuick {
+            let title = parseQuickPayload(r.payloadJSON)
+            out.append(
+                Row(
+                    id: r.id,
+                    createdAtMs: r.createdAtMs,
+                    website: "Quick Note",
+                    title: title,
+                    pdfPath: "",
+                    jsonPath: "",
+                    audioPath: "",
+                    kind: .quick
+                )
+            )
+        }
+
         out.sort { $0.createdAtMs > $1.createdAtMs }
 
         rows = out
         if let sel = selectedBlockID, !rows.contains(where: { $0.id == sel }) {
             selectedBlockID = nil
         }
+        store.refreshQuickClipboardCount()
     }
 
     func importSelected() {
@@ -218,9 +266,18 @@ struct NJClipboardInboxView: View {
         _ = store.notes.attachExistingBlockToNote(noteID: noteID, blockID: bid, orderKey: ok)
 
         store.sync.schedulePush(debounceMs: 0)
+        store.refreshQuickClipboardCount()
 
         onImported()
         dismiss()
+    }
+
+    func movePendingHere() {
+        let ok = store.movePendingBlock(toNoteID: noteID)
+        if ok {
+            onImported()
+            dismiss()
+        }
     }
 
     func openPDF(for r: Row) {
@@ -344,6 +401,10 @@ struct NJClipboardInboxView: View {
         return ("Audio Recording", "", "", "", "")
     }
 
+    func parseQuickPayload(_ payload: String) -> String {
+        NJQuickNotePayload.title(from: payload)
+    }
+
 
 
     func resolveICloudDocumentsPath(_ relative: String) -> URL? {
@@ -429,6 +490,7 @@ struct NJClipboardInboxView: View {
         if selectedBlockID == r.id {
             selectedBlockID = nil
         }
+        store.refreshQuickClipboardCount()
     }
 
     func deleteAudioFiles(audioPath: String, pdfPath: String, jsonPath: String) {

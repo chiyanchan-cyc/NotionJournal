@@ -29,13 +29,23 @@ struct Notion_JournalApp: App {
                 .environmentObject(store)
         }
 
-        WindowGroup(id: "reconstructed-manual") {
-            NJReconstructedManualView()
+        WindowGroup(id: "reconstructed-workspace") {
+            NJReconstructedWorkspaceView()
+                .environmentObject(store)
+        }
+
+        WindowGroup(id: "reconstructed-manual", for: String.self) { tag in
+            NJReconstructedManualView(initialTag: tag.wrappedValue ?? "#REMIND")
                 .environmentObject(store)
         }
 
         WindowGroup(id: "calendar") {
             NJCalendarView()
+                .environmentObject(store)
+        }
+
+        WindowGroup(id: "chrono") {
+            NJChronoNoteListView()
                 .environmentObject(store)
         }
 

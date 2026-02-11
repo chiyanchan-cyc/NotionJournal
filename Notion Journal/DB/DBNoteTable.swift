@@ -141,6 +141,54 @@ final class DBNoteTable {
         }
     }
 
+    func listNotesByDateRange(startMs: Int64, endMs: Int64) -> [NJNote] {
+        let sql = """
+        SELECT note_id, created_at_ms, updated_at_ms, notebook, tab_domain, title, pinned, deleted
+        FROM nj_note
+        WHERE deleted = 0
+          AND created_at_ms >= ?
+          AND created_at_ms <= ?
+        ORDER BY created_at_ms DESC;
+        """
+
+        return db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let rc0 = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
+            if rc0 != SQLITE_OK { db.dbgErr(dbp, "listNotesByDateRange.prepare", rc0); return [] }
+            defer { sqlite3_finalize(stmt) }
+
+            sqlite3_bind_int64(stmt, 1, startMs)
+            sqlite3_bind_int64(stmt, 2, endMs)
+
+            var out: [NJNote] = []
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let noteID = String(cString: sqlite3_column_text(stmt, 0))
+                let createdMs = sqlite3_column_int64(stmt, 1)
+                let updatedMs = sqlite3_column_int64(stmt, 2)
+                let notebook = String(cString: sqlite3_column_text(stmt, 3))
+                let tab = String(cString: sqlite3_column_text(stmt, 4))
+                let title = String(cString: sqlite3_column_text(stmt, 5))
+                let pinned = sqlite3_column_int64(stmt, 6)
+                let deleted = sqlite3_column_int64(stmt, 7)
+
+                let rtf = loadRTF(noteID) ?? emptyRTF()
+
+                out.append(NJNote(
+                    id: NJNoteID(noteID),
+                    createdAtMs: createdMs,
+                    updatedAtMs: updatedMs,
+                    notebook: notebook,
+                    tabDomain: tab,
+                    title: title,
+                    rtfData: rtf,
+                    deleted: deleted,
+                    pinned: pinned
+                ))
+            }
+            return out
+        }
+    }
+
     func createNote(notebook: String, tabDomain: String, title: String) -> NJNote {
         let now = nowMs()
         let id = UUID().uuidString.lowercased()

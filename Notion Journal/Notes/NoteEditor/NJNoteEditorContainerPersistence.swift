@@ -377,6 +377,15 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                 let id = UUID(uuidString: newBlockID)
                     ?? NJStableUUID("\(noteID.raw)|\(newBlockID)|")
                 h.ownerBlockUUID = id
+                let inheritedTagJSON: String = {
+                    let t = tab.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if t.isEmpty { return "" }
+                    if let data = try? JSONSerialization.data(withJSONObject: [t]),
+                       let s = String(data: data, encoding: .utf8) {
+                        return s
+                    }
+                    return ""
+                }()
 
                 let b = BlockState(
                     id: id,
@@ -394,7 +403,7 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                     loadedUpdatedAtMs: 0,
                     loadedPayloadHash: "",
                     protonJSON: "",
-                    tagJSON: ""
+                    tagJSON: inheritedTagJSON
                 )
 
                 blocks = [b]
@@ -574,13 +583,19 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
 
         let liveAttr = editor.attributedText
 
-        let existingTags: [String] = {
+        var existingTags: [String] = {
             guard !b.tagJSON.isEmpty,
                   let data = b.tagJSON.data(using: .utf8),
                   let arr = try? JSONSerialization.jsonObject(with: data) as? [String]
             else { return [] }
             return arr
         }()
+
+        let inheritedTag = tab.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !inheritedTag.isEmpty,
+           !existingTags.contains(where: { $0.caseInsensitiveCompare(inheritedTag) == .orderedSame }) {
+            existingTags.append(inheritedTag)
+        }
 
         let tagRes = NJTagExtraction.extract(from: liveAttr, existingTags: existingTags)
         let mergedTags = tagRes?.tags ?? existingTags
@@ -613,13 +628,12 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         let originalSel  = editor.selectedRange
 
         if let cleaned = tagRes?.cleaned {
-            editor.attributedText = cleaned
+            editor.setAttributedTextSafely(cleaned, targetSelection: originalSel)
         }
 
         let protonJSON = b.protonHandle.exportProtonJSONString()
 
-        editor.attributedText = originalAttr
-        editor.selectedRange = originalSel
+        editor.setAttributedTextSafely(originalAttr, targetSelection: originalSel)
 
         b.protonJSON = protonJSON
         blocks[i].protonJSON = protonJSON

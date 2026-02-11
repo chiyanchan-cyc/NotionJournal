@@ -143,6 +143,7 @@ final class NJGoalDetailPersistence: ObservableObject {
         progressIndexByBlockID = [:]
         timelineIndexByBlockID = [:]
 
+        let progressIDs = Set(progressBlocks.map { $0.blockID })
         for (i, b) in progressBlocks.enumerated() {
             progressIndexByBlockID[b.blockID] = i
         }
@@ -157,6 +158,7 @@ final class NJGoalDetailPersistence: ObservableObject {
             items.append(NJGoalBlockItem(blockID: b.blockID, createdAtMs: b.createdAtMs, source: .progress))
         }
         for b in timelineBlocks {
+            if progressIDs.contains(b.blockID) { continue }
             items.append(NJGoalBlockItem(blockID: b.blockID, createdAtMs: b.createdAtMs, source: .mentioned))
         }
 
@@ -415,6 +417,7 @@ final class NJGoalDetailPersistence: ObservableObject {
 
         if let cleaned = tagRes?.cleaned {
             editor.attributedText = cleaned
+            editor.selectedRange = originalSel
         }
 
         let protonJSON = b.protonHandle.exportProtonJSONString()
@@ -498,6 +501,7 @@ final class NJGoalDetailPersistence: ObservableObject {
 
         if let cleaned = tagRes?.cleaned {
             editor.attributedText = cleaned
+            editor.selectedRange = originalSel
         }
 
         let protonJSON = b.protonHandle.exportProtonJSONString()
@@ -617,23 +621,41 @@ final class NJGoalDetailPersistence: ObservableObject {
     private func dbLoadTimelineBlockIDs() -> [String] {
         guard let store else { return [] }
         if goalTag.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return [] }
+        let trimmedGoalID = goalID.trimmingCharacters(in: .whitespacesAndNewlines)
         return store.notes.db.withDB { dbp in
             var out: [String] = []
             var stmt: OpaquePointer?
-            let sql = """
-            SELECT DISTINCT b.block_id
-            FROM nj_block_tag t
-            JOIN nj_block b
-              ON b.block_id = t.block_id
-            WHERE t.tag = ? COLLATE NOCASE
-              AND b.deleted = 0
-            ORDER BY b.created_at_ms DESC;
-            """
+            let sql: String = {
+                if trimmedGoalID.isEmpty {
+                    return """
+                    SELECT DISTINCT b.block_id
+                    FROM nj_block_tag t
+                    JOIN nj_block b
+                      ON b.block_id = t.block_id
+                    WHERE t.tag = ? COLLATE NOCASE
+                      AND b.deleted = 0
+                    ORDER BY b.created_at_ms DESC;
+                    """
+                }
+                return """
+                SELECT DISTINCT b.block_id
+                FROM nj_block_tag t
+                JOIN nj_block b
+                  ON b.block_id = t.block_id
+                WHERE t.tag = ? COLLATE NOCASE
+                  AND b.deleted = 0
+                  AND (b.goal_id IS NULL OR b.goal_id = '' OR b.goal_id <> ?)
+                ORDER BY b.created_at_ms DESC;
+                """
+            }()
             let rc = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
             if rc != SQLITE_OK { return [] }
             defer { sqlite3_finalize(stmt) }
 
             sqlite3_bind_text(stmt, 1, goalTag, -1, SQLITE_TRANSIENT)
+            if !trimmedGoalID.isEmpty {
+                sqlite3_bind_text(stmt, 2, trimmedGoalID, -1, SQLITE_TRANSIENT)
+            }
             while sqlite3_step(stmt) == SQLITE_ROW {
                 if let c = sqlite3_column_text(stmt, 0) {
                     let s = String(cString: c).trimmingCharacters(in: .whitespacesAndNewlines)
