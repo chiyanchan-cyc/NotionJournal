@@ -109,6 +109,7 @@ import os
 
 private let NJShortcutLog = Logger(subsystem: "NotionJournal", category: "KeyCommands")
 private var NJKeyCommandsOriginalIMPByClass: [ObjectIdentifier: IMP] = [:]
+private var NJPasteOriginalIMPByClass: [ObjectIdentifier: IMP] = [:]
 
 private func NJInstallTextViewKeyCommandHook(_ tv: UITextView) {
     let cls: AnyClass = object_getClass(tv) ?? UITextView.self
@@ -150,6 +151,40 @@ private func NJInstallTextViewKeyCommandHook(_ tv: UITextView) {
             mk("8", .command, #selector(UITextView.nj_cmdNumber))
         ]
 
+    }
+
+    let newIMP = imp_implementationWithBlock(newBlock)
+    method_setImplementation(method, newIMP)
+}
+
+private func NJInstallTextViewPasteHook(_ tv: UITextView) {
+    let cls: AnyClass = object_getClass(tv) ?? UITextView.self
+    let key = ObjectIdentifier(cls)
+    if NJPasteOriginalIMPByClass[key] != nil { return }
+
+    let sel = #selector(UIResponderStandardEditActions.paste(_:))
+    guard let method = class_getInstanceMethod(cls, sel) else { return }
+
+    let origIMP = method_getImplementation(method)
+    NJPasteOriginalIMPByClass[key] = origIMP
+
+    typealias OrigFn = @convention(c) (AnyObject, Selector, Any?) -> Void
+    let newBlock: @convention(block) (UITextView, Any?) -> Void = { t, sender in
+        if let h = t.njProtonHandle {
+            let pb = UIPasteboard.general
+            let hasText = !(pb.string?.isEmpty ?? true)
+            if !hasText, let img = pb.image {
+                let fullRef = NJPhotoLibraryPresenter.saveFullPhotoToICloud(image: img) ?? ""
+                h.insertPhotoAttachment(img, displayWidth: 400, fullPhotoRef: fullRef)
+                h.snapshot()
+                if !t.isFirstResponder { _ = t.becomeFirstResponder() }
+                return
+            }
+        }
+
+        guard let imp = NJPasteOriginalIMPByClass[key] else { return }
+        let f = unsafeBitCast(imp, to: OrigFn.self)
+        f(t, sel, sender)
     }
 
     let newIMP = imp_implementationWithBlock(newBlock)
@@ -2389,6 +2424,7 @@ struct NJProtonEditorView: UIViewRepresentable {
 
         if let tv = findTextView(in: v) {
             NJInstallTextViewKeyCommandHook(tv)
+            NJInstallTextViewPasteHook(tv)
             if tv.njProtonHandle == nil || handle.owns(textView: tv) {
                 tv.njProtonHandle = handle
                 handle.textView = tv
@@ -2427,6 +2463,7 @@ struct NJProtonEditorView: UIViewRepresentable {
         DispatchQueue.main.async {
             if let tv = findTextView(in: v) {
                 NJInstallTextViewKeyCommandHook(tv)
+                NJInstallTextViewPasteHook(tv)
                 if tv.njProtonHandle == nil || handle.owns(textView: tv) {
                     tv.njProtonHandle = handle
                     handle.textView = tv
@@ -2453,6 +2490,7 @@ struct NJProtonEditorView: UIViewRepresentable {
 
         if let tv = findTextView(in: uiView) {
             NJInstallTextViewKeyCommandHook(tv)
+            NJInstallTextViewPasteHook(tv)
             if tv.njProtonHandle == nil || handle.owns(textView: tv) {
                 tv.njProtonHandle = handle
                 handle.textView = tv

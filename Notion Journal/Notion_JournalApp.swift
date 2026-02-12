@@ -54,6 +54,15 @@ struct Notion_JournalApp: App {
                 .environmentObject(store)
         }
 
+        WindowGroup(id: "outline-node-detail", for: String.self) { nodeID in
+            if let id = nodeID.wrappedValue {
+                NJOutlineNodeDetailWindowView(outline: store.outline, nodeID: id)
+                    .environmentObject(store)
+            } else {
+                ContentUnavailableView("Node not found", systemImage: "exclamationmark.triangle")
+            }
+        }
+
         WindowGroup(id: "photo-viewer", for: String.self) { id in
             NJPhotoWindow(localIdentifier: id.wrappedValue)
         }

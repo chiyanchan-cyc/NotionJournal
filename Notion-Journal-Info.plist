@@ -21,5 +21,7 @@
 	<array>
 		<string>location</string>
 	</array>
+	<key>NJEnableMedicationDoseAuth</key>
+	<true/>
 </dict>
 </plist>

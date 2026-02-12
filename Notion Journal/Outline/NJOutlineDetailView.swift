@@ -3,14 +3,14 @@ import PhotosUI
 
 struct NJOutlineDetailView: View {
     @EnvironmentObject var store: AppStore
+    @Environment(\.openWindow) private var openWindow
     @ObservedObject var outline: NJOutlineStore
 
     let outlineID: String
 
-    @State private var detailNodeID: String? = nil
-    @State private var showDetailSheet = false
     @State private var showDeleteBlocked = false
     @State private var isReorderMode = false
+    @State private var showComments = false
     @FocusState private var focusedNodeID: String?
 
     private var rows: [NJOutlineNodeRow] {
@@ -52,7 +52,7 @@ struct NJOutlineDetailView: View {
                     .onMove(perform: moveRows)
                 }
                 .listStyle(.plain)
-                .environment(\.defaultMinListRowHeight, 28)
+                .environment(\.defaultMinListRowHeight, showComments ? 44 : 28)
                 .environment(\.editMode, .constant(isReorderMode ? .active : .inactive))
             }
         }
@@ -68,10 +68,6 @@ struct NJOutlineDetailView: View {
         .onChange(of: focusedNodeID) { _, newID in
             guard let newID else { return }
             store.selectedOutlineNodeID = newID
-        }
-        .sheet(isPresented: $showDetailSheet) {
-            NJOutlineNodeDetailSheet(outline: outline, nodeID: detailNodeID ?? "")
-                .environmentObject(store)
         }
         .alert("Cannot Delete Node", isPresented: $showDeleteBlocked) {
             Button("OK", role: .cancel) { }
@@ -124,6 +120,9 @@ struct NJOutlineDetailView: View {
                 iconButton(isReorderMode ? "checkmark" : "line.3.horizontal") {
                     isReorderMode.toggle()
                 }
+                iconButton(showComments ? "text.bubble.fill" : "text.bubble") {
+                    showComments.toggle()
+                }
 
                 Spacer()
             }
@@ -149,6 +148,8 @@ struct NJOutlineDetailView: View {
     private func nodeRow(_ row: NJOutlineNodeRow) -> some View {
         let n = row.node
         return HStack(spacing: 0) {
+            Color.clear.frame(width: CGFloat(row.depth) * 14)
+
             Button {
                 if n.isChecklist {
                     outline.toggleChecked(nodeID: n.nodeID)
@@ -161,8 +162,6 @@ struct NJOutlineDetailView: View {
                     .frame(width: 18)
             }
             .buttonStyle(.plain)
-
-            Color.clear.frame(width: CGFloat(row.depth) * 14)
 
             Group {
                 if hasChildren(n.nodeID) {
@@ -180,20 +179,32 @@ struct NJOutlineDetailView: View {
             }
             .frame(width: 14)
 
-            TextField(
-                "Untitled",
-                text: Binding(
-                    get: { n.title },
-                    set: {
-                        store.selectedOutlineNodeID = n.nodeID
-                        outline.updateNodeTitle(nodeID: n.nodeID, title: $0)
-                    }
+            VStack(alignment: .leading, spacing: 1) {
+                TextField(
+                    "Untitled",
+                    text: Binding(
+                        get: { n.title },
+                        set: {
+                            store.selectedOutlineNodeID = n.nodeID
+                            outline.updateNodeTitle(nodeID: n.nodeID, title: $0)
+                        }
+                    )
                 )
-            )
-            .textFieldStyle(.plain)
-            .font(.system(size: 12))
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+                .focused($focusedNodeID, equals: n.nodeID)
+
+                if showComments {
+                    let c = n.comment.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !c.isEmpty {
+                        Text(c)
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+            }
             .padding(.leading, 4)
-            .focused($focusedNodeID, equals: n.nodeID)
 
             Spacer(minLength: 0)
 
@@ -211,8 +222,7 @@ struct NJOutlineDetailView: View {
         .onTapGesture(count: 2) {
             store.selectedOutlineNodeID = n.nodeID
             focusedNodeID = n.nodeID
-            detailNodeID = n.nodeID
-            showDetailSheet = true
+            openWindow(id: "outline-node-detail", value: n.nodeID)
         }
         .padding(.vertical, 0)
     }
@@ -227,12 +237,15 @@ struct NJOutlineDetailView: View {
               sourceIndex < rows.count else { return }
 
         let moving = rows[sourceIndex].node
-        var reordered = rows
-        reordered.move(fromOffsets: source, toOffset: destination)
-        guard let movedIndex = reordered.firstIndex(where: { $0.node.nodeID == moving.nodeID }) else { return }
+        let parentID = moving.parentNodeID
+        let clampedDestination = min(max(destination, 0), rows.count)
 
-        let sameParent = reordered.filter { $0.node.parentNodeID == moving.parentNodeID }
-        guard let siblingIndex = sameParent.firstIndex(where: { $0.node.nodeID == moving.nodeID }) else { return }
+        // Count same-parent rows before destination to derive insertion index
+        // within the sibling set. Exclude the moving row itself.
+        let siblingIndex = rows
+            .prefix(clampedDestination)
+            .filter { $0.node.parentNodeID == parentID && $0.node.nodeID != moving.nodeID }
+            .count
 
         outline.reorderNodeWithinParent(nodeID: moving.nodeID, toSiblingIndex: siblingIndex)
         store.selectedOutlineNodeID = moving.nodeID
@@ -240,7 +253,7 @@ struct NJOutlineDetailView: View {
     }
 }
 
-private struct NJOutlineNodeDetailSheet: View {
+struct NJOutlineNodeDetailWindowView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject var store: AppStore
     @ObservedObject var outline: NJOutlineStore
@@ -253,8 +266,8 @@ private struct NJOutlineNodeDetailSheet: View {
     @State private var commentDraft: String = ""
     @State private var domainDraft: String = ""
 
-    @State private var metaExpanded = true
-    @State private var commentDomainExpanded = true
+    @State private var metaExpanded = false
+    @State private var commentDomainExpanded = false
     @State private var filterExpanded = true
 
     @State private var filterOp: String = "AND"

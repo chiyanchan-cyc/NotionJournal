@@ -25,9 +25,12 @@ final class NJHealthLogger: NSObject, ObservableObject {
     @Published private(set) var lastSyncTsMs: Int64 = 0
     @Published private(set) var lastError: String = ""
     @Published private(set) var lastSyncSummary: String = ""
+    @Published private(set) var medicationDoseEnabled: Bool
+    @Published private(set) var medicationDoseCount7d: Int = 0
 
     private let defaultsKey = "NJHealthLogger.enabled.v1"
     private let lastSyncKey = "NJHealthLogger.lastSyncMs.v1"
+    private let medDoseEnabledKey = "NJHealthLogger.medicationDoseEnabled.v1"
 
     private let containerID = "iCloud.com.CYC.NotionJournal"
     private let lockRel = "Health/health_logger_lock.json"
@@ -42,6 +45,7 @@ final class NJHealthLogger: NSObject, ObservableObject {
     private override init() {
         self.enabled = UserDefaults.standard.bool(forKey: defaultsKey)
         self.lastSyncTsMs = Int64(UserDefaults.standard.double(forKey: lastSyncKey))
+        self.medicationDoseEnabled = UserDefaults.standard.bool(forKey: medDoseEnabledKey)
         super.init()
 
         Task { @MainActor in
@@ -71,6 +75,11 @@ final class NJHealthLogger: NSObject, ObservableObject {
         }
     }
 
+    func setMedicationDoseEnabled(_ on: Bool) {
+        UserDefaults.standard.set(on, forKey: medDoseEnabledKey)
+        medicationDoseEnabled = on
+    }
+
     func requestAuthorization() {
         #if canImport(HealthKit)
         guard HKHealthStore.isHealthDataAvailable() else {
@@ -81,7 +90,7 @@ final class NJHealthLogger: NSObject, ObservableObject {
 
         Task { [weak self] in
             guard let self else { return }
-            let types = await self.requestedReadTypes(includeDose: false)
+            let types = self.requestedReadTypes()
             DispatchQueue.main.async {
                 self.store.requestAuthorization(toShare: [], read: types) { ok, err in
                     DispatchQueue.main.async {
@@ -89,7 +98,6 @@ final class NJHealthLogger: NSObject, ObservableObject {
                         self.auth = ok ? .authorized : .denied
                         Task { @MainActor in
                             await self.refreshAuthority()
-                            if ok { self.requestMedicationDoseAuthorizationIfAvailable() }
                             if self.enabled { await self.syncIfPossible(force: true, reason: "auth_granted") }
                         }
                     }
@@ -98,6 +106,39 @@ final class NJHealthLogger: NSObject, ObservableObject {
         }
         #else
         auth = .notAvailable
+        lastError = "HealthKit not available on this platform"
+        #endif
+    }
+
+    func requestMedicationDoseAuthorization() {
+        #if canImport(HealthKit)
+        guard supportsMedicationDose() else {
+            lastError = "Medication dose authorization disabled for this build"
+            return
+        }
+        guard medicationDoseEnabled else {
+            lastError = "Turn on Medication Dose Sync first"
+            return
+        }
+        if #available(iOS 26.0, *) {
+            let medType = HKObjectType.userAnnotatedMedicationType()
+            store.requestPerObjectReadAuthorization(for: medType, predicate: nil) { ok, err in
+                DispatchQueue.main.async {
+                    if let err {
+                        self.lastError = err.localizedDescription
+                    } else if !ok {
+                        self.lastError = "Medication authorization canceled or denied"
+                    } else {
+                        self.lastError = ""
+                        Task { @MainActor in
+                            await self.backfillMedicationDoseHistory(days: 365)
+                            await self.syncIfPossible(force: true, reason: "med_auth_granted")
+                        }
+                    }
+                }
+            }
+        }
+        #else
         lastError = "HealthKit not available on this platform"
         #endif
     }
@@ -209,14 +250,17 @@ final class NJHealthLogger: NSObject, ObservableObject {
         let workouts = await fetchWorkouts(start: start, end: now)
         inserted += samplesTable.insert(workoutSamples: workouts)
 
-        if #available(iOS 26.0, *) {
-            let doseEvents = await fetchMedicationDoseEvents(start: start, end: now)
-            inserted += samplesTable.insert(medicationDoseEvents: doseEvents)
+        if medicationDoseEnabled, supportsMedicationDose() {
+            if #available(iOS 26.0, *) {
+                let doseEvents = await fetchMedicationDoseEvents(start: start, end: now)
+                inserted += samplesTable.insert(medicationDoseEvents: doseEvents)
+            }
         }
 
         lastSyncTsMs = nowMs()
         UserDefaults.standard.set(Double(lastSyncTsMs), forKey: lastSyncKey)
         lastSyncSummary = "Inserted \(inserted) samples"
+        medicationDoseCount7d = countMedicationDoseSamplesRecent(days: 7)
         bumpHeartbeat()
         #else
         lastError = "HealthKit not available on this platform"
@@ -355,25 +399,47 @@ final class NJHealthLogger: NSObject, ObservableObject {
         return types
     }
 
-    private func requestedReadTypes(includeDose: Bool) async -> Set<HKObjectType> {
-        var types = baseReadTypes()
-        // Health Records (clinical) removed — dose events are used instead.
-        if includeDose, #available(iOS 26.0, *) {
-            types.insert(HKSampleType.medicationDoseEventType())
-        }
-        return types
+    private func requestedReadTypes() -> Set<HKObjectType> {
+        baseReadTypes()
     }
 
-    private func requestMedicationDoseAuthorizationIfAvailable() {
-        guard HKHealthStore.isHealthDataAvailable() else { return }
-        if #available(iOS 26.0, *) {
-            let doseType = HKSampleType.medicationDoseEventType()
-            store.requestAuthorization(toShare: [], read: [doseType]) { _, err in
-                if let err {
-                    DispatchQueue.main.async { self.lastError = err.localizedDescription }
-                }
-            }
-        }
+    private func supportsMedicationDose() -> Bool {
+        guard HKHealthStore.isHealthDataAvailable() else { return false }
+        guard #available(iOS 26.0, *) else { return false }
+        // Hard gate: medication-dose auth currently throws runtime exceptions on
+        // builds that are missing the required signing entitlement shape.
+        // Enable only when explicitly opted in via Info.plist after signing is verified.
+        let flag = Bundle.main.object(forInfoDictionaryKey: "NJEnableMedicationDoseAuth")
+        return (flag as? Bool) == true
+    }
+
+    private func countMedicationDoseSamplesRecent(days: Int) -> Int {
+        guard let db else { return 0 }
+        let now = nowMs()
+        let startMs = now - Int64(days) * 24 * 60 * 60 * 1000
+        let sql = """
+        SELECT COUNT(*) AS c
+        FROM health_samples
+        WHERE type = 'medication_dose'
+          AND start_ms >= \(startMs);
+        """
+        let rows = db.queryRows(sql)
+        return Int(rows.first?["c"] ?? "0") ?? 0
+    }
+
+    @MainActor
+    private func backfillMedicationDoseHistory(days: Int) async {
+        guard medicationDoseEnabled else { return }
+        guard let db else { return }
+        guard supportsMedicationDose() else { return }
+        guard #available(iOS 26.0, *) else { return }
+
+        let end = Date()
+        let start = Calendar.current.date(byAdding: .day, value: -max(1, days), to: end) ?? end
+        let rows = await fetchMedicationDoseEvents(start: start, end: end)
+        let inserted = DBHealthSamplesTable(db: db).insert(medicationDoseEvents: rows)
+        medicationDoseCount7d = countMedicationDoseSamplesRecent(days: 7)
+        lastSyncSummary = "Medication backfill inserted \(inserted) samples"
     }
 
     private func quantityTypes() -> [HKQuantityType] {
@@ -425,7 +491,7 @@ final class NJHealthLogger: NSObject, ObservableObject {
         await withCheckedContinuation { cont in
             let pred = HKQuery.predicateForSamples(withStart: start, end: end, options: .strictStartDate)
             let q = HKSampleQuery(sampleType: HKSampleType.medicationDoseEventType(), predicate: pred, limit: HKObjectQueryNoLimit, sortDescriptors: nil) { _, res, _ in
-                cont.resume(returning: (res as? [HKSample]) ?? [])
+                cont.resume(returning: res ?? [])
             }
             store.execute(q)
         }
@@ -706,14 +772,20 @@ final class DBHealthSamplesTable {
     private func mapCategoryValue(_ sample: HKCategorySample) -> String {
         if sample.categoryType.identifier == HKCategoryTypeIdentifier.sleepAnalysis.rawValue {
             switch HKCategoryValueSleepAnalysis(rawValue: sample.value) {
-            case .asleep: return "asleep"
-            case .inBed: return "in_bed"
-            case .awake: return "awake"
-            case .asleepCore: return "asleep"
-            case .asleepDeep: return "asleep"
-            case .asleepREM: return "asleep"
-            case .none: return "unknown"
-            @unknown default: return "unknown"
+            case .some(.asleep),
+                 .some(.asleepCore),
+                 .some(.asleepDeep),
+                 .some(.asleepREM),
+                 .some(.asleepUnspecified):
+                return "asleep"
+            case .some(.inBed):
+                return "in_bed"
+            case .some(.awake):
+                return "awake"
+            case .none:
+                return "unknown"
+            @unknown default:
+                return "unknown"
             }
         }
         return String(sample.value)

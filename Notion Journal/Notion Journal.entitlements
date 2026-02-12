@@ -23,5 +23,7 @@
 	<array>
 		<string>group.com.CYC.NotionJournal</string>
 	</array>
+	<key>com.apple.developer.healthkit</key>
+	<true/>
 </dict>
 </plist>

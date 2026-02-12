@@ -5,12 +5,6 @@ struct NJHealthLoggerPage: View {
 
     var body: some View {
         Form {
-            Section {
-                Text("HealthKit is disabled in this build.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-
             Section("Permission") {
                 Button("Request Health Access") {
                     NJHealthLogger.shared.requestAuthorization()
@@ -24,6 +18,17 @@ struct NJHealthLoggerPage: View {
             Section("Health Logger") {
                 Toggle(isOn: Binding(get: { logger.enabled }, set: { NJHealthLogger.shared.setEnabled($0) })) {
                     Text("Enable on this device")
+                }
+
+                Toggle(isOn: Binding(get: { logger.medicationDoseEnabled }, set: { NJHealthLogger.shared.setMedicationDoseEnabled($0) })) {
+                    Text("Enable Medication Dose Sync (Experimental)")
+                }
+                Text("Medication authorization is disabled unless NJEnableMedicationDoseAuth=true in Info.plist.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+
+                Button("Request Medication Access") {
+                    NJHealthLogger.shared.requestMedicationDoseAuthorization()
                 }
 
                 Button("Sync Now") {
@@ -41,6 +46,7 @@ struct NJHealthLoggerPage: View {
                 if !logger.writerLabel.isEmpty {
                     row("Writer device", logger.writerLabel)
                 }
+                row("Med dose samples (7d)", String(logger.medicationDoseCount7d))
                 if logger.lastSyncTsMs > 0 {
                     row("Last sync", fmtMs(logger.lastSyncTsMs))
                 }
