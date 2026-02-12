@@ -437,6 +437,70 @@ enum DBSchemaInstaller {
                     "CREATE INDEX IF NOT EXISTS idx_nj_goal_updated ON nj_goal(updated_at_ms DESC);",
                     "CREATE INDEX IF NOT EXISTS idx_nj_goal_origin ON nj_goal(origin_block_id);"
                 ]
+            ),
+            TableSpec(
+                name: "nj_outline",
+                createSQL: """
+                CREATE TABLE IF NOT EXISTS nj_outline (
+                    outline_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    category TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT '',
+                    created_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL,
+                    deleted INTEGER NOT NULL DEFAULT 0
+                );
+                """,
+                columns: [
+                    ColumnSpec(name: "outline_id", declForAlter: "TEXT"),
+                    ColumnSpec(name: "title", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "category", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "status", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
+                ],
+                indexes: [
+                    "CREATE INDEX IF NOT EXISTS idx_nj_outline_updated ON nj_outline(updated_at_ms DESC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_outline_category ON nj_outline(category, updated_at_ms DESC);"
+                ]
+            ),
+            TableSpec(
+                name: "nj_outline_node",
+                createSQL: """
+                CREATE TABLE IF NOT EXISTS nj_outline_node (
+                    node_id TEXT PRIMARY KEY,
+                    outline_id TEXT NOT NULL,
+                    parent_node_id TEXT,
+                    ord INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    comment TEXT NOT NULL DEFAULT '',
+                    domain_tag TEXT NOT NULL DEFAULT '',
+                    is_checklist INTEGER NOT NULL DEFAULT 0,
+                    is_checked INTEGER NOT NULL DEFAULT 0,
+                    created_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL,
+                    deleted INTEGER NOT NULL DEFAULT 0
+                );
+                """,
+                columns: [
+                    ColumnSpec(name: "node_id", declForAlter: "TEXT"),
+                    ColumnSpec(name: "outline_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "parent_node_id", declForAlter: "TEXT"),
+                    ColumnSpec(name: "ord", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "title", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "comment", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "domain_tag", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "is_checklist", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "is_checked", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
+                ],
+                indexes: [
+                    "CREATE INDEX IF NOT EXISTS idx_nj_outline_node_outline_parent_ord ON nj_outline_node(outline_id, parent_node_id, ord);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_outline_node_outline_updated ON nj_outline_node(outline_id, updated_at_ms DESC);"
+                ]
             )
             ,
             TableSpec(

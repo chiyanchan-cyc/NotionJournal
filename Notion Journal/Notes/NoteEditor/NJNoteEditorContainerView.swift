@@ -274,8 +274,7 @@ struct NJNoteEditorContainerView: View {
         }
         .sheet(isPresented: $showGoalQuickPick) {
             NJGoalQuickPickSheet { picked in
-                let tags = picked.map { $0.goalTag }.filter { !$0.isEmpty }
-                addTaggedBlocks(after: persistence.focusedBlockID, tags: tags)
+                addTaggedBlocks(after: persistence.focusedBlockID, goals: picked)
             }
             .environmentObject(store)
         }

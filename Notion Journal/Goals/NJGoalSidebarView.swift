@@ -14,11 +14,13 @@ struct NJGoalSidebarView: View {
     @State private var goals: [NJGoalSummary] = []
     @State private var statusTab: NJGoalStatusTab = .seedling
     @State private var searchText: String = ""
-    @State private var domainFilter: String = "ALL"
+    @State private var mainDomain: String = "ME"
+    @State private var selectedSecondTierDomains: Set<String> = ["ALL"]
     @State private var showGoalCreate = false
 
     private let staleDays: Int = 14
     private let railWidth: CGFloat = 72
+    private let mainDomainTabs: [String] = ["ME", "ZZ", "MM", "DEV"]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -27,7 +29,11 @@ struct NJGoalSidebarView: View {
             HStack(spacing: 0) {
                 domainRail()
                 Divider()
-                goalList()
+                VStack(spacing: 0) {
+                    secondTierFilterBar()
+                    Divider()
+                    goalList()
+                }
             }
         }
         .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always))
@@ -102,7 +108,7 @@ struct NJGoalSidebarView: View {
     private func domainRail() -> some View {
         GeometryReader { g in
             let H = g.size.height
-            let tabs = domainFilters()
+            let tabs = mainDomainTabs
             let tabCount = tabs.count
             let spacing: CGFloat = 12
             let tabMin: CGFloat = 72
@@ -119,7 +125,8 @@ struct NJGoalSidebarView: View {
             VStack(spacing: spacing) {
                 ForEach(tabs, id: \.self) { t in
                     Button {
-                        domainFilter = t
+                        mainDomain = t
+                        selectedSecondTierDomains = ["ALL"]
                         store.selectedGoalID = nil
                     } label: {
                         RotatedWrapLabel(
@@ -128,7 +135,7 @@ struct NJGoalSidebarView: View {
                             buttonHeight: tabHeight,
                             fontSize: tabFontSize,
                             lineLimit: tabLineLimit,
-                            isOn: domainFilter == t,
+                            isOn: mainDomain == t,
                             colorHex: colorHex
                         )
                     }
@@ -142,6 +149,35 @@ struct NJGoalSidebarView: View {
             .background(Color(UIColor.secondarySystemBackground))
         }
         .frame(width: railWidth)
+    }
+
+    private func secondTierFilterBar() -> some View {
+        let filters = secondTierDomainFilters()
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(filters, id: \.self) { filter in
+                    Button {
+                        toggleSecondTierFilter(filter)
+                        store.selectedGoalID = nil
+                    } label: {
+                        Text(filter)
+                            .font(.caption)
+                            .lineLimit(1)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 7)
+                            .background(
+                                Capsule()
+                                    .fill(isSecondTierFilterOn(filter) ? Color.accentColor.opacity(0.22) : Color(UIColor.secondarySystemBackground))
+                            )
+                            .foregroundStyle(.primary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+        }
+        .background(Color(UIColor.systemBackground))
     }
 
     private func goalList() -> some View {
@@ -184,10 +220,8 @@ struct NJGoalSidebarView: View {
         let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return goals.filter { item in
             if statusFor(item.status, goalTag: item.goalTag) != statusTab { return false }
-            if domainFilter != "ALL" {
-                let domains = parseDomainTags(item.domainTagsJSON).map { $0.lowercased() }
-                if !domains.contains(domainFilter.lowercased()) { return false }
-            }
+            let domains = parseDomainTags(item.domainTagsJSON)
+            if !passesDomainFilter(domains) { return false }
             if trimmedSearch.isEmpty { return true }
             if item.name.lowercased().contains(trimmedSearch) { return true }
             if item.goalTag.lowercased().contains(trimmedSearch) { return true }
@@ -195,17 +229,69 @@ struct NJGoalSidebarView: View {
         }
     }
 
-    private func domainFilters() -> [String] {
+    private func secondTierDomainFilters() -> [String] {
         var set = Set<String>()
         for g in goals {
             let domains = parseDomainTags(g.domainTagsJSON)
             for d in domains {
-                let t = d.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !t.isEmpty { set.insert(t) }
+                if let key = secondTierKey(of: d), topLevelDomain(of: key) == mainDomain {
+                    set.insert(key)
+                }
             }
         }
         let sorted = Array(set).sorted()
         return ["ALL"] + sorted
+    }
+
+    private func secondTierKey(of domain: String) -> String? {
+        let trimmed = domain.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if trimmed.isEmpty { return nil }
+        let parts = trimmed.split(separator: ".", omittingEmptySubsequences: true)
+        if parts.count < 2 { return nil }
+        return "\(parts[0]).\(parts[1])"
+    }
+
+    private func topLevelDomain(of domain: String) -> String {
+        let trimmed = domain.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return "" }
+        return trimmed.split(separator: ".", maxSplits: 1, omittingEmptySubsequences: true).first.map { String($0).uppercased() } ?? ""
+    }
+
+    private func passesDomainFilter(_ domains: [String]) -> Bool {
+        let mainMatches = domains
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { topLevelDomain(of: $0) == mainDomain }
+        if mainMatches.isEmpty { return false }
+        if selectedSecondTierDomains.contains("ALL") { return true }
+
+        let keys = Set(mainMatches.compactMap { secondTierKey(of: $0) })
+        if keys.isEmpty { return false }
+        return !keys.isDisjoint(with: selectedSecondTierDomains)
+    }
+
+    private func isSecondTierFilterOn(_ filter: String) -> Bool {
+        let key = filter.uppercased() == "ALL" ? "ALL" : filter.lowercased()
+        return selectedSecondTierDomains.contains(key)
+    }
+
+    private func toggleSecondTierFilter(_ filter: String) {
+        let isAll = filter.uppercased() == "ALL"
+        let key = isAll ? "ALL" : filter.lowercased()
+
+        if isAll {
+            selectedSecondTierDomains = ["ALL"]
+            return
+        }
+
+        selectedSecondTierDomains.remove("ALL")
+        if selectedSecondTierDomains.contains(key) {
+            selectedSecondTierDomains.remove(key)
+        } else {
+            selectedSecondTierDomains.insert(key)
+        }
+        if selectedSecondTierDomains.isEmpty {
+            selectedSecondTierDomains = ["ALL"]
+        }
     }
 
     private func parseDomainTags(_ json: String) -> [String] {
@@ -244,5 +330,20 @@ struct NJGoalSidebarView: View {
 
     private func reload() {
         goals = store.notes.listGoalSummaries()
+        let available = Set(goals.flatMap { parseDomainTags($0.domainTagsJSON).map { topLevelDomain(of: $0) } }.filter { !$0.isEmpty })
+        if !available.contains(mainDomain) {
+            if let firstAvailable = mainDomainTabs.first(where: { available.contains($0) }) {
+                mainDomain = firstAvailable
+            } else {
+                mainDomain = mainDomainTabs.first ?? "ME"
+            }
+            selectedSecondTierDomains = ["ALL"]
+        } else {
+            let valid = Set(secondTierDomainFilters().dropFirst().map { $0.lowercased() })
+            if !selectedSecondTierDomains.contains("ALL") {
+                let kept = selectedSecondTierDomains.intersection(valid)
+                selectedSecondTierDomains = kept.isEmpty ? ["ALL"] : kept
+            }
+        }
     }
 }

@@ -1,54 +1,32 @@
 import Foundation
 
-enum NJOutlineStatus: String, CaseIterable, Codable, Identifiable {
-    case none
-    case active
-    case hold
-    case done
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .none: return "None"
-        case .active: return "Active"
-        case .hold: return "Hold"
-        case .done: return "Done"
-        }
-    }
-}
-
-struct NJOutlineNode: Identifiable, Codable, Hashable {
-    var id: String
-    var parentID: String?
-    var order: Int
+struct NJOutlineSummary: Identifiable, Hashable {
+    var id: String { outlineID }
+    let outlineID: String
     var title: String
-    var comment: String
-    var isChecked: Bool
-    var status: NJOutlineStatus
-    var dateMs: Int64?
-    var isCollapsed: Bool
-    var homeNoteID: String
+    var category: String
+    var status: String
     var createdAtMs: Int64
     var updatedAtMs: Int64
 }
 
-struct NJOutlinePin: Identifiable, Codable, Hashable {
-    var id: String
-    var nodeID: String
-    var blockID: String
+struct NJOutlineNodeRecord: Identifiable, Hashable {
+    var id: String { nodeID }
+    let nodeID: String
+    let outlineID: String
+    var parentNodeID: String?
+    var ord: Int
+    var title: String
+    var comment: String
+    var domainTag: String
+    var isChecklist: Bool
+    var isChecked: Bool
     var createdAtMs: Int64
+    var updatedAtMs: Int64
 }
 
-struct NJOutlineStoreSnapshot: Codable {
-    var nodes: [NJOutlineNode]
-    var pins: [NJOutlinePin]
-}
-
-struct NJOutlineRow: Identifiable, Hashable {
-    let node: NJOutlineNode
+struct NJOutlineNodeRow: Identifiable, Hashable {
+    var id: String { node.nodeID }
+    let node: NJOutlineNodeRecord
     let depth: Int
-    let isDimmed: Bool
-
-    var id: String { node.id }
 }

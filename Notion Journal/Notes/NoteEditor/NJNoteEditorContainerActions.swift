@@ -94,15 +94,15 @@ extension NJNoteEditorContainerView {
         persistence.scheduleCommit(new.id)
     }
 
-    func addTaggedBlocks(after id: UUID?, tags: [String]) {
+    func addTaggedBlocks(after id: UUID?, goals: [NJGoalSummary]) {
         var insertAfter = id
-        for tag in tags {
-            insertAfter = addTaggedBlock(after: insertAfter, tag: tag)
+        for goal in goals {
+            insertAfter = addTaggedBlock(after: insertAfter, goal: goal)
         }
     }
 
     @discardableResult
-    func addTaggedBlock(after id: UUID?, tag: String) -> UUID? {
+    func addTaggedBlock(after id: UUID?, goal: NJGoalSummary) -> UUID? {
         let newID = UUID()
         let handle = makeWiredHandle()
         handle.ownerBlockUUID = newID
@@ -128,7 +128,8 @@ extension NJNoteEditorContainerView {
             newKey = 1000
         }
 
-        let trimmedTag = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedTag = goal.goalTag.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedGoalName = goal.name.trimmingCharacters(in: .whitespacesAndNewlines)
         let tagJSON: String = {
             guard !trimmedTag.isEmpty,
                   let data = try? JSONSerialization.data(withJSONObject: [trimmedTag]),
@@ -136,7 +137,7 @@ extension NJNoteEditorContainerView {
             else { return "" }
             return s
         }()
-        let attr = makeGoalReflectBlockAttr(tag: trimmedTag)
+        let attr = makeGoalReflectBlockAttr(goalName: trimmedGoalName, tag: trimmedTag)
 
         let new = NJNoteEditorContainerPersistence.BlockState(
             id: newID,
@@ -160,15 +161,17 @@ extension NJNoteEditorContainerView {
         return new.id
     }
 
-    private func makeGoalReflectBlockAttr(tag: String) -> NSAttributedString {
+    private func makeGoalReflectBlockAttr(goalName: String, tag: String) -> NSAttributedString {
         let trimmed = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedGoalName = goalName.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return makeEmptyBlockAttr() }
+        let displayGoalName = trimmedGoalName.isEmpty ? "Untitled" : trimmedGoalName
         let d = Date()
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyyMMdd"
         let dateStr = f.string(from: d)
-        let line = "\(trimmed) \(dateStr) Progress Report\n"
+        let line = "\(displayGoalName)\n\(trimmed) \(dateStr) Progress Report\n"
         let zwsp = String(UnicodeScalar(Int(NJ_ZWSP))!)
         return NSAttributedString(string: line + zwsp, attributes: baseAttrs())
     }

@@ -1,6 +1,8 @@
 import SwiftUI
 import UIKit
 import Combine
+import Proton
+import PhotosUI
 
 struct Sidebar: View {
     @EnvironmentObject var store: AppStore
@@ -30,7 +32,11 @@ struct Sidebar: View {
     @State private var showHealthWeeklySummary = false
     @State private var showExport = false
     @State private var showQuickNoteSheet = false
-    @State private var quickNoteText = ""
+    @State private var quickNoteAttr = NSAttributedString(string: "")
+    @State private var quickNoteSel = NSRange(location: 0, length: 0)
+    @State private var quickNoteEditorHeight: CGFloat = 180
+    @State private var quickNotePickedPhotoItem: PhotosPickerItem? = nil
+    @State private var quickNoteHandle = NJProtonEditorHandle()
 
 
     private var notesInScope: [NJNote] {
@@ -310,6 +316,7 @@ struct Sidebar: View {
         }
         .overlay(alignment: .bottomTrailing) {
             Button {
+                resetQuickNoteEditor()
                 showQuickNoteSheet = true
             } label: {
                 Image(systemName: "square.and.pencil")
@@ -349,30 +356,51 @@ struct Sidebar: View {
         .sheet(isPresented: $showQuickNoteSheet) {
             NavigationStack {
                 VStack(spacing: 12) {
-                    TextEditor(text: $quickNoteText)
-                        .padding(10)
-                        .frame(minHeight: 160)
-                        .background(Color(UIColor.secondarySystemBackground))
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                    NJProtonEditorView(
+                        initialAttributedText: quickNoteAttr,
+                        initialSelectedRange: quickNoteSel,
+                        snapshotAttributedText: $quickNoteAttr,
+                        snapshotSelectedRange: $quickNoteSel,
+                        measuredHeight: $quickNoteEditorHeight,
+                        handle: quickNoteHandle
+                    )
+                    .frame(minHeight: quickNoteEditorHeight)
+                    .padding(10)
+                    .background(Color(UIColor.secondarySystemBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
 
                     Spacer()
                 }
                 .padding(16)
                 .navigationTitle("Quick Note")
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    NJProtonFloatingFormatBar(handle: quickNoteHandle, pickedPhotoItem: $quickNotePickedPhotoItem)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
+                        .background(.ultraThinMaterial)
+                }
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
                         Button("Cancel") {
-                            quickNoteText = ""
                             showQuickNoteSheet = false
+                            resetQuickNoteEditor()
                         }
                     }
                     ToolbarItem(placement: .confirmationAction) {
                         Button("Add to Clipboard") {
-                            let trimmed = quickNoteText.trimmingCharacters(in: .whitespacesAndNewlines)
+                            quickNoteHandle.snapshot()
+                            let attrToSave = quickNoteHandle.editor?.attributedText ?? quickNoteAttr
+                            let trimmed = attrToSave.string.trimmingCharacters(in: .whitespacesAndNewlines)
                             guard !trimmed.isEmpty else { return }
-                            store.createQuickNoteToClipboard(plainText: trimmed)
-                            quickNoteText = ""
+                            let protonJSON = quickNoteHandle.exportProtonJSONString()
+                            let rtfBase64 = DBNoteRepository.encodeRTFBase64FromAttributedText(attrToSave)
+                            let payload = NJQuickNotePayload.makePayloadJSON(
+                                protonJSON: protonJSON,
+                                rtfBase64: rtfBase64
+                            )
+                            store.createQuickNoteToClipboard(payloadJSON: payload)
                             showQuickNoteSheet = false
+                            resetQuickNoteEditor()
                         }
                     }
                 }
@@ -559,6 +587,14 @@ struct Sidebar: View {
         } else {
             showChronoNotes = true
         }
+    }
+
+    private func resetQuickNoteEditor() {
+        quickNoteAttr = NSAttributedString(string: "")
+        quickNoteSel = NSRange(location: 0, length: 0)
+        quickNoteEditorHeight = 180
+        quickNotePickedPhotoItem = nil
+        quickNoteHandle = NJProtonEditorHandle()
     }
 
 }

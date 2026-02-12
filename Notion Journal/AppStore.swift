@@ -41,6 +41,8 @@ final class AppStore: ObservableObject {
     @Published var selectedTabID: String?
     @Published var selectedModule: NJUIModule = .note
     @Published var selectedGoalID: String? = nil
+    @Published var selectedOutlineID: String? = nil
+    @Published var selectedOutlineCategoryID: String? = nil
     @Published var selectedOutlineNodeID: String? = nil
     @Published var showDBDebugPanel = false
     @Published var didFinishInitialPull = false
@@ -68,7 +70,7 @@ final class AppStore: ObservableObject {
 
         self.db = db
         self.notes = DBNoteRepository(db: db)
-        self.outline = NJOutlineStore()
+        self.outline = NJOutlineStore(repo: self.notes)
 
         let deviceID =
             UIDevice.current.identifierForVendor?.uuidString.lowercased()
@@ -127,8 +129,8 @@ final class AppStore: ObservableObject {
         quickClipboardCount = notes.listOrphanQuickBlocks(limit: 2000).count
     }
 
-    func createQuickNoteToClipboard(plainText: String) {
-        guard notes.createQuickNoteBlock(plainText: plainText) != nil else { return }
+    func createQuickNoteToClipboard(payloadJSON: String) {
+        guard notes.createQuickNoteBlock(payloadJSON: payloadJSON) != nil else { return }
         refreshQuickClipboardCount()
         sync.schedulePush(debounceMs: 0)
     }

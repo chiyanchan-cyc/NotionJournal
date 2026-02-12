@@ -1,12 +1,10 @@
 import Foundation
 
 enum NJQuickNotePayload {
-    static func makePayloadJSON(from plainText: String) -> String {
-        let rtfBase64 = NJPayloadConverterV1.makeRTFBase64(plainText)
-
+    static func makePayloadJSON(protonJSON: String, rtfBase64: String) -> String {
         let protonData: [String: JSONValue] = [
             "proton_v": .int(1),
-            "proton_json": .string(""),
+            "proton_json": .string(protonJSON),
             "rtf_base64": .string(rtfBase64)
         ]
 
@@ -19,6 +17,10 @@ enum NJQuickNotePayload {
 
         guard let data = try? JSONEncoder().encode(v1) else { return "{}" }
         return String(data: data, encoding: .utf8) ?? "{}"
+    }
+
+    static func makePayloadJSON(from plainText: String) -> String {
+        makePayloadJSON(protonJSON: "", rtfBase64: NJPayloadConverterV1.makeRTFBase64(plainText))
     }
 
     static func plainText(from payloadJSON: String) -> String {

@@ -112,13 +112,11 @@ final class DBNoteRepository {
         blockTable.setGoalID(blockID: blockID, goalID: goalID, updatedAtMs: Self.nowMs())
     }
 
-    func createQuickNoteBlock(plainText: String) -> String? {
-        let trimmed = plainText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { return nil }
-
+    func createQuickNoteBlock(payloadJSON: String) -> String? {
+        let title = NJQuickNotePayload.title(from: payloadJSON)
+        if title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return nil }
         let blockID = UUID().uuidString
         let now = Self.nowMs()
-        let payloadJSON = NJQuickNotePayload.makePayloadJSON(from: trimmed)
 
         blockTable.applyNJBlock([
             "block_id": blockID,

@@ -1,307 +1,158 @@
 import Foundation
 import Combine
+
+@MainActor
 final class NJOutlineStore: ObservableObject {
-    @Published private(set) var nodes: [NJOutlineNode] = []
-    @Published private(set) var pins: [NJOutlinePin] = []
+    @Published private(set) var categories: [String] = []
+    @Published private(set) var outlines: [NJOutlineSummary] = []
+    @Published private(set) var nodes: [NJOutlineNodeRecord] = []
 
-    private var saveWork: DispatchWorkItem? = nil
-    private let saveDelay: TimeInterval = 0.4
+    private let repo: DBNoteRepository
 
-    init() {
-        load()
+    init(repo: DBNoteRepository) {
+        self.repo = repo
     }
 
-    func load() {
-        let url = storageURL()
-        guard
-            let data = try? Data(contentsOf: url),
-            let snap = try? JSONDecoder().decode(NJOutlineStoreSnapshot.self, from: data)
-        else {
-            nodes = []
-            pins = []
-            return
-        }
-        nodes = snap.nodes
-        pins = snap.pins
+    func reloadOutlines(category: String?) {
+        categories = repo.listOutlineCategories()
+        outlines = repo.listOutlines(category: category)
     }
 
-    func saveNow() {
-        let snap = NJOutlineStoreSnapshot(nodes: nodes, pins: pins)
-        guard let data = try? JSONEncoder().encode(snap) else { return }
-        let url = storageURL()
-        try? data.write(to: url, options: [.atomic])
+    func createOutline(title: String, category: String) -> NJOutlineSummary? {
+        let created = repo.createOutline(title: title, category: category)
+        categories = repo.listOutlineCategories()
+        return created
     }
 
-    func scheduleSave() {
-        saveWork?.cancel()
-        let w = DispatchWorkItem { [weak self] in
-            self?.saveNow()
-        }
-        saveWork = w
-        DispatchQueue.main.asyncAfter(deadline: .now() + saveDelay, execute: w)
+    func loadNodes(outlineID: String) {
+        nodes = repo.listOutlineNodes(outlineID: outlineID)
     }
 
-    func createNode(parentID: String?, title: String, homeNoteID: String) -> NJOutlineNode {
-        let now = nowMs()
-        let node = NJOutlineNode(
-            id: UUID().uuidString.lowercased(),
-            parentID: parentID,
-            order: nextOrder(parentID: parentID),
-            title: title,
-            comment: "",
-            isChecked: false,
-            status: .none,
-            dateMs: nil,
-            isCollapsed: false,
-            homeNoteID: homeNoteID,
-            createdAtMs: now,
-            updatedAtMs: now
-        )
-        nodes.append(node)
-        scheduleSave()
+    func createRootNode(outlineID: String) -> NJOutlineNodeRecord {
+        let node = repo.createOutlineNode(outlineID: outlineID, parentNodeID: nil, title: "")
+        loadNodes(outlineID: outlineID)
         return node
     }
 
-    func updateNode(_ node: NJOutlineNode) {
-        guard let i = nodes.firstIndex(where: { $0.id == node.id }) else { return }
-        nodes[i] = node
-        scheduleSave()
+    func createSiblingNode(nodeID: String) -> NJOutlineNodeRecord? {
+        guard let n = node(nodeID) else { return nil }
+        let new = repo.createOutlineNode(outlineID: n.outlineID, parentNodeID: n.parentNodeID, title: "")
+        loadNodes(outlineID: n.outlineID)
+        return new
     }
 
-    func deleteNode(nodeID: String) {
-        let descendantIDs = collectDescendantIDs(nodeID: nodeID)
-        let removeSet = Set([nodeID] + descendantIDs)
-        nodes.removeAll { removeSet.contains($0.id) }
-        pins.removeAll { removeSet.contains($0.nodeID) }
-        scheduleSave()
+    func createChildNode(nodeID: String) -> NJOutlineNodeRecord? {
+        guard let n = node(nodeID) else { return nil }
+        let new = repo.createOutlineNode(outlineID: n.outlineID, parentNodeID: n.nodeID, title: "")
+        loadNodes(outlineID: n.outlineID)
+        return new
     }
 
-    func toggleCollapsed(nodeID: String) {
-        guard let i = nodes.firstIndex(where: { $0.id == nodeID }) else { return }
-        nodes[i].isCollapsed.toggle()
-        nodes[i].updatedAtMs = nowMs()
-        scheduleSave()
+    func updateNodeTitle(nodeID: String, title: String) {
+        guard var n = node(nodeID) else { return }
+        n.title = title
+        persistNode(n)
+    }
+
+    func updateNodeComment(nodeID: String, comment: String) {
+        guard var n = node(nodeID) else { return }
+        n.comment = comment
+        persistNode(n)
+    }
+
+    func updateNodeDomain(nodeID: String, domainTag: String) {
+        guard var n = node(nodeID) else { return }
+        n.domainTag = domainTag
+        persistNode(n)
+    }
+
+    func toggleChecklist(nodeID: String) {
+        guard var n = node(nodeID) else { return }
+        n.isChecklist.toggle()
+        if !n.isChecklist { n.isChecked = false }
+        persistNode(n)
     }
 
     func toggleChecked(nodeID: String) {
-        guard let i = nodes.firstIndex(where: { $0.id == nodeID }) else { return }
-        nodes[i].isChecked.toggle()
-        nodes[i].updatedAtMs = nowMs()
-        scheduleSave()
+        guard var n = node(nodeID) else { return }
+        guard n.isChecklist else { return }
+        n.isChecked.toggle()
+        persistNode(n)
     }
 
-    func setTitle(nodeID: String, title: String) {
-        guard let i = nodes.firstIndex(where: { $0.id == nodeID }) else { return }
-        nodes[i].title = title
-        nodes[i].updatedAtMs = nowMs()
-        scheduleSave()
+    func promote(nodeID: String) {
+        guard let n = node(nodeID), let parentID = n.parentNodeID, let parent = node(parentID) else { return }
+        let newParent = parent.parentNodeID
+        reparent(nodeID: n.nodeID, to: newParent)
     }
 
-    func setComment(nodeID: String, comment: String) {
-        guard let i = nodes.firstIndex(where: { $0.id == nodeID }) else { return }
-        nodes[i].comment = comment
-        nodes[i].updatedAtMs = nowMs()
-        scheduleSave()
+    func demote(nodeID: String) {
+        guard let n = node(nodeID) else { return }
+        let siblings = siblings(of: n)
+        guard let idx = siblings.firstIndex(where: { $0.nodeID == n.nodeID }), idx > 0 else { return }
+        let newParent = siblings[idx - 1].nodeID
+        reparent(nodeID: n.nodeID, to: newParent)
     }
 
-    func setStatus(nodeID: String, status: NJOutlineStatus) {
-        guard let i = nodes.firstIndex(where: { $0.id == nodeID }) else { return }
-        nodes[i].status = status
-        nodes[i].updatedAtMs = nowMs()
-        scheduleSave()
-    }
-
-    func setDate(nodeID: String, date: Date?) {
-        guard let i = nodes.firstIndex(where: { $0.id == nodeID }) else { return }
-        if let d = date {
-            nodes[i].dateMs = Int64(d.timeIntervalSince1970 * 1000.0)
-        } else {
-            nodes[i].dateMs = nil
+    func nodeRows(outlineID: String) -> [NJOutlineNodeRow] {
+        let scoped = nodes.filter { $0.outlineID == outlineID }
+        var out: [NJOutlineNodeRow] = []
+        for root in children(parentNodeID: nil, scoped: scoped) {
+            appendRows(node: root, depth: 0, scoped: scoped, out: &out)
         }
-        nodes[i].updatedAtMs = nowMs()
-        scheduleSave()
+        return out
     }
 
-    func moveNodeAfter(draggedID: String, targetID: String) {
-        guard let dragged = node(draggedID), let target = node(targetID) else { return }
-        if dragged.id == target.id { return }
-        if isDescendant(nodeID: target.id, of: dragged.id) { return }
+    func node(_ nodeID: String) -> NJOutlineNodeRecord? {
+        nodes.first(where: { $0.nodeID == nodeID })
+    }
 
-        let newParent = target.parentID
-        let oldParent = dragged.parentID
-        var siblings = children(parentID: newParent)
-        siblings.removeAll { $0.id == dragged.id }
-        let insertIndex = min((siblings.firstIndex(where: { $0.id == target.id }) ?? (siblings.count - 1)) + 1, siblings.count)
-        siblings.insert(dragged.withParent(newParent), at: max(insertIndex, 0))
-        normalizeOrder(parentID: newParent, siblings: siblings)
-        if oldParent != newParent {
-            normalizeOrder(parentID: oldParent, siblings: children(parentID: oldParent))
+    private func appendRows(node: NJOutlineNodeRecord, depth: Int, scoped: [NJOutlineNodeRecord], out: inout [NJOutlineNodeRow]) {
+        out.append(NJOutlineNodeRow(node: node, depth: depth))
+        for c in children(parentNodeID: node.nodeID, scoped: scoped) {
+            appendRows(node: c, depth: depth + 1, scoped: scoped, out: &out)
         }
     }
 
-    func moveNodeAsChild(draggedID: String, parentID: String) {
-        guard let dragged = node(draggedID) else { return }
-        if dragged.id == parentID { return }
-        if isDescendant(nodeID: parentID, of: dragged.id) { return }
-
-        let newParent = parentID
-        var siblings = children(parentID: newParent)
-        siblings.removeAll { $0.id == dragged.id }
-        siblings.append(dragged.withParent(newParent))
-        normalizeOrder(parentID: newParent, siblings: siblings)
-        normalizeOrder(parentID: dragged.parentID, siblings: children(parentID: dragged.parentID))
+    private func children(parentNodeID: String?, scoped: [NJOutlineNodeRecord]? = nil) -> [NJOutlineNodeRecord] {
+        let src = scoped ?? nodes
+        return src.filter { $0.parentNodeID == parentNodeID }
+            .sorted { a, b in
+                if a.ord != b.ord { return a.ord < b.ord }
+                return a.createdAtMs < b.createdAtMs
+            }
     }
 
-    func moveNodeToRoot(draggedID: String) {
-        guard let dragged = node(draggedID) else { return }
-        let newParent: String? = nil
-        var siblings = children(parentID: newParent)
-        siblings.removeAll { $0.id == dragged.id }
-        siblings.append(dragged.withParent(newParent))
-        normalizeOrder(parentID: newParent, siblings: siblings)
-        normalizeOrder(parentID: dragged.parentID, siblings: children(parentID: dragged.parentID))
+    private func siblings(of node: NJOutlineNodeRecord) -> [NJOutlineNodeRecord] {
+        nodes.filter { $0.outlineID == node.outlineID && $0.parentNodeID == node.parentNodeID }
+            .sorted { $0.ord < $1.ord }
     }
 
-    func addPin(nodeID: String, blockID: String) {
-        guard !pins.contains(where: { $0.nodeID == nodeID && $0.blockID == blockID }) else { return }
-        let pin = NJOutlinePin(
-            id: UUID().uuidString.lowercased(),
-            nodeID: nodeID,
-            blockID: blockID,
-            createdAtMs: nowMs()
+    private func persistNode(_ n: NJOutlineNodeRecord) {
+        repo.updateOutlineNodeBasics(
+            nodeID: n.nodeID,
+            title: n.title,
+            comment: n.comment,
+            domainTag: n.domainTag,
+            isChecklist: n.isChecklist,
+            isChecked: n.isChecked
         )
-        pins.append(pin)
-        scheduleSave()
+        loadNodes(outlineID: n.outlineID)
     }
 
-    func removePin(pinID: String) {
-        pins.removeAll { $0.id == pinID }
-        scheduleSave()
-    }
+    private func reparent(nodeID: String, to newParent: String?) {
+        guard let n = node(nodeID) else { return }
+        let targetSiblings = nodes.filter { $0.outlineID == n.outlineID && $0.parentNodeID == newParent && $0.nodeID != nodeID }
+            .sorted { $0.ord < $1.ord }
 
-    func node(_ id: String) -> NJOutlineNode? {
-        nodes.first(where: { $0.id == id })
-    }
+        repo.moveOutlineNode(nodeID: nodeID, parentNodeID: newParent, ord: targetSiblings.count)
 
-    func children(parentID: String?) -> [NJOutlineNode] {
-        nodes.filter { $0.parentID == parentID }
-            .sorted { $0.order < $1.order }
-    }
+        let oldSiblings = nodes.filter { $0.outlineID == n.outlineID && $0.parentNodeID == n.parentNodeID && $0.nodeID != nodeID }
+            .sorted { $0.ord < $1.ord }
 
-    func hasChildren(_ nodeID: String) -> Bool {
-        nodes.contains(where: { $0.parentID == nodeID })
-    }
-
-    func pinsForNode(_ nodeID: String) -> [NJOutlinePin] {
-        pins.filter { $0.nodeID == nodeID }
-            .sorted { $0.createdAtMs > $1.createdAtMs }
-    }
-
-    func flatten(filter: NJOutlineFilter) -> [NJOutlineRow] {
-        var out: [NJOutlineRow] = []
-        for n in children(parentID: nil) {
-            appendVisible(node: n, depth: 0, filter: filter, out: &out)
+        for (idx, sib) in oldSiblings.enumerated() {
+            repo.moveOutlineNode(nodeID: sib.nodeID, parentNodeID: sib.parentNodeID, ord: idx)
         }
-        return out
-    }
-
-    func isDescendant(nodeID: String, of ancestorID: String) -> Bool {
-        var cur = nodeID
-        var seen: Set<String> = []
-        while let n = node(cur), let p = n.parentID {
-            if p == ancestorID { return true }
-            if seen.contains(p) { break }
-            seen.insert(p)
-            cur = p
-        }
-        return false
-    }
-
-    private func collectDescendantIDs(nodeID: String) -> [String] {
-        var out: [String] = []
-        var stack = [nodeID]
-        while let cur = stack.popLast() {
-            let kids = nodes.filter { $0.parentID == cur }.map { $0.id }
-            out.append(contentsOf: kids)
-            stack.append(contentsOf: kids)
-        }
-        return out
-    }
-
-    private func appendVisible(node: NJOutlineNode, depth: Int, filter: NJOutlineFilter, out: inout [NJOutlineRow]) {
-        let matches = filter.matches(node: node)
-        let kids = children(parentID: node.id)
-        var childRows: [NJOutlineRow] = []
-        if !node.isCollapsed {
-            for k in kids {
-                appendVisible(node: k, depth: depth + 1, filter: filter, out: &childRows)
-            }
-        }
-
-        if matches || !childRows.isEmpty {
-            out.append(NJOutlineRow(node: node, depth: depth, isDimmed: !matches))
-            out.append(contentsOf: childRows)
-        }
-    }
-
-    private func normalizeOrder(parentID: String?, siblings: [NJOutlineNode]) {
-        var updated = siblings
-        for i in 0..<updated.count {
-            updated[i].order = i
-            updated[i].updatedAtMs = nowMs()
-        }
-
-        for node in updated {
-            if let idx = nodes.firstIndex(where: { $0.id == node.id }) {
-                nodes[idx] = node
-            } else {
-                nodes.append(node)
-            }
-        }
-        scheduleSave()
-    }
-
-    private func nextOrder(parentID: String?) -> Int {
-        let maxOrder = nodes.filter { $0.parentID == parentID }.map { $0.order }.max() ?? -1
-        return maxOrder + 1
-    }
-
-    private func nowMs() -> Int64 {
-        Int64(Date().timeIntervalSince1970 * 1000.0)
-    }
-
-    private func storageURL() -> URL {
-        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        return dir.appendingPathComponent("nj_outline_v1.json", isDirectory: false)
-    }
-}
-
-struct NJOutlineFilter: Hashable {
-    var status: NJOutlineStatus? = nil
-    var fromDate: Date? = nil
-    var toDate: Date? = nil
-    var onlyDated: Bool = false
-
-    func matches(node: NJOutlineNode) -> Bool {
-        if let s = status, node.status != s { return false }
-        if onlyDated, node.dateMs == nil { return false }
-        if let fromDate {
-            let fromMs = Int64(fromDate.timeIntervalSince1970 * 1000.0)
-            if (node.dateMs ?? -1) < fromMs { return false }
-        }
-        if let toDate {
-            let toMs = Int64(toDate.timeIntervalSince1970 * 1000.0)
-            if (node.dateMs ?? Int64.max) > toMs { return false }
-        }
-        return true
-    }
-}
-
-private extension NJOutlineNode {
-    func withParent(_ parentID: String?) -> NJOutlineNode {
-        var copy = self
-        copy.parentID = parentID
-        copy.updatedAtMs = Int64(Date().timeIntervalSince1970 * 1000.0)
-        return copy
+        loadNodes(outlineID: n.outlineID)
     }
 }
