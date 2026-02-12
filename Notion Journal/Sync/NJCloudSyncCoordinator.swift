@@ -77,7 +77,8 @@ actor NJCloudSyncCoordinator {
         }
 
         let sample = batch.prefix(5).map { "\($0.entity):\($0.entityID):\($0.op)" }
-        NJLog.p("NJ_PUSH_ALL batchCount=\(batch.count) sample=\(sample)")
+        let entityCounts = Dictionary(grouping: batch, by: { $0.entity }).mapValues(\.count)
+        NJLog.p("NJ_PUSH_ALL batchCount=\(batch.count) byEntity=\(entityCounts) sample=\(sample)")
 
         if batch.isEmpty { return }
 
@@ -155,6 +156,10 @@ actor NJCloudSyncCoordinator {
             return (row["goal_id"] as? String) ?? (row["id"] as? String) ?? ""
         case "calendar_item":
             return (row["date_key"] as? String) ?? (row["id"] as? String) ?? ""
+        case "outline":
+            return (row["outline_id"] as? String) ?? (row["id"] as? String) ?? ""
+        case "outline_node":
+            return (row["node_id"] as? String) ?? (row["id"] as? String) ?? ""
         default:
             return (row["id"] as? String) ?? ""
         }

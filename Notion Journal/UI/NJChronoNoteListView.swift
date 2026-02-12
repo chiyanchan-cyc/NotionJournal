@@ -145,7 +145,10 @@ struct NJChronoNoteListView: View {
             inheritedTags: [],
             editableTags: [],
             tagJSON: liveTagJSON,
-            onSaveTagJSON: onSaveTags
+            onSaveTagJSON: onSaveTags,
+            tagSuggestionsProvider: { prefix, limit in
+                store.notes.listTagSuggestions(prefix: prefix, limit: limit)
+            }
         )
         .id(id)
         .fixedSize(horizontal: false, vertical: true)

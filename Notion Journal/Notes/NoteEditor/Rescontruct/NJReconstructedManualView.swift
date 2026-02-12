@@ -216,7 +216,10 @@ struct NJReconstructedManualView: View {
             inheritedTags: [],
             editableTags: [],
             tagJSON: liveTagJSON,
-            onSaveTagJSON: onSaveTags
+            onSaveTagJSON: onSaveTags,
+            tagSuggestionsProvider: { prefix, limit in
+                store.notes.listTagSuggestions(prefix: prefix, limit: limit)
+            }
         )
         .listRowInsets(EdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 12))
         .listRowBackground(persistence.rowBackgroundColor(blockID: b.blockID))

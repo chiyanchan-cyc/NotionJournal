@@ -308,6 +308,8 @@ final class NJReconstructedNotePersistence: ObservableObject {
             }
             print("NJ_RECON_WHERE all sql=\(whereSQL)")
             return (whereSQL, binder)
+        case .customIDs:
+            return ("b.deleted=0", { _ in })
         }
     }
 
@@ -402,6 +404,14 @@ final class NJReconstructedNotePersistence: ObservableObject {
             let orderSQL = spec.newestFirst ? "DESC" : "ASC"
 
             switch spec.match {
+            case .customIDs(let ids):
+                if ids.isEmpty { return [] }
+                let limitCount = max(1, spec.limit)
+                let trimmed = ids
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                if trimmed.isEmpty { return [] }
+                return Array(trimmed.prefix(limitCount))
             case .all:
                 let sql = """
                 SELECT b.block_id
@@ -580,6 +590,8 @@ final class NJReconstructedNotePersistence: ObservableObject {
         }
 
         if case .all = spec.match {
+            out.sort { spec.newestFirst ? ($0.createdAtMs > $1.createdAtMs) : ($0.createdAtMs < $1.createdAtMs) }
+        } else if case .customIDs = spec.match {
             out.sort { spec.newestFirst ? ($0.createdAtMs > $1.createdAtMs) : ($0.createdAtMs < $1.createdAtMs) }
         } else {
             // Sort by first line (case-insensitive), then by created time (newest first).

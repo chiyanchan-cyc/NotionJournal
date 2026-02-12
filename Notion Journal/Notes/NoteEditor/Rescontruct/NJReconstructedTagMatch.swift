@@ -12,6 +12,7 @@ enum NJReconstructedTagMatch: Equatable {
     case exact(String)
     case prefix(String)
     case all
+    case customIDs([String])
 }
 
 enum NJReconstructedTimeField: Equatable {
@@ -107,6 +108,27 @@ struct NJReconstructedSpec: Equatable, Identifiable {
             limit: limit,
             newestFirst: newestFirst,
             excludeTags: excludeTags
+        )
+    }
+
+    static func custom(
+        title: String,
+        ids: [String],
+        limit: Int = 500,
+        newestFirst: Bool = true
+    ) -> NJReconstructedSpec {
+        let compact = ids.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        return NJReconstructedSpec(
+            id: "recon:custom:\(title.lowercased()):\(compact.count)",
+            title: title,
+            tab: "RECONSTRUCTED",
+            match: .customIDs(compact),
+            timeField: .blockCreatedAtMs,
+            startMs: nil,
+            endMs: nil,
+            limit: limit,
+            newestFirst: newestFirst,
+            excludeTags: []
         )
     }
 }

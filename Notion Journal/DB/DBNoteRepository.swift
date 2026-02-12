@@ -84,6 +84,46 @@ final class DBNoteRepository {
         blockTable.lastJournaledAtMsForTag(tag)
     }
 
+    func listTagSuggestions(prefix: String, limit: Int = 12) -> [String] {
+        let trimmed = prefix.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        return db.withDB { dbp in
+            var out: [String] = []
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT tag
+            FROM (
+                SELECT DISTINCT t.tag AS tag
+                FROM nj_block_tag t
+                WHERE lower(t.tag) LIKE lower(?)
+                UNION
+                SELECT DISTINCT g.goal_tag AS tag
+                FROM nj_goal g
+                WHERE g.goal_tag IS NOT NULL
+                  AND trim(g.goal_tag) <> ''
+                  AND lower(g.goal_tag) LIKE lower(?)
+            )
+            ORDER BY tag COLLATE NOCASE ASC
+            LIMIT ?;
+            """
+            let rc0 = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
+            if rc0 != SQLITE_OK { return out }
+            defer { sqlite3_finalize(stmt) }
+
+            let pattern = "\(trimmed)%"
+            sqlite3_bind_text(stmt, 1, pattern, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 2, pattern, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int(stmt, 3, Int32(max(1, limit)))
+
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                guard let c = sqlite3_column_text(stmt, 0) else { continue }
+                let s = String(cString: c).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !s.isEmpty { out.append(s) }
+            }
+            return out
+        }
+    }
+
     func listGoalSummaries(includeDeleted: Bool = false) -> [NJGoalSummary] {
         goalTable.listGoalSummaries(includeDeleted: includeDeleted)
     }
@@ -197,6 +237,12 @@ final class DBNoteRepository {
         case "calendar_item":
             for (_, f) in rows { applyRemoteUpsert(entity: "calendar_item", fields: f) }
 
+        case "outline":
+            for (_, f) in rows { applyRemoteUpsert(entity: "outline", fields: f) }
+
+        case "outline_node":
+            for (_, f) in rows { applyRemoteUpsert(entity: "outline_node", fields: f) }
+
         case "note_block":
             func noteID(_ f: [String: Any]) -> String { (f["note_id"] as? String) ?? (f["noteID"] as? String) ?? "" }
             func blockID(_ f: [String: Any]) -> String { (f["block_id"] as? String) ?? (f["blockID"] as? String) ?? "" }
@@ -229,6 +275,8 @@ final class DBNoteRepository {
     func cloudFields(entity: String, id: String) -> [String: Any] {
         if entity == "notebook" { return loadNotebookFields(notebookID: id) ?? [:] }
         if entity == "tab" { return loadTabFields(tabID: id) ?? [:] }
+        if entity == "outline" { return loadOutlineFields(outlineID: id) ?? [:] }
+        if entity == "outline_node" { return loadOutlineNodeFields(nodeID: id) ?? [:] }
         return loadRecord(entity: entity, id: id) ?? [:]
     }
 
@@ -256,6 +304,8 @@ final class DBNoteRepository {
         case "block": table = "nj_block"
         case "note_block": table = "nj_note_block"
         case "calendar_item": table = "nj_calendar_item"
+        case "outline": table = "nj_outline"
+        case "outline_node": table = "nj_outline_node"
         default: return 0
         }
         
@@ -334,12 +384,16 @@ final class DBNoteRepository {
     func loadRecord(entity: String, id: String) -> [String: Any]? {
         if entity == "notebook" { return loadNotebookFields(notebookID: id) }
         if entity == "tab" { return loadTabFields(tabID: id) }
+        if entity == "outline" { return loadOutlineFields(outlineID: id) }
+        if entity == "outline_node" { return loadOutlineNodeFields(nodeID: id) }
         return cloudBridge.loadRecord(entity: entity, id: id)
     }
     
     func applyRemoteUpsert(entity: String, fields: [String: Any]) {
         if entity == "notebook" { applyNotebookFields(fields); return }
         if entity == "tab" { applyTabFields(fields); return }
+        if entity == "outline" { applyOutlineFields(fields); return }
+        if entity == "outline_node" { applyOutlineNodeFields(fields); return }
         cloudBridge.applyRemoteUpsert(entity: entity, fields: fields)
     }
     

@@ -12,6 +12,7 @@ struct NJBlockHostView: View {
     let editableTags: [String]
     let tagJSON: String?
     let onSaveTagJSON: ((String) -> Void)?
+    let tagSuggestionsProvider: ((String, Int) -> [String])?
 
 
     let goalPreview: String?
@@ -43,6 +44,7 @@ struct NJBlockHostView: View {
     @State private var showTagSheet: Bool = false
     @State private var tagDraft: [String] = []
     @State private var tagNewText: String = ""
+    @State private var tagSuggestions: [String] = []
 
     init(
         index: Int,
@@ -67,7 +69,8 @@ struct NJBlockHostView: View {
         inheritedTags: [String] = [],
         editableTags: [String] = [],
         tagJSON: String? = nil,
-        onSaveTagJSON: ((String) -> Void)? = nil
+        onSaveTagJSON: ((String) -> Void)? = nil,
+        tagSuggestionsProvider: ((String, Int) -> [String])? = nil
     ) {
         self.index = index
         self.createdAtMs = createdAtMs
@@ -77,6 +80,7 @@ struct NJBlockHostView: View {
         self.editableTags = editableTags
         self.tagJSON = tagJSON
         self.onSaveTagJSON = onSaveTagJSON
+        self.tagSuggestionsProvider = tagSuggestionsProvider
         self.goalPreview = goalPreview
         self.onAddGoal = onAddGoal
         self.hasClipPDF = hasClipPDF
@@ -146,6 +150,7 @@ struct NJBlockHostView: View {
 //        }
 
         tagNewText = ""
+        tagSuggestions = []
         showTagSheet = true
     }
 
@@ -153,6 +158,54 @@ struct NJBlockHostView: View {
         guard !from.isEmpty, !to.isEmpty else { return }
         let updated = tagDraft.map { $0 == from ? to : $0 }
         tagDraft = uniqPreserveOrder(updated)
+    }
+
+    private func domainCandidates() -> [String] {
+        let fromPreview = (domainPreview ?? "")
+            .split(separator: ",")
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return uniqPreserveOrder(fromPreview)
+    }
+
+    private func goalCandidate() -> String {
+        normalizedTag(goalPreview ?? "")
+    }
+
+    private func addDomainAutofill() {
+        let candidates = domainCandidates()
+        guard !candidates.isEmpty else { return }
+        tagDraft = uniqPreserveOrder(tagDraft + candidates)
+    }
+
+    private func addGoalAutofill() {
+        let goal = goalCandidate()
+        guard !goal.isEmpty else { return }
+        tagDraft = uniqPreserveOrder(tagDraft + [goal])
+    }
+
+    private func refreshTagSuggestions() {
+        let q = normalizedTag(tagNewText)
+        if q.isEmpty {
+            tagSuggestions = []
+            return
+        }
+        var local = uniqPreserveOrder(inheritedTags + tagDraft + domainCandidates() + [goalCandidate()])
+            .filter { $0.lowercased().hasPrefix(q.lowercased()) }
+        if let provider = tagSuggestionsProvider {
+            let remote = provider(q, 12)
+            local = uniqPreserveOrder(local + remote)
+        }
+        let existing = Set(tagDraft.map { $0.lowercased() })
+        tagSuggestions = local.filter { !existing.contains($0.lowercased()) }
+    }
+
+    private func addTagFromInput() {
+        let t = normalizedTag(tagNewText)
+        guard !t.isEmpty else { return }
+        tagDraft = uniqPreserveOrder(tagDraft + [t])
+        tagNewText = ""
+        tagSuggestions = []
     }
 
     var body: some View {
@@ -314,6 +367,25 @@ struct NJBlockHostView: View {
                     }
 
                     Section("Block Tags") {
+                        let goal = goalCandidate()
+                        let domains = domainCandidates()
+                        if !goal.isEmpty || !domains.isEmpty {
+                            HStack(spacing: 10) {
+                                if !domains.isEmpty {
+                                    Button(domains.count == 1 ? "Autofill Domain" : "Autofill Domains") {
+                                        addDomainAutofill()
+                                    }
+                                    .buttonStyle(.bordered)
+                                }
+                                if !goal.isEmpty {
+                                    Button("Autofill Goal") {
+                                        addGoalAutofill()
+                                    }
+                                    .buttonStyle(.bordered)
+                                }
+                            }
+                        }
+
                         let hasRemind = tagDraft.contains("#REMIND")
                         let hasPlanning = tagDraft.contains("#PLANNING")
                         if hasRemind || hasPlanning {
@@ -349,14 +421,35 @@ struct NJBlockHostView: View {
                             TextField("Add tag", text: $tagNewText)
                                 .textInputAutocapitalization(.never)
                                 .autocorrectionDisabled(true)
-                            Button("Add") {
-                                let t = normalizedTag(tagNewText)
-                                if !t.isEmpty {
-                                    tagDraft = uniqPreserveOrder(tagDraft + [t])
+                                .onChange(of: tagNewText) { _, _ in
+                                    refreshTagSuggestions()
                                 }
-                                tagNewText = ""
+                                .onSubmit {
+                                    addTagFromInput()
+                                }
+                            Button("Add") {
+                                addTagFromInput()
                             }
                             .disabled(normalizedTag(tagNewText).isEmpty)
+                        }
+
+                        if !tagSuggestions.isEmpty {
+                            ForEach(tagSuggestions.prefix(6), id: \.self) { s in
+                                Button {
+                                    tagDraft = uniqPreserveOrder(tagDraft + [s])
+                                    tagNewText = ""
+                                    tagSuggestions = []
+                                } label: {
+                                    HStack {
+                                        Text(s)
+                                            .foregroundStyle(.primary)
+                                        Spacer()
+                                        Image(systemName: "sparkles")
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                            }
                         }
                     }
                 }

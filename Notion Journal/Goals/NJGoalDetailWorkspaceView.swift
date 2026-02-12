@@ -280,6 +280,9 @@ struct NJGoalDetailWorkspaceView: View {
             onSaveTagJSON: { json in
                 let merged = mergeTagJSONWithGoal(json: json, goalTag: persistence.goalTag)
                 persistence.setProgressTagJSON(blockID: b.blockID, tagJSON: merged)
+            },
+            tagSuggestionsProvider: { prefix, limit in
+                store.notes.listTagSuggestions(prefix: prefix, limit: limit)
             }
         )
         .id(id)
@@ -327,6 +330,9 @@ struct NJGoalDetailWorkspaceView: View {
             onSaveTagJSON: { json in
                 let merged = mergeTagJSONWithGoal(json: json, goalTag: persistence.goalTag)
                 persistence.setTimelineTagJSON(blockID: b.blockID, tagJSON: merged)
+            },
+            tagSuggestionsProvider: { prefix, limit in
+                store.notes.listTagSuggestions(prefix: prefix, limit: limit)
             }
         )
         .id(id)

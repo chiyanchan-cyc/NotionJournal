@@ -42,6 +42,7 @@ final class AppStore: ObservableObject {
     @Published var selectedModule: NJUIModule = .note
     @Published var selectedGoalID: String? = nil
     @Published var selectedOutlineID: String? = nil
+    @Published var selectedOutlineMainTabID: String? = "ME"
     @Published var selectedOutlineCategoryID: String? = nil
     @Published var selectedOutlineNodeID: String? = nil
     @Published var showDBDebugPanel = false
@@ -93,9 +94,16 @@ final class AppStore: ObservableObject {
 
         runAttachmentCacheCleanupIfNeeded()
         notes.cleanupCalendarItemsOlderThan3Months()
+        let outlineBackfillCount = notes.enqueueOutlineDirtyBackfillIfNeeded()
+        let outlineCount = notes.localCount(entity: "outline")
+        let outlineNodeCount = notes.localCount(entity: "outline_node")
+        print("NJ_OUTLINE_LOCAL outlines=\(outlineCount) nodes=\(outlineNodeCount) backfill_changed=\(outlineBackfillCount)")
         refreshQuickClipboardCount()
 
         self.sync.start()
+        if outlineBackfillCount > 0 {
+            sync.schedulePush(debounceMs: 0)
+        }
         Task { await runInitialPullGate() }
 
         NotificationCenter.default.addObserver(

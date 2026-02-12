@@ -170,7 +170,10 @@ struct NJNoteEditorContainerView: View {
                         inheritedTags: inherited,
                         editableTags: editable,
                         tagJSON: liveTagJSON,
-                        onSaveTagJSON: onSaveTags
+                        onSaveTagJSON: onSaveTags,
+                        tagSuggestionsProvider: { prefix, limit in
+                            store.notes.listTagSuggestions(prefix: prefix, limit: limit)
+                        }
                     )
 
                     .id("\(id.uuidString)-\(collapsedBinding.wrappedValue ? "c" : "e")")

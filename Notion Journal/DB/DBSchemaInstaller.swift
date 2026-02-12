@@ -478,6 +478,10 @@ enum DBSchemaInstaller {
                     domain_tag TEXT NOT NULL DEFAULT '',
                     is_checklist INTEGER NOT NULL DEFAULT 0,
                     is_checked INTEGER NOT NULL DEFAULT 0,
+                    is_collapsed INTEGER NOT NULL DEFAULT 0,
+                    filter_json TEXT NOT NULL DEFAULT '{}',
+                    goal_refs_json TEXT NOT NULL DEFAULT '[]',
+                    block_refs_json TEXT NOT NULL DEFAULT '[]',
                     created_at_ms INTEGER NOT NULL,
                     updated_at_ms INTEGER NOT NULL,
                     deleted INTEGER NOT NULL DEFAULT 0
@@ -493,6 +497,10 @@ enum DBSchemaInstaller {
                     ColumnSpec(name: "domain_tag", declForAlter: "TEXT NOT NULL DEFAULT ''"),
                     ColumnSpec(name: "is_checklist", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
                     ColumnSpec(name: "is_checked", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "is_collapsed", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "filter_json", declForAlter: "TEXT NOT NULL DEFAULT '{}'"),
+                    ColumnSpec(name: "goal_refs_json", declForAlter: "TEXT NOT NULL DEFAULT '[]'"),
+                    ColumnSpec(name: "block_refs_json", declForAlter: "TEXT NOT NULL DEFAULT '[]'"),
                     ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
                     ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
                     ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
