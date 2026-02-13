@@ -117,3 +117,17 @@ struct NJGoalSummary: Identifiable, Hashable {
 
     var id: String { goalID }
 }
+
+struct NJPlannedExercise: Identifiable, Codable, Hashable {
+    var planID: String
+    var dateKey: String
+    var sport: String
+    var targetDistanceKm: Double
+    var targetDurationMin: Double
+    var notes: String
+    var createdAtMs: Int64
+    var updatedAtMs: Int64
+    var deleted: Int
+
+    var id: String { planID }
+}

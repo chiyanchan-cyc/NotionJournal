@@ -196,6 +196,37 @@ enum DBSchemaInstaller {
                     "CREATE INDEX IF NOT EXISTS idx_nj_calendar_item_date ON nj_calendar_item(date_key ASC);"
                 ]
             ),
+            TableSpec(
+                name: "nj_planned_exercise",
+                createSQL: """
+                CREATE TABLE IF NOT EXISTS nj_planned_exercise (
+                    plan_id TEXT PRIMARY KEY,
+                    date_key TEXT NOT NULL,
+                    sport TEXT NOT NULL DEFAULT '',
+                    target_distance_km REAL NOT NULL DEFAULT 0,
+                    target_duration_min REAL NOT NULL DEFAULT 0,
+                    notes TEXT NOT NULL DEFAULT '',
+                    created_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL,
+                    deleted INTEGER NOT NULL DEFAULT 0
+                );
+                """,
+                columns: [
+                    ColumnSpec(name: "plan_id", declForAlter: "TEXT"),
+                    ColumnSpec(name: "date_key", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "sport", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "target_distance_km", declForAlter: "REAL NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "target_duration_min", declForAlter: "REAL NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "notes", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
+                ],
+                indexes: [
+                    "CREATE INDEX IF NOT EXISTS idx_nj_planned_exercise_date ON nj_planned_exercise(date_key ASC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_planned_exercise_updated ON nj_planned_exercise(updated_at_ms DESC);"
+                ]
+            ),
 
             TableSpec(
                 name: "nj_block",

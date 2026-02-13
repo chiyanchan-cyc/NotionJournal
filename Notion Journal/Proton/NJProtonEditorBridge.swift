@@ -110,6 +110,42 @@ import os
 private let NJShortcutLog = Logger(subsystem: "NotionJournal", category: "KeyCommands")
 private var NJKeyCommandsOriginalIMPByClass: [ObjectIdentifier: IMP] = [:]
 private var NJPasteOriginalIMPByClass: [ObjectIdentifier: IMP] = [:]
+private var NJCanPerformActionOriginalIMPByClass: [ObjectIdentifier: IMP] = [:]
+
+private func NJClipboardImage() -> UIImage? {
+    let pb = UIPasteboard.general
+    if let img = pb.image { return img }
+
+    let candidateKeys = [
+        "public.png",
+        "public.jpeg",
+        "public.tiff",
+        "public.image",
+        "com.apple.uikit.image"
+    ]
+
+    for item in pb.items {
+        for key in candidateKeys {
+            guard let value = item[key] else { continue }
+            if let img = value as? UIImage { return img }
+            if let data = value as? Data, let img = UIImage(data: data) { return img }
+            if let data = value as? NSData, let img = UIImage(data: data as Data) { return img }
+            if let url = value as? URL,
+               let data = try? Data(contentsOf: url),
+               let img = UIImage(data: data) {
+                return img
+            }
+            if let s = value as? String,
+               let url = URL(string: s),
+               url.isFileURL,
+               let data = try? Data(contentsOf: url),
+               let img = UIImage(data: data) {
+                return img
+            }
+        }
+    }
+    return nil
+}
 
 private func NJInstallTextViewKeyCommandHook(_ tv: UITextView) {
     let cls: AnyClass = object_getClass(tv) ?? UITextView.self
@@ -171,20 +207,53 @@ private func NJInstallTextViewPasteHook(_ tv: UITextView) {
     typealias OrigFn = @convention(c) (AnyObject, Selector, Any?) -> Void
     let newBlock: @convention(block) (UITextView, Any?) -> Void = { t, sender in
         if let h = t.njProtonHandle {
-            let pb = UIPasteboard.general
-            let hasText = !(pb.string?.isEmpty ?? true)
-            if !hasText, let img = pb.image {
+            if let img = NJClipboardImage() {
                 let fullRef = NJPhotoLibraryPresenter.saveFullPhotoToICloud(image: img) ?? ""
-                h.insertPhotoAttachment(img, displayWidth: 400, fullPhotoRef: fullRef)
-                h.snapshot()
-                if !t.isFirstResponder { _ = t.becomeFirstResponder() }
-                return
+                if !fullRef.isEmpty {
+                    h.insertPhotoAttachment(img, displayWidth: 400, fullPhotoRef: fullRef)
+                    h.snapshot()
+                    if !t.isFirstResponder { _ = t.becomeFirstResponder() }
+                    return
+                }
             }
         }
 
         guard let imp = NJPasteOriginalIMPByClass[key] else { return }
         let f = unsafeBitCast(imp, to: OrigFn.self)
         f(t, sel, sender)
+    }
+
+    let newIMP = imp_implementationWithBlock(newBlock)
+    method_setImplementation(method, newIMP)
+}
+
+private func NJInstallTextViewCanPerformActionHook(_ tv: UITextView) {
+    let cls: AnyClass = object_getClass(tv) ?? UITextView.self
+    let key = ObjectIdentifier(cls)
+    if NJCanPerformActionOriginalIMPByClass[key] != nil { return }
+
+    let sel = #selector(UIResponder.canPerformAction(_:withSender:))
+    guard let method = class_getInstanceMethod(cls, sel) else { return }
+
+    let origIMP = method_getImplementation(method)
+    NJCanPerformActionOriginalIMPByClass[key] = origIMP
+
+    typealias OrigFn = @convention(c) (AnyObject, Selector, Selector, Any?) -> Bool
+    let newBlock: @convention(block) (UITextView, Selector, Any?) -> Bool = { t, action, sender in
+        var allowed = false
+        if let imp = NJCanPerformActionOriginalIMPByClass[key] {
+            let f = unsafeBitCast(imp, to: OrigFn.self)
+            allowed = f(t, sel, action, sender)
+        }
+
+        if action == #selector(UIResponderStandardEditActions.paste(_:)),
+           !allowed,
+           t.njProtonHandle != nil,
+           NJClipboardImage() != nil {
+            return true
+        }
+
+        return allowed
     }
 
     let newIMP = imp_implementationWithBlock(newBlock)
@@ -2425,6 +2494,7 @@ struct NJProtonEditorView: UIViewRepresentable {
         if let tv = findTextView(in: v) {
             NJInstallTextViewKeyCommandHook(tv)
             NJInstallTextViewPasteHook(tv)
+            NJInstallTextViewCanPerformActionHook(tv)
             if tv.njProtonHandle == nil || handle.owns(textView: tv) {
                 tv.njProtonHandle = handle
                 handle.textView = tv
@@ -2464,6 +2534,7 @@ struct NJProtonEditorView: UIViewRepresentable {
             if let tv = findTextView(in: v) {
                 NJInstallTextViewKeyCommandHook(tv)
                 NJInstallTextViewPasteHook(tv)
+                NJInstallTextViewCanPerformActionHook(tv)
                 if tv.njProtonHandle == nil || handle.owns(textView: tv) {
                     tv.njProtonHandle = handle
                     handle.textView = tv
@@ -2491,6 +2562,7 @@ struct NJProtonEditorView: UIViewRepresentable {
         if let tv = findTextView(in: uiView) {
             NJInstallTextViewKeyCommandHook(tv)
             NJInstallTextViewPasteHook(tv)
+            NJInstallTextViewCanPerformActionHook(tv)
             if tv.njProtonHandle == nil || handle.owns(textView: tv) {
                 tv.njProtonHandle = handle
                 handle.textView = tv

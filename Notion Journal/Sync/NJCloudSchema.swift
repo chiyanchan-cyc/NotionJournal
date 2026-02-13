@@ -19,6 +19,7 @@ enum NJCloudSchema {
         a.append((NJBlockCloudMapper.entity, NJBlockCloudMapper.recordType))
         a.append((NJAttachmentCloudMapper.entity, NJAttachmentCloudMapper.recordType))
         a.append((NJCalendarItemCloudMapper.entity, NJCalendarItemCloudMapper.recordType))
+        a.append((NJPlannedExerciseCloudMapper.entity, NJPlannedExerciseCloudMapper.recordType))
         a.append(("goal", "NJGoal"))
         a.append((NJOutlineCloudMapper.entity, NJOutlineCloudMapper.recordType))
         a.append((NJOutlineNodeCloudMapper.entity, NJOutlineNodeCloudMapper.recordType))

@@ -2,6 +2,9 @@ import SwiftUI
 import Photos
 import UIKit
 import EventKit
+#if canImport(HealthKit)
+import HealthKit
+#endif
 
 private enum NJCalendarDisplayMode: String, CaseIterable, Identifiable {
     case month = "Monthly"
@@ -10,19 +13,65 @@ private enum NJCalendarDisplayMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+private enum NJCalendarContentMode: String, CaseIterable, Identifiable {
+    case memory
+    case health
+
+    var id: String { rawValue }
+    var icon: String { self == .memory ? "photo" : "heart.text.square" }
+}
+
+private struct NJCalendarHealthDay {
+    struct ActivityStat {
+        var distanceKm: Double = 0
+        var durationMin: Double = 0
+    }
+
+    var sleepHours: Double = 0
+    var workoutDistanceKm: Double = 0
+    var workoutDurationMin: Double = 0
+    var workoutCount: Int = 0
+    var workoutByActivity: [String: ActivityStat] = [:]
+    var medDoseCount: Int = 0
+    var bpSystolicSum: Double = 0
+    var bpSystolicCount: Int = 0
+    var bpDiastolicSum: Double = 0
+    var bpDiastolicCount: Int = 0
+
+    var avgSystolic: Double? {
+        guard bpSystolicCount > 0 else { return nil }
+        return bpSystolicSum / Double(bpSystolicCount)
+    }
+
+    var avgDiastolic: Double? {
+        guard bpDiastolicCount > 0 else { return nil }
+        return bpDiastolicSum / Double(bpDiastolicCount)
+    }
+
+    var paceMinPerKm: Double? {
+        guard workoutDistanceKm > 0 else { return nil }
+        return workoutDurationMin / workoutDistanceKm
+    }
+}
+
 struct NJCalendarView: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openWindow) private var openWindow
 
     @State private var displayMode: NJCalendarDisplayMode = .month
+    @State private var contentMode: NJCalendarContentMode = .memory
     @State private var focusedDate: Date = Date()
     @State private var selectedDate: Date = Date()
     @State private var itemsByDate: [String: NJCalendarItem] = [:]
+    @State private var healthByDate: [String: NJCalendarHealthDay] = [:]
+    @State private var plannedByDate: [String: [NJPlannedExercise]] = [:]
     @State private var eventsByDate: [String: [EKEvent]] = [:]
     @State private var calendarAuth: EKAuthorizationStatus = .notDetermined
     @State private var showPhotoPicker = false
     @State private var photoPickerDate: Date = Date()
+    @State private var showPlanExerciseSheet = false
+    @State private var planExerciseDate: Date = Date()
 
     private let calendar = Calendar.current
     private let eventStore = EKEventStore()
@@ -47,11 +96,17 @@ struct NJCalendarView: View {
         .toolbar { toolbar() }
         .onAppear { reloadAll() }
         .onChange(of: displayMode) { _, _ in reloadAll() }
+        .onChange(of: contentMode) { _, _ in reloadAll() }
         .onChange(of: focusedDate) { _, _ in reloadItemsForVisibleRange() }
         .onChange(of: selectedDate) { _, _ in syncSelectedItem() }
         .sheet(isPresented: $showPhotoPicker) {
             NJDatePhotoPicker(date: photoPickerDate) { image, localID in
                 savePhoto(image: image, localIdentifier: localID)
+            }
+        }
+        .sheet(isPresented: $showPlanExerciseSheet) {
+            NJPlanExerciseSheet(date: planExerciseDate) { sport, distKm, durMin, notes in
+                savePlannedExercise(date: planExerciseDate, sport: sport, distanceKm: distKm, durationMin: durMin, notes: notes)
             }
         }
     }
@@ -74,7 +129,6 @@ struct NJCalendarView: View {
 
     private func headerBar() -> some View {
         HStack {
-            Spacer(minLength: 0)
             if displayMode == .month {
                 HStack(spacing: 10) {
                     Button { step(-1) } label: { Image(systemName: "chevron.left") }
@@ -89,6 +143,7 @@ struct NJCalendarView: View {
                     .font(.headline)
             }
             Spacer(minLength: 0)
+            contentModePicker()
         }
         .padding(.horizontal, 12)
         .padding(.top, 8)
@@ -116,6 +171,24 @@ struct NJCalendarView: View {
         .pickerStyle(.segmented)
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
+    }
+
+    private func contentModePicker() -> some View {
+        HStack(spacing: 10) {
+            ForEach(NJCalendarContentMode.allCases) { mode in
+                let isOn = contentMode == mode
+                Button {
+                    contentMode = mode
+                } label: {
+                    Image(systemName: mode.icon)
+                        .font(.subheadline)
+                        .frame(width: 32, height: 32)
+                        .background(isOn ? Color.accentColor.opacity(0.2) : Color(UIColor.secondarySystemBackground))
+                        .clipShape(RoundedRectangle(cornerRadius: 7))
+                }
+                .buttonStyle(.plain)
+            }
+        }
     }
 
     private func weekdayHeader() -> some View {
@@ -228,7 +301,7 @@ struct NJCalendarView: View {
                             .background(Color.accentColor.opacity(0.22))
                             .cornerRadius(4)
                         Spacer(minLength: 0)
-                        if let localID = photoLocalIdentifier(for: item) {
+                        if contentMode == .memory, let localID = photoLocalIdentifier(for: item) {
                             Button {
                                 openPhotoWindow(localIdentifier: localID)
                             } label: {
@@ -253,15 +326,25 @@ struct NJCalendarView: View {
                 }
 
                 if !events.isEmpty {
-                    ForEach(events.prefix(isWeekly ? 6 : 2), id: \.eventIdentifier) { ev in
-                        Text(ev.title)
-                            .font(isWeekly ? .callout : .caption2)
-                            .lineLimit(1)
-                            .foregroundStyle(.secondary)
+                    if contentMode == .memory {
+                        ForEach(events.prefix(isWeekly ? 6 : 2), id: \.eventIdentifier) { ev in
+                            Text(ev.title)
+                                .font(isWeekly ? .callout : .caption2)
+                                .lineLimit(1)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        healthSummaryView(date: date, isWeekly: isWeekly)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     }
                 } else {
-                    Text(" ")
-                        .font(.caption2)
+                    if contentMode == .memory {
+                        Text(" ")
+                            .font(.caption2)
+                    } else {
+                        healthSummaryView(date: date, isWeekly: isWeekly)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    }
                 }
             }
             .padding(8)
@@ -269,7 +352,7 @@ struct NJCalendarView: View {
             .zIndex(2)
         }
         .frame(maxWidth: .infinity, minHeight: isWeekly ? 120 : monthHeight, maxHeight: isWeekly ? .infinity : monthHeight)
-        .background(photoLayer)
+        .background(contentMode == .memory ? AnyView(photoLayer) : AnyView(Color(UIColor.secondarySystemBackground)))
         .overlay(isSelected ? Color.accentColor.opacity(0.18) : Color.clear)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(
@@ -280,22 +363,30 @@ struct NJCalendarView: View {
         .contentShape(RoundedRectangle(cornerRadius: 8))
         .simultaneousGesture(TapGesture().onEnded { selectedDate = date })
         .contextMenu {
-            if item?.photoThumbPath.isEmpty == false {
-                if let localID = photoLocalIdentifier(for: item) {
-                    Button("Open Photo") { openPhotoWindow(localIdentifier: localID) }
+            if contentMode == .memory {
+                if item?.photoThumbPath.isEmpty == false {
+                    if let localID = photoLocalIdentifier(for: item) {
+                        Button("Open Photo") { openPhotoWindow(localIdentifier: localID) }
+                    }
+                }
+                if isPastDate(date) {
+                    Button("Add Photo") {
+                        selectedDate = date
+                        photoPickerDate = date
+                        showPhotoPicker = true
+                    }
+                    if item?.photoThumbPath.isEmpty == false {
+                        Button("Remove Photo", role: .destructive) {
+                            selectedDate = date
+                            removePhoto()
+                        }
+                    }
                 }
             }
-            if isPastDate(date) {
-                Button("Add Photo") {
-                    selectedDate = date
-                    photoPickerDate = date
-                    showPhotoPicker = true
-                }
-                if item?.photoThumbPath.isEmpty == false {
-                    Button("Remove Photo", role: .destructive) {
-                        selectedDate = date
-                        removePhoto()
-                    }
+            if contentMode == .health, !isPastDate(date) {
+                Button("Plan Exercise") {
+                    planExerciseDate = date
+                    showPlanExerciseSheet = true
                 }
             }
         }
@@ -318,6 +409,8 @@ struct NJCalendarView: View {
             ensureThumbCached(attachmentID: item.photoAttachmentID, dateKey: item.dateKey)
         }
         loadEventsForVisibleRange(start: start, end: end)
+        reloadHealthForVisibleRange(start: start, end: end)
+        reloadPlansForVisibleRange(start: start, end: end)
     }
 
     private func syncSelectedItem() {
@@ -405,6 +498,24 @@ struct NJCalendarView: View {
             store.notes.upsertCalendarItem(item)
             itemsByDate[key] = item
         }
+    }
+
+    private func savePlannedExercise(date: Date, sport: String, distanceKm: Double, durationMin: Double, notes: String) {
+        let key = dateKey(date)
+        let now = DBNoteRepository.nowMs()
+        let plan = NJPlannedExercise(
+            planID: UUID().uuidString.lowercased(),
+            dateKey: key,
+            sport: sport,
+            targetDistanceKm: distanceKm,
+            targetDurationMin: durationMin,
+            notes: notes,
+            createdAtMs: now,
+            updatedAtMs: now,
+            deleted: 0
+        )
+        store.notes.upsertPlannedExercise(plan)
+        reloadPlansForVisibleRange(start: gridDates().first ?? date, end: gridDates().last ?? date)
     }
 
     private func selectedPhotoImage(_ item: NJCalendarItem?) -> UIImage? {
@@ -554,6 +665,269 @@ struct NJCalendarView: View {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter.string(from: date)
+    }
+
+    private func reloadPlansForVisibleRange(start: Date, end: Date) {
+        let startKey = dateKey(start)
+        let endKey = dateKey(end)
+        let plans = store.notes.listPlannedExercises(startKey: startKey, endKey: endKey)
+        plannedByDate = Dictionary(grouping: plans, by: { $0.dateKey })
+    }
+
+    private func reloadHealthForVisibleRange(start: Date, end: Date) {
+        let startMs = Int64(calendar.startOfDay(for: start).timeIntervalSince1970 * 1000.0)
+        let endExclusive = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: end)) ?? end
+        let endMs = Int64(endExclusive.timeIntervalSince1970 * 1000.0)
+        let sql = """
+        SELECT type, start_ms, end_ms, value_num, value_str, metadata_json
+        FROM health_samples
+        WHERE start_ms >= \(startMs)
+          AND start_ms < \(endMs)
+          AND type IN ('sleep', 'workout', 'blood_pressure_systolic', 'blood_pressure_diastolic', 'medication_dose', 'medication_record')
+        ORDER BY start_ms ASC;
+        """
+        let rows = store.db.queryRows(sql)
+        var out: [String: NJCalendarHealthDay] = [:]
+
+        for r in rows {
+            let type = r["type"] ?? ""
+            let sMs = Int64(r["start_ms"] ?? "") ?? 0
+            let eMs = Int64(r["end_ms"] ?? "") ?? sMs
+            let value = Double(r["value_num"] ?? "") ?? 0
+            let d = Date(timeIntervalSince1970: TimeInterval(sMs) / 1000.0)
+            let key = dateKey(d)
+            var day = out[key] ?? NJCalendarHealthDay()
+
+            switch type {
+            case "sleep":
+                day.sleepHours += Double(max(0, eMs - sMs)) / 1000.0 / 3600.0
+            case "workout":
+                day.workoutCount += 1
+                day.workoutDurationMin += value / 60.0
+                let md = parseJSONDict(r["metadata_json"] ?? "")
+                let distM = (md["distance_m"] as? NSNumber)?.doubleValue ?? 0
+                let distKm = distM / 1000.0
+                day.workoutDistanceKm += distKm
+                let activity = normalizedActivityName(valueStr: r["value_str"] ?? "", metadata: md)
+                var stat = day.workoutByActivity[activity] ?? NJCalendarHealthDay.ActivityStat()
+                stat.distanceKm += distKm
+                stat.durationMin += value / 60.0
+                day.workoutByActivity[activity] = stat
+            case "blood_pressure_systolic":
+                day.bpSystolicSum += value
+                day.bpSystolicCount += 1
+            case "blood_pressure_diastolic":
+                day.bpDiastolicSum += value
+                day.bpDiastolicCount += 1
+            case "medication_dose", "medication_record":
+                day.medDoseCount += 1
+            default:
+                break
+            }
+            out[key] = day
+        }
+        healthByDate = out
+    }
+
+    private func parseJSONDict(_ s: String) -> [String: Any] {
+        if s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return [:] }
+        guard let d = s.data(using: .utf8) else { return [:] }
+        return (try? JSONSerialization.jsonObject(with: d, options: [])) as? [String: Any] ?? [:]
+    }
+
+    private func prettyActivityName(_ raw: String) -> String {
+        let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.isEmpty { return "Workout" }
+        return s.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+
+    private func normalizedActivityName(valueStr: String, metadata: [String: Any]) -> String {
+        if let n = metadata["activity_type"] as? NSNumber,
+           let mapped = activityNameFromRaw(Int(n.int64Value)) {
+            return mapped
+        }
+        if let raw = rawActivityFromValueStr(valueStr),
+           let mapped = activityNameFromRaw(raw) {
+            return mapped
+        }
+        let cleaned = prettyActivityName(valueStr)
+        if cleaned.lowercased().contains("rawvalue") { return "Workout" }
+        return cleaned
+    }
+
+    private func rawActivityFromValueStr(_ valueStr: String) -> Int? {
+        let digits = valueStr.filter { $0.isNumber }
+        guard !digits.isEmpty else { return nil }
+        return Int(digits)
+    }
+
+    private func activityNameFromRaw(_ raw: Int) -> String? {
+        #if canImport(HealthKit)
+        guard let t = HKWorkoutActivityType(rawValue: UInt(raw)) else { return nil }
+        switch t {
+        case .running: return "Running"
+        case .cycling: return "Cycling"
+        case .tennis: return "Tennis"
+        case .walking: return "Walking"
+        case .swimming: return "Swimming"
+        case .traditionalStrengthTraining, .functionalStrengthTraining: return "Strength"
+        default: return nil
+        }
+        #else
+        return nil
+        #endif
+    }
+
+    private func isDistanceActivity(_ name: String) -> Bool {
+        let n = name.lowercased()
+        return n.contains("run") || n.contains("jog") || n.contains("cycl") || n.contains("bike")
+    }
+
+    private func activityIcon(_ name: String) -> String {
+        let n = name.lowercased()
+        if n.contains("cycl") || n.contains("bike") { return "bicycle" }
+        if n.contains("run") || n.contains("jog") { return "figure.run" }
+        if n.contains("walk") { return "figure.walk" }
+        if n.contains("swim") { return "figure.pool.swim" }
+        if n.contains("tennis") { return "sportscourt" }
+        if n.contains("strength") || n.contains("gym") { return "dumbbell" }
+        return "figure.mixed.cardio"
+    }
+
+    @ViewBuilder
+    private func healthSummaryView(date: Date, isWeekly: Bool) -> some View {
+        let key = dateKey(date)
+        let day = healthByDate[key] ?? NJCalendarHealthDay()
+        let plans = plannedByDate[key] ?? []
+        let medTaken = day.medDoseCount > 0
+        let activityRows = day.workoutByActivity
+            .map { (name: $0.key, stat: $0.value) }
+            .sorted { a, b in
+                if a.stat.durationMin == b.stat.durationMin {
+                    return a.name < b.name
+                }
+                return a.stat.durationMin > b.stat.durationMin
+            }
+        let distanceRows = activityRows.filter { isDistanceActivity($0.name) }
+        let distanceKmTotal = distanceRows.reduce(0.0) { $0 + $1.stat.distanceKm }
+        let distanceDurationMinTotal = distanceRows.reduce(0.0) { $0 + $1.stat.durationMin }
+        let weeklyPace: Double? = distanceKmTotal > 0 ? (distanceDurationMinTotal / distanceKmTotal) : nil
+
+        if isWeekly {
+            VStack(alignment: .leading, spacing: 2) {
+                if !plans.isEmpty {
+                    VStack(alignment: .leading, spacing: 1) {
+                        ForEach(plans.prefix(3), id: \.planID) { p in
+                            HStack(spacing: 3) {
+                                Image(systemName: "calendar.badge.plus")
+                                Text("\(p.sport) \(fmtNum(p.targetDistanceKm))km / \(fmtNum(p.targetDurationMin))m")
+                            }
+                            .font(.system(size: 9))
+                            .foregroundStyle(.orange)
+                            .lineLimit(1)
+                        }
+                    }
+                }
+                Spacer(minLength: 2)
+                if !activityRows.isEmpty {
+                    let primaryIcon = activityRows.count == 1 ? activityIcon(activityRows[0].name) : "figure.mixed.cardio"
+                    HStack(spacing: 6) {
+                        Image(systemName: primaryIcon)
+                        if distanceKmTotal > 0 {
+                            Text("\(fmtNum(distanceKmTotal))km")
+                        }
+                        Image(systemName: "timer")
+                        Text("\(fmtNum(day.workoutDurationMin))m")
+                        if let pace = weeklyPace {
+                            Image(systemName: "speedometer")
+                            Text("\(fmtNum(pace))")
+                        }
+                    }
+                    .font(.system(size: 9))
+                    .lineLimit(1)
+                }
+                HStack(spacing: 4) {
+                    Image(systemName: "bed.double")
+                    Text("Sleep \(fmtNum(day.sleepHours)) h")
+                }
+                .font(.system(size: 9))
+                HStack(spacing: 4) {
+                    Image(systemName: "pills.fill")
+                    Circle()
+                        .fill(medTaken ? Color.green : Color.red)
+                        .frame(width: 7, height: 7)
+                    Text(medTaken ? "Medication logged" : "Medication missing")
+                }
+                .font(.system(size: 9))
+                if let s = day.avgSystolic, let d = day.avgDiastolic {
+                    HStack(spacing: 4) {
+                        Image(systemName: "heart.text.square")
+                        Text("BP \(Int(s))/\(Int(d))")
+                    }
+                    .font(.system(size: 9))
+                }
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 1) {
+                    if let first = plans.first {
+                        HStack(spacing: 3) {
+                            Image(systemName: "calendar.badge.plus")
+                            Text("\(first.sport) \(fmtNum(first.targetDistanceKm))km / \(fmtNum(first.targetDurationMin))m")
+                        }
+                        .font(.system(size: 8))
+                        .foregroundStyle(.orange)
+                        .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 0)
+                VStack(alignment: .leading, spacing: 1) {
+                    if !activityRows.isEmpty {
+                        let displayRows = Array(activityRows.prefix(4))
+                        ForEach(displayRows, id: \.name) { row in
+                            HStack(spacing: 3) {
+                                Image(systemName: activityIcon(row.name))
+                                if isDistanceActivity(row.name), row.stat.distanceKm > 0 {
+                                    Text("\(fmtNum(row.stat.distanceKm))km")
+                                } else {
+                                    Text("\(fmtNum(row.stat.durationMin))m")
+                                }
+                            }
+                            .font(.system(size: 8))
+                            .lineLimit(1)
+                        }
+                    }
+                    HStack(spacing: 3) {
+                        Image(systemName: "pills.fill")
+                        Circle()
+                            .fill(medTaken ? Color.green : Color.red)
+                            .frame(width: 6, height: 6)
+                    }
+                    .font(.system(size: 8))
+                    if day.sleepHours > 0 {
+                        HStack(spacing: 3) {
+                            Image(systemName: "bed.double")
+                            Text("\(fmtNum(day.sleepHours)) h")
+                        }
+                        .font(.system(size: 8))
+                    }
+                    if let s = day.avgSystolic, let d = day.avgDiastolic {
+                        HStack(spacing: 3) {
+                            Image(systemName: "heart.text.square")
+                            Text("\(Int(s))/\(Int(d))")
+                        }
+                        .font(.system(size: 8))
+                    }
+                }
+            }
+        }
+    }
+
+    private func fmtNum(_ v: Double) -> String {
+        let f = NumberFormatter()
+        f.minimumFractionDigits = 0
+        f.maximumFractionDigits = 1
+        return f.string(from: NSNumber(value: v)) ?? String(format: "%.1f", v)
     }
 
     private func isPastDate(_ date: Date) -> Bool {
@@ -925,5 +1299,58 @@ private struct NJPhotoAssetThumb: View {
         ) { img, _ in
             image = img
         }
+    }
+}
+
+private struct NJPlanExerciseSheet: View {
+    let date: Date
+    let onSave: (String, Double, Double, String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var sport: String = "Running"
+    @State private var distance: String = ""
+    @State private var duration: String = ""
+    @State private var notes: String = ""
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Exercise") {
+                    Picker("Sport", selection: $sport) {
+                        Text("Running").tag("Running")
+                        Text("Cycling").tag("Cycling")
+                        Text("Walking").tag("Walking")
+                        Text("Swimming").tag("Swimming")
+                        Text("Gym").tag("Gym")
+                    }
+                    TextField("Distance (km)", text: $distance)
+                        .keyboardType(.decimalPad)
+                    TextField("Duration (min)", text: $duration)
+                        .keyboardType(.decimalPad)
+                    TextField("Notes", text: $notes)
+                }
+            }
+            .navigationTitle(title())
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        let dist = Double(distance) ?? 0
+                        let dur = Double(duration) ?? 0
+                        onSave(sport, dist, dur, notes)
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+
+    private func title() -> String {
+        let f = DateFormatter()
+        f.locale = Locale.current
+        f.dateStyle = .medium
+        return "Plan \(f.string(from: date))"
     }
 }

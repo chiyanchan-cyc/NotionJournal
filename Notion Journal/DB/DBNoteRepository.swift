@@ -17,6 +17,7 @@ final class DBNoteRepository {
     let attachmentTable: DBAttachmentTable
     let goalTable: DBGoalTable
     let calendarTable: DBCalendarTable
+    let plannedExerciseTable: DBPlannedExerciseTable
     private let cloudBridge: DBCloudBridge
     
     
@@ -46,13 +47,18 @@ final class DBNoteRepository {
             db: db,
             enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
         )
+        self.plannedExerciseTable = DBPlannedExerciseTable(
+            db: db,
+            enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
+        )
         self.cloudBridge = DBCloudBridge(
             noteTable: self.noteTable,
             blockTable: self.blockTable,
             noteBlockTable: self.noteBlockTable,
             attachmentTable: self.attachmentTable,
             goalTable: self.goalTable,
-            calendarTable: self.calendarTable
+            calendarTable: self.calendarTable,
+            plannedExerciseTable: self.plannedExerciseTable
         )
     }
     
@@ -236,6 +242,8 @@ final class DBNoteRepository {
 
         case "calendar_item":
             for (_, f) in rows { applyRemoteUpsert(entity: "calendar_item", fields: f) }
+        case "planned_exercise":
+            for (_, f) in rows { applyRemoteUpsert(entity: "planned_exercise", fields: f) }
 
         case "outline":
             for (_, f) in rows { applyRemoteUpsert(entity: "outline", fields: f) }
@@ -304,6 +312,7 @@ final class DBNoteRepository {
         case "block": table = "nj_block"
         case "note_block": table = "nj_note_block"
         case "calendar_item": table = "nj_calendar_item"
+        case "planned_exercise": table = "nj_planned_exercise"
         case "outline": table = "nj_outline"
         case "outline_node": table = "nj_outline_node"
         default: return 0
@@ -555,6 +564,18 @@ final class DBNoteRepository {
 
     func deleteCalendarItem(dateKey: String, nowMs: Int64) {
         calendarTable.markDeleted(dateKey: dateKey, nowMs: nowMs)
+    }
+
+    func listPlannedExercises(startKey: String, endKey: String) -> [NJPlannedExercise] {
+        plannedExerciseTable.listPlans(startKey: startKey, endKey: endKey)
+    }
+
+    func upsertPlannedExercise(_ plan: NJPlannedExercise) {
+        plannedExerciseTable.upsertPlan(plan)
+    }
+
+    func deletePlannedExercise(planID: String, nowMs: Int64) {
+        plannedExerciseTable.markDeleted(planID: planID, nowMs: nowMs)
     }
     
     static func nowMs() -> Int64 {

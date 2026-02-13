@@ -209,7 +209,6 @@ final class NJHealthLogger: NSObject, ObservableObject {
     private func syncIfPossible(force: Bool, reason: String) async {
         guard enabled else { return }
         guard auth == .authorized else { return }
-        guard isWriter else { return }
         guard db != nil else { return }
 
         let now = nowMs()
