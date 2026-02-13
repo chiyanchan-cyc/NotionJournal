@@ -227,6 +227,33 @@ enum DBSchemaInstaller {
                     "CREATE INDEX IF NOT EXISTS idx_nj_planned_exercise_updated ON nj_planned_exercise(updated_at_ms DESC);"
                 ]
             ),
+            TableSpec(
+                name: "nj_planning_note",
+                createSQL: """
+                CREATE TABLE IF NOT EXISTS nj_planning_note (
+                    planning_key TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL DEFAULT '',
+                    target_key TEXT NOT NULL DEFAULT '',
+                    note TEXT NOT NULL DEFAULT '',
+                    created_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL,
+                    deleted INTEGER NOT NULL DEFAULT 0
+                );
+                """,
+                columns: [
+                    ColumnSpec(name: "planning_key", declForAlter: "TEXT"),
+                    ColumnSpec(name: "kind", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "target_key", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "note", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
+                ],
+                indexes: [
+                    "CREATE INDEX IF NOT EXISTS idx_nj_planning_note_kind_target ON nj_planning_note(kind, target_key ASC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_planning_note_updated ON nj_planning_note(updated_at_ms DESC);"
+                ]
+            ),
 
             TableSpec(
                 name: "nj_block",

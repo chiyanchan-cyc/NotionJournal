@@ -72,6 +72,11 @@ struct NJCalendarView: View {
     @State private var photoPickerDate: Date = Date()
     @State private var showPlanExerciseSheet = false
     @State private var planExerciseDate: Date = Date()
+    @State private var showPlanningNoteSheet = false
+    @State private var planningNoteKind: String = "daily"
+    @State private var planningNoteTargetKey: String = ""
+    @State private var planningNoteTitle: String = ""
+    @State private var planningNoteText: String = ""
 
     private let calendar = Calendar.current
     private let eventStore = EKEventStore()
@@ -108,6 +113,15 @@ struct NJCalendarView: View {
             NJPlanExerciseSheet(date: planExerciseDate) { sport, distKm, durMin, notes in
                 savePlannedExercise(date: planExerciseDate, sport: sport, distanceKm: distKm, durationMin: durMin, notes: notes)
             }
+        }
+        .sheet(isPresented: $showPlanningNoteSheet) {
+            NJPlanningNoteSheet(
+                title: planningNoteTitle,
+                text: $planningNoteText,
+                onSave: { text in
+                    savePlanningNote(kind: planningNoteKind, targetKey: planningNoteTargetKey, text: text)
+                }
+            )
         }
     }
 
@@ -359,11 +373,31 @@ struct NJCalendarView: View {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(Color(UIColor.separator).opacity(0.6), lineWidth: 1)
         )
+        .overlay(alignment: .bottomTrailing) {
+            if isWeekly, contentMode == .memory, isFutureDate(date) {
+                Button {
+                    openDayPlanningNoteEditor(for: date)
+                } label: {
+                    Image(systemName: hasPlanningNote(kind: "daily", targetKey: key) ? "note.text" : "note.text.badge.plus")
+                        .font(.system(size: 12, weight: .semibold))
+                        .padding(6)
+                        .background(Color(UIColor.systemBackground).opacity(0.92))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .padding(6)
+            }
+        }
         .opacity(displayMode == .month && !isInMonth ? 0.35 : 1.0)
         .contentShape(RoundedRectangle(cornerRadius: 8))
         .simultaneousGesture(TapGesture().onEnded { selectedDate = date })
         .contextMenu {
             if contentMode == .memory {
+                if displayMode == .month, isFutureDate(date) {
+                    Button("Edit Day Planning Note") {
+                        openDayPlanningNoteEditor(for: date)
+                    }
+                }
                 if item?.photoThumbPath.isEmpty == false {
                     if let localID = photoLocalIdentifier(for: item) {
                         Button("Open Photo") { openPhotoWindow(localIdentifier: localID) }
@@ -936,6 +970,12 @@ struct NJCalendarView: View {
         return target < today
     }
 
+    private func isFutureDate(_ date: Date) -> Bool {
+        let today = calendar.startOfDay(for: Date())
+        let target = calendar.startOfDay(for: date)
+        return target > today
+    }
+
     private func ensureThumbCached(attachmentID: String, dateKey: String) {
         guard let url = NJAttachmentCache.fileURL(for: attachmentID) else { return }
         if FileManager.default.fileExists(atPath: url.path) { return }
@@ -986,6 +1026,20 @@ struct NJCalendarView: View {
                         .buttonStyle(.plain)
                         .frame(minWidth: 36, minHeight: 36)
                         .contentShape(Rectangle())
+                    if contentMode == .memory {
+                        Button {
+                            openWeekPlanningNoteEditor(for: focusedDate)
+                        } label: {
+                            let targetKey = weekPlanningTargetKey(for: focusedDate)
+                            Image(systemName: hasPlanningNote(kind: "weekly", targetKey: targetKey) ? "note.text" : "note.text.badge.plus")
+                                .font(.subheadline)
+                                .frame(width: 30, height: 30)
+                                .background(Color(UIColor.systemBackground).opacity(0.9))
+                                .clipShape(RoundedRectangle(cornerRadius: 7))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!canOpenWeekPlanningNote(for: focusedDate))
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -1011,6 +1065,52 @@ struct NJCalendarView: View {
             return formatter.string(from: focusedDate)
         }
         return "\(formatter.string(from: start))  –  \(formatter.string(from: endDate))"
+    }
+
+    private func weekPlanningTargetKey(for date: Date) -> String {
+        DBNoteRepository.sundayWeekStartKey(for: date)
+    }
+
+    private func hasPlanningNote(kind: String, targetKey: String) -> Bool {
+        guard !targetKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        let text = store.notes.planningNote(kind: kind, targetKey: targetKey)?.note ?? ""
+        return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func openDayPlanningNoteEditor(for date: Date) {
+        guard isFutureDate(date) else { return }
+        let key = dateKey(date)
+        planningNoteKind = "daily"
+        planningNoteTargetKey = key
+        planningNoteTitle = "Day Planning Note (\(formattedDate(date)))"
+        planningNoteText = store.notes.planningNote(kind: "daily", targetKey: key)?.note ?? ""
+        showPlanningNoteSheet = true
+    }
+
+    private func openWeekPlanningNoteEditor(for date: Date) {
+        guard canOpenWeekPlanningNote(for: date) else { return }
+        let key = weekPlanningTargetKey(for: date)
+        planningNoteKind = "weekly"
+        planningNoteTargetKey = key
+        planningNoteTitle = "Week Planning Note (\(weekRangeTitle()))"
+        planningNoteText = store.notes.planningNote(kind: "weekly", targetKey: key)?.note ?? ""
+        showPlanningNoteSheet = true
+    }
+
+    private func savePlanningNote(kind: String, targetKey: String, text: String) {
+        let now = DBNoteRepository.nowMs()
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            store.notes.deletePlanningNote(kind: kind, targetKey: targetKey, nowMs: now)
+            return
+        }
+        store.notes.upsertPlanningNote(kind: kind, targetKey: targetKey, note: trimmed, nowMs: now)
+    }
+
+    private func canOpenWeekPlanningNote(for date: Date) -> Bool {
+        let today = calendar.startOfDay(for: Date())
+        guard let week = calendar.dateInterval(of: .weekOfYear, for: date) else { return false }
+        return week.end > today
     }
 
     private func miniMonthView() -> some View {
@@ -1298,6 +1398,44 @@ private struct NJPhotoAssetThumb: View {
             options: options
         ) { img, _ in
             image = img
+        }
+    }
+}
+
+private struct NJPlanningNoteSheet: View {
+    let title: String
+    @Binding var text: String
+    let onSave: (String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ZStack(alignment: .topLeading) {
+                TextEditor(text: $text)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+
+                if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text("Write planning note...")
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 14)
+                        .padding(.leading, 14)
+                }
+            }
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Save") {
+                        onSave(text)
+                        dismiss()
+                    }
+                }
+            }
         }
     }
 }

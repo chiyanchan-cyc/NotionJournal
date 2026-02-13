@@ -18,6 +18,7 @@ final class DBNoteRepository {
     let goalTable: DBGoalTable
     let calendarTable: DBCalendarTable
     let plannedExerciseTable: DBPlannedExerciseTable
+    let planningNoteTable: DBPlanningNoteTable
     private let cloudBridge: DBCloudBridge
     
     
@@ -51,6 +52,10 @@ final class DBNoteRepository {
             db: db,
             enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
         )
+        self.planningNoteTable = DBPlanningNoteTable(
+            db: db,
+            enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
+        )
         self.cloudBridge = DBCloudBridge(
             noteTable: self.noteTable,
             blockTable: self.blockTable,
@@ -58,7 +63,8 @@ final class DBNoteRepository {
             attachmentTable: self.attachmentTable,
             goalTable: self.goalTable,
             calendarTable: self.calendarTable,
-            plannedExerciseTable: self.plannedExerciseTable
+            plannedExerciseTable: self.plannedExerciseTable,
+            planningNoteTable: self.planningNoteTable
         )
     }
     
@@ -244,6 +250,8 @@ final class DBNoteRepository {
             for (_, f) in rows { applyRemoteUpsert(entity: "calendar_item", fields: f) }
         case "planned_exercise":
             for (_, f) in rows { applyRemoteUpsert(entity: "planned_exercise", fields: f) }
+        case "planning_note":
+            for (_, f) in rows { applyRemoteUpsert(entity: "planning_note", fields: f) }
 
         case "outline":
             for (_, f) in rows { applyRemoteUpsert(entity: "outline", fields: f) }
@@ -313,6 +321,7 @@ final class DBNoteRepository {
         case "note_block": table = "nj_note_block"
         case "calendar_item": table = "nj_calendar_item"
         case "planned_exercise": table = "nj_planned_exercise"
+        case "planning_note": table = "nj_planning_note"
         case "outline": table = "nj_outline"
         case "outline_node": table = "nj_outline_node"
         default: return 0
@@ -577,6 +586,60 @@ final class DBNoteRepository {
     func deletePlannedExercise(planID: String, nowMs: Int64) {
         plannedExerciseTable.markDeleted(planID: planID, nowMs: nowMs)
     }
+
+    func planningNote(kind: String, targetKey: String) -> NJPlanningNote? {
+        planningNoteTable.loadNote(kind: kind, targetKey: targetKey)
+    }
+
+    func upsertPlanningNote(_ note: NJPlanningNote) {
+        planningNoteTable.upsertNote(note)
+    }
+
+    func upsertPlanningNote(kind: String, targetKey: String, note: String, nowMs: Int64) {
+        let key = planningNoteTable.makePlanningKey(kind: kind, targetKey: targetKey)
+        let existing = planningNoteTable.loadNoteIncludingDeleted(kind: kind, targetKey: targetKey)
+        let row = NJPlanningNote(
+            planningKey: key,
+            kind: kind,
+            targetKey: targetKey,
+            note: note,
+            createdAtMs: existing?.createdAtMs ?? nowMs,
+            updatedAtMs: nowMs,
+            deleted: 0
+        )
+        planningNoteTable.upsertNote(row)
+    }
+
+    func deletePlanningNote(kind: String, targetKey: String, nowMs: Int64) {
+        planningNoteTable.markDeleted(kind: kind, targetKey: targetKey, nowMs: nowMs)
+    }
+
+    func savePlanningReminder(weekStartKey: String, dateKey: String, weeklyNote: String, dailyNote: String, nowMs: Int64) {
+        let weeklyText = weeklyNote.trimmingCharacters(in: .whitespacesAndNewlines)
+        let dailyText = dailyNote.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if weeklyText.isEmpty {
+            if planningNoteTable.loadNoteIncludingDeleted(kind: "weekly", targetKey: weekStartKey) != nil {
+                planningNoteTable.markDeleted(kind: "weekly", targetKey: weekStartKey, nowMs: nowMs)
+            }
+        } else {
+            upsertPlanningNote(kind: "weekly", targetKey: weekStartKey, note: weeklyText, nowMs: nowMs)
+        }
+
+        if dailyText.isEmpty {
+            if planningNoteTable.loadNoteIncludingDeleted(kind: "daily", targetKey: dateKey) != nil {
+                planningNoteTable.markDeleted(kind: "daily", targetKey: dateKey, nowMs: nowMs)
+            }
+        } else {
+            upsertPlanningNote(kind: "daily", targetKey: dateKey, note: dailyText, nowMs: nowMs)
+        }
+    }
+
+    func loadPlanningReminder(weekStartKey: String, dateKey: String) -> (weeklyNote: String, dailyNote: String) {
+        let weekly = planningNoteTable.loadNote(kind: "weekly", targetKey: weekStartKey)?.note ?? ""
+        let daily = planningNoteTable.loadNote(kind: "daily", targetKey: dateKey)?.note ?? ""
+        return (weekly, daily)
+    }
     
     static func nowMs() -> Int64 {
         Int64(Date().timeIntervalSince1970 * 1000.0)
@@ -587,6 +650,13 @@ final class DBNoteRepository {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter.string(from: date)
+    }
+
+    static func sundayWeekStartKey(for date: Date, calendar: Calendar = Calendar.current) -> String {
+        var cal = calendar
+        cal.firstWeekday = 1
+        let start = cal.dateInterval(of: .weekOfYear, for: date)?.start ?? date
+        return dateKey(start)
     }
     
     static func emptyRTF() -> Data {

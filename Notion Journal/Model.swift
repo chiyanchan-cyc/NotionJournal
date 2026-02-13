@@ -131,3 +131,19 @@ struct NJPlannedExercise: Identifiable, Codable, Hashable {
 
     var id: String { planID }
 }
+
+struct NJPlanningNote: Identifiable, Codable, Hashable {
+    var planningKey: String
+    var kind: String
+    var targetKey: String
+    var note: String
+    var createdAtMs: Int64
+    var updatedAtMs: Int64
+    var deleted: Int
+
+    var id: String { planningKey }
+
+    static func key(kind: String, targetKey: String) -> String {
+        "\(kind):\(targetKey)"
+    }
+}

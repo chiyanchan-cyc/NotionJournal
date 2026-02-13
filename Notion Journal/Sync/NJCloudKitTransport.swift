@@ -111,6 +111,8 @@ final class NJCloudKitTransport {
         var newMax: Int64 = sinceMs
 
         var cursor: CKQueryOperation.Cursor? = nil
+        var useFallbackQuery = false
+        var didRetryFallback = false
 
 
         while true {
@@ -119,14 +121,16 @@ final class NJCloudKitTransport {
                 op = CKQueryOperation(cursor: c)
             } else {
                 let pred: NSPredicate
-                if sinceMs > 0 {
+                if sinceMs > 0, !useFallbackQuery {
                     pred = NSPredicate(format: "updated_at_ms > %@", NSNumber(value: sinceMs))
                 } else {
                     pred = NSPredicate(value: true)
                 }
 
                 let q = CKQuery(recordType: recordType, predicate: pred)
-                q.sortDescriptors = [NSSortDescriptor(key: "updated_at_ms", ascending: true)]
+                if !useFallbackQuery {
+                    q.sortDescriptors = [NSSortDescriptor(key: "updated_at_ms", ascending: true)]
+                }
                 op = CKQueryOperation(query: q)
             }
 
@@ -150,6 +154,21 @@ final class NJCloudKitTransport {
             }
 
             if let err {
+                let nse = err as NSError
+                let shouldFallback =
+                    !didRetryFallback &&
+                    !useFallbackQuery &&
+                    nse.domain == CKError.errorDomain &&
+                    nse.code == CKError.Code.invalidArguments.rawValue &&
+                    nse.localizedDescription.localizedCaseInsensitiveContains("recordname")
+
+                if shouldFallback {
+                    didRetryFallback = true
+                    useFallbackQuery = true
+                    cursor = nil
+                    continue
+                }
+
                 print("NJ_CK_QUERY_ERR entity=\(entity) err=\(err)")
                 break
             }

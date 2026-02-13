@@ -10,6 +10,11 @@ enum NJOutlineNodeCloudMapper {
     static let recordType = "NJOutlineNode"
 }
 
+enum NJPlanningNoteCloudMapper {
+    static let entity = "planning_note"
+    static let recordType = "NJPlanningNote"
+}
+
 enum NJCloudSchema {
     static let syncOrder: [(String, String)] = {
         var a: [(String, String)] = []
@@ -20,6 +25,7 @@ enum NJCloudSchema {
         a.append((NJAttachmentCloudMapper.entity, NJAttachmentCloudMapper.recordType))
         a.append((NJCalendarItemCloudMapper.entity, NJCalendarItemCloudMapper.recordType))
         a.append((NJPlannedExerciseCloudMapper.entity, NJPlannedExerciseCloudMapper.recordType))
+        a.append((NJPlanningNoteCloudMapper.entity, NJPlanningNoteCloudMapper.recordType))
         a.append(("goal", "NJGoal"))
         a.append((NJOutlineCloudMapper.entity, NJOutlineCloudMapper.recordType))
         a.append((NJOutlineNodeCloudMapper.entity, NJOutlineNodeCloudMapper.recordType))

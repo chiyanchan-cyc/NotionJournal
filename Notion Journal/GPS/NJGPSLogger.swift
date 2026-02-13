@@ -53,6 +53,7 @@ final class NJGPSLogger: NSObject, ObservableObject, CLLocationManagerDelegate {
     private var minWriteIntervalMs: Int64 = 0
 
     private let containerID = "iCloud.com.CYC.NotionJournal"
+    private let llmContainerID = "iCloud.com.CYC.LLMJournal"
     private let lockRel = "GPS/gps_logger_lock.json"
     private let lockTTLms: Int64 = 36 * 60 * 60 * 1000
 
@@ -252,6 +253,12 @@ final class NJGPSLogger: NSObject, ObservableObject, CLLocationManagerDelegate {
         return FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
     }
 
+    private func docsRootForContainer(_ containerId: String) -> URL? {
+        FileManager.default
+            .url(forUbiquityContainerIdentifier: containerId)?
+            .appendingPathComponent("Documents", isDirectory: true)
+    }
+
     private func ensureDir(_ u: URL) {
         try? FileManager.default.createDirectory(at: u, withIntermediateDirectories: true)
     }
@@ -359,6 +366,7 @@ final class NJGPSLogger: NSObject, ObservableObject, CLLocationManagerDelegate {
         }
         lastWriteTsMs = nowMs()
         bumpHeartbeat()
+        writeTransitSummary(for: Date())
     }
 
     private func encode(tsMs: Int64, lat: Double, lon: Double, hacc: Double, src: String) -> String {
@@ -448,5 +456,165 @@ extension NJGPSLogger {
             return u.appendingPathComponent("Documents", isDirectory: true)
         }
         return FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+    }
+
+    func rebuildTransitSummaryToday() {
+        writeTransitSummary(for: Date())
+    }
+
+    func rebuildTransitSummary(daysBack: Int) {
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: Date())
+        let n = max(1, min(120, daysBack))
+        for i in 0..<n {
+            if let d = cal.date(byAdding: .day, value: -i, to: today) {
+                writeTransitSummary(for: d)
+            }
+        }
+    }
+
+    private struct GPSPoint {
+        let tsMs: Int64
+        let lat: Double
+        let lon: Double
+        let src: String
+    }
+
+    private struct TransitDailySummary {
+        let transitSeconds: Int
+        let movingSeconds: Int
+        let stationarySeconds: Int
+        let totalDistanceM: Double
+        let segmentCount: Int
+        let pointsCount: Int
+        let byMode: [String: Int]
+    }
+
+    private func writeTransitSummary(for dayDate: Date) {
+        guard let root = docsRootForViewer() else { return }
+        let dayFile = gpsDayFileURL(root: root, date: dayDate)
+        guard let points = loadGPSPoints(from: dayFile), points.count >= 2 else { return }
+
+        let summary = summarizeTransit(points: points)
+        let dayKey = ymdHKT(dayDate)
+        let payload: [String: Any] = [
+            "v": 1,
+            "payload_type": "zz_transit_v1",
+            "day": dayKey,
+            "timezone": "Asia/Hong_Kong",
+            "device_id": deviceID(),
+            "source": "notion_journal_gps_ndjson",
+            "source_rel": "GPS/\(ymPathHKT(dayDate)).ndjson",
+            "algorithm": "speed_distance_v1",
+            "transit_seconds": summary.transitSeconds,
+            "transit_minutes": Int((Double(summary.transitSeconds) / 60.0).rounded()),
+            "moving_seconds": summary.movingSeconds,
+            "stationary_seconds": summary.stationarySeconds,
+            "distance_m": Int(summary.totalDistanceM.rounded()),
+            "segments": summary.segmentCount,
+            "points": summary.pointsCount,
+            "by_mode": summary.byMode.map { ["mode": $0.key, "seconds": $0.value] }.sorted { ($0["seconds"] as? Int ?? 0) > ($1["seconds"] as? Int ?? 0) },
+            "generated_ts_ms": nowMs()
+        ]
+
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]) else { return }
+        for outRoot in transitOutputRoots(primaryRoot: root) {
+            let out = outRoot.appendingPathComponent("GPS/Transit/\(dayKey).json")
+            ensureDir(out.deletingLastPathComponent())
+            try? data.write(to: out, options: .atomic)
+        }
+    }
+
+    private func transitOutputRoots(primaryRoot: URL) -> [URL] {
+        var roots: [URL] = [primaryRoot]
+        if let llmRoot = docsRootForContainer(llmContainerID), llmRoot.path != primaryRoot.path {
+            roots.append(llmRoot)
+        }
+        return roots
+    }
+
+    private func summarizeTransit(points: [GPSPoint]) -> TransitDailySummary {
+        let sorted = points.sorted { $0.tsMs < $1.tsMs }
+        var transit = 0
+        var moving = 0
+        var stationary = 0
+        var distanceM: Double = 0
+        var segCount = 0
+        var byMode: [String: Int] = [:]
+
+        for i in 0..<(sorted.count - 1) {
+            let a = sorted[i]
+            let b = sorted[i + 1]
+            let dt = Int((b.tsMs - a.tsMs) / 1000)
+            if dt <= 0 || dt > 3600 { continue }
+
+            let ca = CLLocation(latitude: a.lat, longitude: a.lon)
+            let cb = CLLocation(latitude: b.lat, longitude: b.lon)
+            let d = ca.distance(from: cb)
+            distanceM += max(0, d)
+            segCount += 1
+
+            let speed = d / Double(dt) // m/s
+            let isMoving = d >= 120 || speed >= 1.2
+
+            if isMoving {
+                moving += dt
+                let mode: String
+                if speed >= 6.0 { mode = "automotive" }
+                else if speed >= 2.0 { mode = "mixed" }
+                else { mode = "walking" }
+                let counted = min(dt, 1800)
+                transit += counted
+                byMode[mode, default: 0] += counted
+            } else {
+                stationary += dt
+            }
+        }
+
+        return TransitDailySummary(
+            transitSeconds: max(0, transit),
+            movingSeconds: max(0, moving),
+            stationarySeconds: max(0, stationary),
+            totalDistanceM: max(0, distanceM),
+            segmentCount: segCount,
+            pointsCount: sorted.count,
+            byMode: byMode
+        )
+    }
+
+    private func loadGPSPoints(from url: URL) -> [GPSPoint]? {
+        guard let data = try? Data(contentsOf: url),
+              let text = String(data: data, encoding: .utf8) else { return nil }
+        var out: [GPSPoint] = []
+        for line in text.split(separator: "\n") {
+            guard let d = String(line).data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+                  let ts = obj["ts_ms"] as? Int64,
+                  let lat = obj["lat"] as? Double,
+                  let lon = obj["lon"] as? Double else { continue }
+            let src = obj["src"] as? String ?? ""
+            out.append(GPSPoint(tsMs: ts, lat: lat, lon: lon, src: src))
+        }
+        return out
+    }
+
+    private func gpsDayFileURL(root: URL, date: Date) -> URL {
+        root.appendingPathComponent("GPS/\(ymPathHKT(date)).ndjson")
+    }
+
+    private func ymPathHKT(_ d: Date) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "Asia/Hong_Kong") ?? .current
+        f.dateFormat = "yyyy/MM/yyyy-MM-dd"
+        return f.string(from: d)
+    }
+
+    private func ymdHKT(_ d: Date) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "Asia/Hong_Kong") ?? .current
+        f.dateFormat = "yyyy-MM-dd"
+        return f.string(from: d)
     }
 }

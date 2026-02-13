@@ -1,7 +1,18 @@
 import SwiftUI
+import UIKit
+
+final class NJAppDelegate: NSObject, UIApplicationDelegate {
+    func applicationWillTerminate(_ application: UIApplication) {
+        // Ensure all multi-window scenes are destroyed on quit.
+        for session in application.openSessions {
+            application.requestSceneSessionDestruction(session, options: nil, errorHandler: nil)
+        }
+    }
+}
 
 @main
 struct Notion_JournalApp: App {
+    @UIApplicationDelegateAdaptor(NJAppDelegate.self) private var appDelegate
     @StateObject private var store = AppStore()
     // Ensure GPS logger is initialized at app launch so background logging starts
     @StateObject private var gpsLogger = NJGPSLogger.shared

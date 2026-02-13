@@ -8,6 +8,7 @@ final class DBCloudBridge {
     let goalTable: DBGoalTable
     let calendarTable: DBCalendarTable
     let plannedExerciseTable: DBPlannedExerciseTable
+    let planningNoteTable: DBPlanningNoteTable
 
     init(
         noteTable: DBNoteTable,
@@ -16,7 +17,8 @@ final class DBCloudBridge {
         attachmentTable: DBAttachmentTable,
         goalTable: DBGoalTable,
         calendarTable: DBCalendarTable,
-        plannedExerciseTable: DBPlannedExerciseTable
+        plannedExerciseTable: DBPlannedExerciseTable,
+        planningNoteTable: DBPlanningNoteTable
     ) {
         self.noteTable = noteTable
         self.blockTable = blockTable
@@ -25,6 +27,7 @@ final class DBCloudBridge {
         self.goalTable = goalTable
         self.calendarTable = calendarTable
         self.plannedExerciseTable = plannedExerciseTable
+        self.planningNoteTable = planningNoteTable
     }
 
     func loadRecord(entity: String, id: String) -> [String: Any]? {
@@ -43,6 +46,8 @@ final class DBCloudBridge {
             return loadNJCalendarItem(dateKey: id)
         case "planned_exercise":
             return plannedExerciseTable.loadPlan(planID: id)
+        case "planning_note":
+            return planningNoteTable.loadPlanningNoteFields(planningKey: id)
         default:
             return nil
         }
@@ -64,6 +69,8 @@ final class DBCloudBridge {
             applyNJCalendarItem(fields: fields)
         case "planned_exercise":
             plannedExerciseTable.applyRemote(fields)
+        case "planning_note":
+            planningNoteTable.applyRemote(fields)
         default:
             break
         }

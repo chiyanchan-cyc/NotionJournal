@@ -41,6 +41,14 @@ struct NJGPSLoggerPage: View {
                 NavigationLink("View Tracks") {
                     NJGPSLogViewerPage()
                 }
+
+                Button("Rebuild Transit Summary (Today)") {
+                    NJGPSLogger.shared.rebuildTransitSummaryToday()
+                }
+
+                Button("Backfill Transit (30 days)") {
+                    NJGPSLogger.shared.rebuildTransitSummary(daysBack: 30)
+                }
             }
 
 
