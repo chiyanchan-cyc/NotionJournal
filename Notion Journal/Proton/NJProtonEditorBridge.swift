@@ -603,6 +603,44 @@ private func NJApplyBaseFontWhereMissing(_ input: NSAttributedString, baseFont: 
 }
 
 final class NJProtonEditorHandle {
+    private static weak var _activeHandle: NJProtonEditorHandle?
+
+    static func activeHandle() -> NJProtonEditorHandle? {
+        _activeHandle
+    }
+
+    static func firstResponderHandle() -> NJProtonEditorHandle? {
+        func findFirstResponder(in view: UIView) -> UIResponder? {
+            if view.isFirstResponder { return view }
+            for sub in view.subviews {
+                if let hit = findFirstResponder(in: sub) { return hit }
+            }
+            return nil
+        }
+
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        for scene in scenes {
+            for window in scene.windows where window.isKeyWindow {
+                if let tv = findFirstResponder(in: window) as? UITextView,
+                   let h = tv.njProtonHandle {
+                    return h
+                }
+            }
+        }
+
+        if let window = UIApplication.shared.windows.first(where: { $0.isKeyWindow }),
+           let tv = findFirstResponder(in: window) as? UITextView,
+           let h = tv.njProtonHandle {
+            return h
+        }
+
+        return nil
+    }
+
+    func markAsActiveHandle() {
+        NJProtonEditorHandle._activeHandle = self
+    }
+
     weak var editor: EditorView?
     var debugName: String = ""
     var ownerBlockUUID: UUID? = nil
@@ -625,7 +663,10 @@ final class NJProtonEditorHandle {
     
     func exportProtonJSONString() -> String {
         guard let editor else { return "" }
-        let text = editor.attributedText
+        return exportProtonJSONString(from: editor.attributedText)
+    }
+
+    func exportProtonJSONString(from text: NSAttributedString) -> String {
         if NJProtonDocCodecV2.containsBlockAttachments(text) {
             return NJProtonDocCodecV2.encodeDocument(from: text)
         }
@@ -633,7 +674,7 @@ final class NJProtonEditorHandle {
     }
     
     func previewFirstLineFromProtonJSON(_ json: String) -> String {
-            let decoded: NSAttributedString = {
+        let decoded: NSAttributedString = {
                 if let doc = NJProtonDocCodecV2.decodeIfPresent(json: json) {
                     return NJProtonDocCodecV2.buildAttributedString(
                         doc: doc,
@@ -641,7 +682,9 @@ final class NJProtonEditorHandle {
                         onMissingThumb: nil,
                         onOpenFullPhoto: nil,
                         onTableAction: nil,
-                        onDeletePhoto: nil
+                        onDeletePhoto: nil,
+                        onCollapsibleContentChange: nil,
+                        onCollapsibleToggle: nil
                     )
                 }
             if let doc = NJProtonDocCodecV1.decodeIfPresent(json: json) {
@@ -952,7 +995,9 @@ final class NJProtonEditorHandle {
             onMissingThumb: ((String) -> Void)?,
             onOpenFullPhoto: ((String) -> Void)?,
             onTableAction: ((String, NJTableAction) -> Void)?,
-            onDeletePhoto: ((String) -> Void)?
+            onDeletePhoto: ((String) -> Void)?,
+            onCollapsibleContentChange: (() -> Void)?,
+            onCollapsibleToggle: ((String) -> Void)?
         ) -> NSAttributedString {
             let out = NSMutableAttributedString()
 
@@ -982,7 +1027,9 @@ final class NJProtonEditorHandle {
                         onMissingThumb: onMissingThumb,
                         onOpenFullPhoto: onOpenFullPhoto,
                         onTableAction: onTableAction,
-                        onDeletePhoto: onDeletePhoto
+                        onDeletePhoto: onDeletePhoto,
+                        onCollapsibleContentChange: onCollapsibleContentChange,
+                        onCollapsibleToggle: onCollapsibleToggle
                     ) {
                         out.append(att)
                     }
@@ -1082,6 +1129,16 @@ final class NJProtonEditorHandle {
                 node["table"] = encodeTable(v.gridView)
                 return node
             }
+            if let v = view as? NJCollapsibleAttachmentView {
+                return [
+                    "type": "attachment",
+                    "kind": "collapsible",
+                    "attachment_id": v.attachmentID,
+                    "collapsed": v.isCollapsed,
+                    "title_rtf_base64": encodeRTFBase64(v.titleAttributedText) ?? "",
+                    "body_rtf_base64": encodeRTFBase64(v.bodyAttributedText) ?? ""
+                ]
+            }
             return nil
         }
 
@@ -1117,7 +1174,9 @@ final class NJProtonEditorHandle {
             onMissingThumb: ((String) -> Void)?,
             onOpenFullPhoto: ((String) -> Void)?,
             onTableAction: ((String, NJTableAction) -> Void)?,
-            onDeletePhoto: ((String) -> Void)?
+            onDeletePhoto: ((String) -> Void)?,
+            onCollapsibleContentChange: (() -> Void)?,
+            onCollapsibleToggle: ((String) -> Void)?
         ) -> NSAttributedString? {
             let kind = (node["kind"] as? String) ?? ""
             let attachmentID = (node["attachment_id"] as? String) ?? UUID().uuidString
@@ -1215,6 +1274,27 @@ final class NJProtonEditorHandle {
                     onTableAction: onTableAction
                 )
                 return tableAttachment.string
+            }
+
+            if kind == "collapsible" {
+                let collapsed = (node["collapsed"] as? Bool) ?? false
+                let titleB64 = (node["title_rtf_base64"] as? String) ?? ""
+                let bodyB64 = (node["body_rtf_base64"] as? String) ?? ""
+                let title = decodeRTFBase64(titleB64) ?? NSAttributedString(string: "Section")
+                let body = decodeRTFBase64(bodyB64) ?? NSAttributedString(string: "")
+                let view = NJCollapsibleAttachmentView(
+                    attachmentID: attachmentID,
+                    title: title,
+                    body: body,
+                    isCollapsed: collapsed
+                )
+                view.onContentChange = onCollapsibleContentChange
+                view.onContentCommit = onCollapsibleContentChange
+                view.onCollapseToggle = { onCollapsibleToggle?(attachmentID) }
+                let att = Attachment(view, size: .fullWidth)
+                att.selectOnTap = false
+                att.selectBeforeDelete = false
+                return att.string
             }
 
             return nil
@@ -1593,7 +1673,8 @@ final class NJProtonEditorHandle {
     func toggleUnderline() { toggleUnderlineStyle() }
 
     func focus() {
-        if let tv = textView {
+        markAsActiveHandle()
+        if let tv = textView, owns(textView: tv) {
             _ = tv.becomeFirstResponder()
             return
         }
@@ -1701,12 +1782,29 @@ final class NJProtonEditorHandle {
         att.selectOnTap = false
         att.selectBeforeDelete = false
 
-        let s = NSMutableAttributedString(attributedString: editor.attributedText)
-        let r = editor.selectedRange
-        s.replaceCharacters(in: r, with: att.string)
+        let tv = activeTextView()
+        let sourceText = tv?.attributedText ?? editor.attributedText
+        let s = NSMutableAttributedString(attributedString: sourceText ?? NSAttributedString(string: ""))
+        let rawRange = tv?.selectedRange ?? editor.selectedRange
+        let r = clampedSelection(rawRange, maxLength: s.length)
+        print("NJ_PHOTO_INSERT owner=\(String(describing: ownerBlockUUID)) sel=\(r.location):\(r.length) textLen=\(s.length)")
+        let breakout = shouldBreakOutOfListForAttachment(in: editor, selectedRange: r)
+        let insertion = attachmentInsertionString(
+            att.string,
+            breakoutFromList: breakout,
+            baseText: s.string as NSString,
+            selectedRange: r
+        )
+        s.replaceCharacters(in: r, with: insertion)
+        if breakout {
+            let insertedRange = NSRange(location: r.location, length: insertion.length)
+            sanitizeListAttributesForAttachment(in: s, insertedRange: insertedRange)
+        }
 
         editor.attributedText = s
-        editor.selectedRange = NSRange(location: min(r.location + 1, s.length), length: 0)
+        let newRange = NSRange(location: min(r.location + insertion.length, s.length), length: 0)
+        editor.selectedRange = newRange
+        tv?.selectedRange = newRange
 
         snapshot()
     }
@@ -1723,14 +1821,269 @@ final class NJProtonEditorHandle {
             cols: cCount,
             cellsJSON: nil
         )
-        let s = NSMutableAttributedString(attributedString: editor.attributedText)
-        let r = editor.selectedRange
-        s.replaceCharacters(in: r, with: attachment.string)
+        let tv = activeTextView()
+        let sourceText = tv?.attributedText ?? editor.attributedText
+        let s = NSMutableAttributedString(attributedString: sourceText ?? NSAttributedString(string: ""))
+        let rawRange = tv?.selectedRange ?? editor.selectedRange
+        let r = clampedSelection(rawRange, maxLength: s.length)
+        let breakout = shouldBreakOutOfListForAttachment(in: editor, selectedRange: r)
+        let insertion = attachmentInsertionString(
+            attachment.string,
+            breakoutFromList: breakout,
+            baseText: s.string as NSString,
+            selectedRange: r
+        )
+        s.replaceCharacters(in: r, with: insertion)
+        if breakout {
+            let insertedRange = NSRange(location: r.location, length: insertion.length)
+            sanitizeListAttributesForAttachment(in: s, insertedRange: insertedRange)
+        }
 
         editor.attributedText = s
-        editor.selectedRange = NSRange(location: min(r.location + 1, s.length), length: 0)
+        let newRange = NSRange(location: min(r.location + insertion.length, s.length), length: 0)
+        editor.selectedRange = newRange
+        tv?.selectedRange = newRange
 
         snapshot()
+    }
+
+    func convertSelectionToCollapsibleSection() {
+        guard let editor else { return }
+        let tv = activeTextView()
+        let sourceText = tv?.attributedText ?? editor.attributedText
+        let s = NSMutableAttributedString(attributedString: sourceText ?? NSAttributedString(string: ""))
+        let rawRange = tv?.selectedRange ?? editor.selectedRange
+        var r = clampedSelection(rawRange, maxLength: s.length)
+
+        if r.length == 0 {
+            if s.length == 0 { return }
+            let ns = s.string as NSString
+            let probe = min(max(0, r.location), max(0, ns.length - 1))
+            r = ns.paragraphRange(for: NSRange(location: probe, length: 0))
+        }
+
+        guard r.length > 0 else { return }
+        let selected = s.attributedSubstring(from: r)
+        let title = makeCollapsibleTitle(from: selected)
+        let body = makeCollapsibleBody(from: selected, title: title.string)
+        let attachmentID = UUID().uuidString
+        let att = buildCollapsibleAttachment(
+            attachmentID: attachmentID,
+            title: title,
+            body: body,
+            isCollapsed: false
+        )
+
+        let breakout = shouldBreakOutOfListForAttachment(in: editor, selectedRange: r)
+        let insertion = attachmentInsertionString(
+            att.string,
+            breakoutFromList: breakout,
+            baseText: s.string as NSString,
+            selectedRange: r
+        )
+        s.replaceCharacters(in: r, with: insertion)
+        if breakout {
+            let insertedRange = NSRange(location: r.location, length: insertion.length)
+            sanitizeListAttributesForAttachment(in: s, insertedRange: insertedRange)
+        }
+
+        editor.attributedText = s
+        let newRange = NSRange(location: min(r.location + insertion.length, s.length), length: 0)
+        editor.selectedRange = newRange
+        tv?.selectedRange = newRange
+        snapshot()
+    }
+
+    private func refreshEditorAfterCollapsibleMutation() {
+        guard let editor else { return }
+        let sel = editor.selectedRange
+        let current = NSAttributedString(attributedString: editor.attributedText)
+        editor.attributedText = current
+        editor.selectedRange = clampedSelection(sel, maxLength: current.length)
+        if let tv = activeTextView() {
+            tv.selectedRange = clampedSelection(sel, maxLength: current.length)
+        }
+        snapshot()
+    }
+
+    private func buildCollapsibleAttachment(
+        attachmentID: String,
+        title: NSAttributedString,
+        body: NSAttributedString,
+        isCollapsed: Bool
+    ) -> Attachment {
+        let view = NJCollapsibleAttachmentView(
+            attachmentID: attachmentID,
+            title: title,
+            body: body,
+            isCollapsed: isCollapsed
+        )
+        view.onContentChange = nil
+        view.onContentCommit = { [weak self] in self?.snapshot() }
+        view.onCollapseToggle = { [weak self] in
+            self?.replaceCollapsibleAttachment(attachmentID: attachmentID)
+        }
+        let att = Attachment(view, size: .fullWidth)
+        att.selectOnTap = false
+        att.selectBeforeDelete = false
+        return att
+    }
+
+    func removeNearestCollapsibleSection() {
+        guard let editor else { return }
+        let full = NSRange(location: 0, length: editor.attributedText.length)
+        if full.length == 0 { return }
+
+        let tv = activeTextView()
+        let rawSelection = tv?.selectedRange ?? editor.selectedRange
+        let selection = clampedSelection(rawSelection, maxLength: full.length)
+
+        var target: (NSRange, NJCollapsibleAttachmentView)? = nil
+        editor.attributedText.enumerateAttribute(.attachment, in: full, options: []) { value, range, stop in
+            guard let att = value as? Attachment else { return }
+            guard att.isBlockType else { return }
+            guard let view = att.contentView as? NJCollapsibleAttachmentView else { return }
+            let intersects = selection.length > 0
+                ? NSIntersectionRange(selection, range).length > 0
+                : (selection.location >= range.location && selection.location <= range.location + range.length)
+            if intersects {
+                target = (range, view)
+                stop.pointee = true
+            }
+        }
+
+        guard let (range, view) = target else { return }
+
+        let title = view.titleAttributedText.string.trimmingCharacters(in: .whitespacesAndNewlines)
+        let body = view.bodyAttributedText
+        let replacement = NSMutableAttributedString()
+        if !title.isEmpty {
+            replacement.append(NSAttributedString(string: title + "\n"))
+        }
+        replacement.append(body)
+        if replacement.length > 0 {
+            let ns = replacement.string as NSString
+            let last = ns.character(at: ns.length - 1)
+            if last != 10 && last != 13 {
+                replacement.append(NSAttributedString(string: "\n"))
+            }
+        }
+
+        let s = NSMutableAttributedString(attributedString: editor.attributedText)
+        s.replaceCharacters(in: range, with: replacement)
+        editor.attributedText = s
+        let newLoc = min(range.location + replacement.length, s.length)
+        let newRange = NSRange(location: newLoc, length: 0)
+        editor.selectedRange = newRange
+        tv?.selectedRange = newRange
+        snapshot()
+    }
+
+    private func clampedSelection(_ range: NSRange, maxLength: Int) -> NSRange {
+        let safeLength = max(0, maxLength)
+        let loc = min(max(0, range.location), safeLength)
+        let len = min(max(0, range.length), safeLength - loc)
+        return NSRange(location: loc, length: len)
+    }
+
+    private func makeCollapsibleTitle(from selected: NSAttributedString) -> NSAttributedString {
+        let raw = selected.string
+            .replacingOccurrences(of: "\u{2028}", with: "\n")
+            .replacingOccurrences(of: "\u{2029}", with: "\n")
+        let first = raw.split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) ?? ""
+        let title = first.trimmingCharacters(in: .whitespacesAndNewlines)
+        return NSAttributedString(string: title.isEmpty ? "Section" : title)
+    }
+
+    private func makeCollapsibleBody(from selected: NSAttributedString, title: String) -> NSAttributedString {
+        let trimmed = trimLeadingAndTrailingNewlines(from: selected)
+        if trimmed.length == 0 { return trimmed }
+        let ns = trimmed.string as NSString
+        let p0 = ns.paragraphRange(for: NSRange(location: 0, length: 0))
+        let firstLine = ns.substring(with: p0).trimmingCharacters(in: .whitespacesAndNewlines)
+        if !title.isEmpty && firstLine.caseInsensitiveCompare(title) == .orderedSame {
+            let start = min(p0.location + p0.length, trimmed.length)
+            let tail = trimmed.attributedSubstring(from: NSRange(location: start, length: max(0, trimmed.length - start)))
+            return trimLeadingAndTrailingNewlines(from: tail)
+        }
+        return trimmed
+    }
+
+    private func trimLeadingAndTrailingNewlines(from selected: NSAttributedString) -> NSAttributedString {
+        if selected.length == 0 { return selected }
+        let ns = selected.string as NSString
+        var start = 0
+        var end = ns.length
+        while start < end {
+            let c = ns.character(at: start)
+            if c == 10 || c == 13 { start += 1 } else { break }
+        }
+        while end > start {
+            let c = ns.character(at: end - 1)
+            if c == 10 || c == 13 { end -= 1 } else { break }
+        }
+        let len = max(0, end - start)
+        return selected.attributedSubstring(from: NSRange(location: start, length: len))
+    }
+
+    private func shouldBreakOutOfListForAttachment(in editor: EditorView, selectedRange: NSRange) -> Bool {
+        let text = editor.attributedText
+        if text.length == 0 { return false }
+        let probe = min(max(0, selectedRange.location), text.length - 1)
+        if text.attribute(.listItem, at: probe, effectiveRange: nil) != nil { return true }
+        if let ps = text.attribute(.paragraphStyle, at: probe, effectiveRange: nil) as? NSParagraphStyle,
+           !ps.textLists.isEmpty {
+            return true
+        }
+        let ns = text.string as NSString
+        let para = ns.paragraphRange(for: NSRange(location: probe, length: 0))
+        var found = false
+        text.enumerateAttribute(.listItem, in: para, options: []) { value, _, stop in
+            if value != nil {
+                found = true
+                stop.pointee = true
+            }
+        }
+        return found
+    }
+
+    private func attachmentInsertionString(
+        _ attachment: NSAttributedString,
+        breakoutFromList: Bool,
+        baseText: NSString,
+        selectedRange: NSRange
+    ) -> NSAttributedString {
+        if !breakoutFromList { return attachment }
+        let safeLoc = min(max(0, selectedRange.location), baseText.length)
+        let needLeadingNewline: Bool = {
+            if safeLoc == 0 { return false }
+            let c = baseText.character(at: safeLoc - 1)
+            return c != 10 && c != 13
+        }()
+        let needTrailingNewline: Bool = {
+            if safeLoc >= baseText.length { return true }
+            let c = baseText.character(at: safeLoc)
+            return c != 10 && c != 13
+        }()
+        let out = NSMutableAttributedString()
+        if needLeadingNewline {
+            out.append(NSAttributedString(string: "\n"))
+        }
+        out.append(attachment)
+        if needTrailingNewline {
+            out.append(NSAttributedString(string: "\n"))
+        }
+        return out
+    }
+
+    private func sanitizeListAttributesForAttachment(in text: NSMutableAttributedString, insertedRange: NSRange) {
+        guard insertedRange.length > 0 else { return }
+        text.removeAttribute(.listItem, range: insertedRange)
+        let ps = NSMutableParagraphStyle()
+        ps.firstLineHeadIndent = 0
+        ps.headIndent = 0
+        ps.textLists = []
+        text.addAttribute(.paragraphStyle, value: ps, range: insertedRange)
     }
 
     private func handleTableAction(attachmentID: String, action: NJTableAction) {
@@ -1779,6 +2132,44 @@ final class NJProtonEditorHandle {
             stop.pointee = true
         }
         return found
+    }
+
+    private func findCollapsibleAttachment(
+        attachmentID: String,
+        in text: NSAttributedString
+    ) -> (NSRange, NJCollapsibleAttachmentView)? {
+        let full = NSRange(location: 0, length: text.length)
+        var found: (NSRange, NJCollapsibleAttachmentView)? = nil
+        text.enumerateAttribute(.attachment, in: full, options: []) { value, range, stop in
+            guard let att = value as? Attachment else { return }
+            guard att.isBlockType else { return }
+            guard let view = att.contentView as? NJCollapsibleAttachmentView else { return }
+            guard view.attachmentID == attachmentID else { return }
+            found = (range, view)
+            stop.pointee = true
+        }
+        return found
+    }
+
+    private func replaceCollapsibleAttachment(attachmentID: String) {
+        guard let editor else { return }
+        guard let (range, view) = findCollapsibleAttachment(attachmentID: attachmentID, in: editor.attributedText) else { return }
+        let replacement = buildCollapsibleAttachment(
+            attachmentID: attachmentID,
+            title: view.titleAttributedText,
+            body: view.bodyAttributedText,
+            isCollapsed: view.isCollapsed
+        )
+        let s = NSMutableAttributedString(attributedString: editor.attributedText)
+        let sel = editor.selectedRange
+        s.replaceCharacters(in: range, with: replacement.string)
+        editor.attributedText = s
+        let clamped = clampedSelection(sel, maxLength: s.length)
+        editor.selectedRange = clamped
+        if let tv = activeTextView() {
+            tv.selectedRange = clamped
+        }
+        snapshot()
     }
 
     private func tableCellsJSON(from grid: GridView) -> [[String: Any]] {
@@ -2312,6 +2703,12 @@ final class NJProtonEditorHandle {
                     },
                     onDeletePhoto: { [weak self] id in
                         self?.deletePhotoAttachment(attachmentID: id)
+                    },
+                    onCollapsibleContentChange: { [weak self] in
+                        self?.snapshot()
+                    },
+                    onCollapsibleToggle: { [weak self] id in
+                        self?.replaceCollapsibleAttachment(attachmentID: id)
                     }
                 )
             )
@@ -2353,15 +2750,31 @@ final class NJProtonEditorHandle {
     }
 
     private func activeTextView() -> UITextView? {
-        if let editor, let tv = findTextView(in: editor), tv.isFirstResponder {
+        guard let editor else { return nil }
+
+        if let tv = textView, owns(textView: tv), tv.isFirstResponder {
             return tv
         }
 
-        if let tv = findFirstResponderTextView() {
+        if let tv = findTextView(in: editor), tv.isFirstResponder {
+            textView = tv
             return tv
         }
 
-        if let editor { return findTextView(in: editor) }
+        if let tv = findFirstResponderTextView(), owns(textView: tv) {
+            textView = tv
+            return tv
+        }
+
+        if let tv = textView, owns(textView: tv) {
+            return tv
+        }
+
+        if let tv = findTextView(in: editor) {
+            textView = tv
+            return tv
+        }
+
         return nil
     }
 
@@ -2674,6 +3087,7 @@ struct NJProtonEditorView: UIViewRepresentable {
 
         func textViewDidBeginEditing(_ tv: UITextView) {
             if isProgrammatic { return }
+            handle.markAsActiveHandle()
             handle.isEditing = true
         }
 
@@ -2745,6 +3159,7 @@ struct NJProtonEditorView: UIViewRepresentable {
 
         func textViewDidChange(_ tv: UITextView) {
             if isProgrammatic { return }
+            handle.markAsActiveHandle()
 
             let sel = tv.selectedRange
             handle.onUserTyped?(tv.attributedText ?? NSAttributedString(string: ""), sel)
@@ -2785,6 +3200,7 @@ struct NJProtonEditorView: UIViewRepresentable {
 
         func editorViewDidChangeSelection(_ editorView: EditorView) {
             editor = editorView
+            handle.markAsActiveHandle()
             updateMeasuredHeight(from: editorView)
         }
 

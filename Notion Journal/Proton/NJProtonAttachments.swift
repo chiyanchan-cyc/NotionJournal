@@ -5,11 +5,210 @@ import Proton
 extension EditorContent.Name {
     static let njPhoto = EditorContent.Name("nj_photo")
     static let njTable = EditorContent.Name("nj_table")
+    static let njCollapsible = EditorContent.Name("nj_collapsible")
 }
 
 enum NJTableAction {
     case addRow
     case addColumn
+}
+
+final class NJCollapsibleAttachmentView: UIView, AttachmentViewIdentifying, UITextViewDelegate, UITextFieldDelegate {
+    let attachmentID: String
+    var name: EditorContent.Name { .njCollapsible }
+    var type: AttachmentType { .block }
+
+    private let headerButton = UIButton(type: .system)
+    private let titleField = UITextField(frame: .zero)
+    private let bodyTextView = UITextView(frame: .zero)
+    private let stack = UIStackView(frame: .zero)
+    private var isInternalUpdate: Bool = false
+    private var stackTopConstraint: NSLayoutConstraint?
+    private var stackBottomConstraint: NSLayoutConstraint?
+    private var collapsedBottomConstraint: NSLayoutConstraint?
+    private var bodyMinHeightConstraint: NSLayoutConstraint?
+    private var preferredHeightConstraint: NSLayoutConstraint?
+    private var lastMeasuredWidth: CGFloat = 0
+
+    var isCollapsed: Bool {
+        didSet { applyCollapsedState() }
+    }
+
+    var onContentChange: (() -> Void)?
+    var onContentCommit: (() -> Void)?
+    var onCollapseToggle: (() -> Void)?
+
+    var titleAttributedText: NSAttributedString {
+        get {
+            NSAttributedString(string: titleField.text ?? "")
+        }
+        set {
+            titleField.text = newValue.string
+        }
+    }
+
+    var bodyAttributedText: NSAttributedString {
+        get {
+            bodyTextView.attributedText ?? NSAttributedString(string: "")
+        }
+        set {
+            bodyTextView.attributedText = newValue
+        }
+    }
+
+    init(
+        attachmentID: String,
+        title: NSAttributedString,
+        body: NSAttributedString,
+        isCollapsed: Bool
+    ) {
+        self.attachmentID = attachmentID
+        self.isCollapsed = isCollapsed
+        super.init(frame: .zero)
+        buildUI()
+        titleAttributedText = title
+        bodyAttributedText = body
+        applyCollapsedState()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var intrinsicContentSize: CGSize {
+        CGSize(width: UIView.noIntrinsicMetric, height: preferredHeightConstraint?.constant ?? 44)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let w = bounds.width
+        if abs(w - lastMeasuredWidth) > 0.5 {
+            lastMeasuredWidth = w
+            recalculatePreferredHeight()
+        }
+    }
+
+    func textViewDidChange(_ textView: UITextView) {
+        guard !isInternalUpdate else { return }
+        recalculatePreferredHeight()
+    }
+
+    func textFieldDidEndEditing(_ textField: UITextField) {
+        guard !isInternalUpdate else { return }
+        onContentCommit?()
+    }
+
+    func textViewDidEndEditing(_ textView: UITextView) {
+        guard !isInternalUpdate else { return }
+        onContentCommit?()
+    }
+
+    @objc private func titleChanged() {
+        guard !isInternalUpdate else { return }
+    }
+
+    @objc private func toggleCollapsed() {
+        isCollapsed.toggle()
+        onCollapseToggle?()
+        onContentChange?()
+    }
+
+    private func buildUI() {
+        layer.cornerRadius = 10
+        layer.borderWidth = 1
+        layer.borderColor = UIColor.separator.cgColor
+        backgroundColor = UIColor.secondarySystemBackground
+
+        headerButton.translatesAutoresizingMaskIntoConstraints = false
+        headerButton.setImage(UIImage(systemName: "chevron.down"), for: .normal)
+        headerButton.tintColor = .secondaryLabel
+        headerButton.addTarget(self, action: #selector(toggleCollapsed), for: .touchUpInside)
+        addSubview(headerButton)
+
+        titleField.translatesAutoresizingMaskIntoConstraints = false
+        titleField.borderStyle = .none
+        titleField.placeholder = "Section"
+        titleField.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
+        titleField.textColor = .label
+        titleField.delegate = self
+        titleField.addTarget(self, action: #selector(titleChanged), for: .editingChanged)
+        addSubview(titleField)
+
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.axis = .vertical
+        stack.spacing = 8
+        addSubview(stack)
+
+        bodyTextView.translatesAutoresizingMaskIntoConstraints = false
+        bodyTextView.isScrollEnabled = false
+        bodyTextView.backgroundColor = .clear
+        bodyTextView.delegate = self
+        bodyTextView.font = UIFont.systemFont(ofSize: 15, weight: .regular)
+        bodyTextView.textColor = .label
+        stack.addArrangedSubview(bodyTextView)
+
+        let headerConstraints = [
+            headerButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            headerButton.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+            headerButton.widthAnchor.constraint(equalToConstant: 28),
+            headerButton.heightAnchor.constraint(equalToConstant: 28),
+
+            titleField.leadingAnchor.constraint(equalTo: headerButton.trailingAnchor, constant: 4),
+            titleField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            titleField.centerYAnchor.constraint(equalTo: headerButton.centerYAnchor),
+            titleField.heightAnchor.constraint(greaterThanOrEqualToConstant: 28)
+        ]
+        NSLayoutConstraint.activate(headerConstraints)
+
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12)
+        ])
+
+        stackTopConstraint = stack.topAnchor.constraint(equalTo: headerButton.bottomAnchor, constant: 8)
+        stackBottomConstraint = stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12)
+        collapsedBottomConstraint = headerButton.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8)
+        bodyMinHeightConstraint = bodyTextView.heightAnchor.constraint(greaterThanOrEqualToConstant: 44)
+
+        stackTopConstraint?.isActive = true
+        stackBottomConstraint?.isActive = true
+        bodyMinHeightConstraint?.isActive = true
+        preferredHeightConstraint = heightAnchor.constraint(equalToConstant: 44)
+        preferredHeightConstraint?.priority = .required
+        preferredHeightConstraint?.isActive = true
+        recalculatePreferredHeight()
+    }
+
+    private func applyCollapsedState() {
+        isInternalUpdate = true
+        stack.isHidden = isCollapsed
+        stackTopConstraint?.isActive = !isCollapsed
+        stackBottomConstraint?.isActive = !isCollapsed
+        collapsedBottomConstraint?.isActive = isCollapsed
+        bodyMinHeightConstraint?.constant = isCollapsed ? 0 : 44
+        let symbol = isCollapsed ? "chevron.right" : "chevron.down"
+        headerButton.setImage(UIImage(systemName: symbol), for: .normal)
+        isInternalUpdate = false
+        recalculatePreferredHeight()
+    }
+
+    private func recalculatePreferredHeight() {
+        let next: CGFloat
+        if isCollapsed {
+            next = 44
+        } else {
+            let width = max(220, bounds.width - 24)
+            let bodyFit = bodyTextView.sizeThatFits(CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)).height
+            next = 56 + max(44, bodyFit)
+        }
+        let changed = abs((preferredHeightConstraint?.constant ?? 0) - next) > 0.5
+        if changed {
+            preferredHeightConstraint?.constant = next
+            invalidateIntrinsicContentSize()
+            superview?.setNeedsLayout()
+        }
+    }
 }
 
 final class NJPhotoAttachmentView: UIView, AttachmentViewIdentifying {

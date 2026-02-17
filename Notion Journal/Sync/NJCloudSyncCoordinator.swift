@@ -160,6 +160,10 @@ actor NJCloudSyncCoordinator {
             return (row["plan_id"] as? String) ?? (row["id"] as? String) ?? ""
         case "planning_note":
             return (row["planning_key"] as? String) ?? (row["id"] as? String) ?? ""
+        case "time_slot":
+            return (row["time_slot_id"] as? String) ?? (row["id"] as? String) ?? ""
+        case "personal_goal":
+            return (row["goal_id"] as? String) ?? (row["id"] as? String) ?? ""
         case "outline":
             return (row["outline_id"] as? String) ?? (row["id"] as? String) ?? ""
         case "outline_node":

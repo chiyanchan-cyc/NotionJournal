@@ -95,6 +95,7 @@ struct NJReconstructedNoteView: View {
     private func row(_ b: NJNoteEditorContainerPersistence.BlockState) -> some View {
         let id = b.id
         let h = b.protonHandle
+        let collapsedBinding = bindingCollapsed(id)
         let rowIndex = (persistence.blocks.firstIndex(where: { $0.id == id }) ?? 0) + 1
         let liveTagJSON: String? = persistence.blocks.first(where: { $0.id == id })?.tagJSON
 
@@ -118,7 +119,7 @@ struct NJReconstructedNoteView: View {
             hasClipPDF: false,
             onOpenClipPDF: { },
             protonHandle: h,
-            isCollapsed: bindingCollapsed(id),
+            isCollapsed: collapsedBinding,
             isFocused: id == persistence.focusedBlockID,
             attr: bindingAttr(id),
             sel: bindingSel(id),
@@ -149,7 +150,7 @@ struct NJReconstructedNoteView: View {
                 store.notes.listTagSuggestions(prefix: prefix, limit: limit)
             }
         )
-        .id(id)
+        .id("\(id.uuidString)-\(collapsedBinding.wrappedValue ? "c" : "e")")
         .fixedSize(horizontal: false, vertical: true)
         .listRowInsets(EdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 12))
         .listRowBackground(persistence.rowBackgroundColor(blockID: b.blockID))
@@ -166,6 +167,15 @@ struct NJReconstructedNoteView: View {
                 pendingFocusID = nil
                 pendingFocusToStart = false
                 h.focus()
+            }
+        }
+        .onChange(of: collapsedBinding.wrappedValue) { _, v in
+            guard !v else { return }
+            DispatchQueue.main.async {
+                persistence.hydrateProton(id)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                persistence.hydrateProton(id)
             }
         }
     }

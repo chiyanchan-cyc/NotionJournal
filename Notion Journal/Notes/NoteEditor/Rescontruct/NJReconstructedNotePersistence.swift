@@ -218,7 +218,7 @@ final class NJReconstructedNotePersistence: ObservableObject {
             let d = Date(timeIntervalSince1970: Double(ms) / 1000.0)
             return "\(ms) (\(d))"
         }
-        print("NJ_RECON_SPEC id=\(spec.id) match=\(spec.match) timeField=\(spec.timeField) startMs=\(fmt(startMs)) endMs=\(fmt(endMs)) timeExpr=\(timeExpr) exclude=\(spec.excludeTags)")
+        print("NJ_RECON_SPEC id=\(spec.id) match=\(spec.match) timeField=\(spec.timeField) startMs=\(fmt(startMs)) endMs=\(fmt(endMs)) timeExpr=\(timeExpr) include=\(spec.includeTags) exclude=\(spec.excludeTags)")
 
         switch spec.match {
         case .exact(let tagRaw):
@@ -289,6 +289,10 @@ final class NJReconstructedNotePersistence: ObservableObject {
             whereParts.append("(b.deleted IS NULL OR b.deleted = 0)")
             if startMs != nil { whereParts.append("\(timeExpr) >= ?") }
             if endMs != nil { whereParts.append("\(timeExpr) <= ?") }
+            if !spec.includeTags.isEmpty {
+                let ors = spec.includeTags.map { _ in "lower(ti.tag)=lower(?)" }.joined(separator: " OR ")
+                whereParts.append("b.block_id IN (SELECT ti.block_id FROM nj_block_tag ti WHERE \(ors))")
+            }
             for _ in spec.excludeTags {
                 whereParts.append("b.block_id NOT IN (SELECT block_id FROM nj_block_tag WHERE lower(tag)=lower(?))")
             }
@@ -301,6 +305,9 @@ final class NJReconstructedNotePersistence: ObservableObject {
                 }
                 if let endMs {
                     sqlite3_bind_int64(stmt, i, endMs); i += 1
+                }
+                for t in spec.includeTags {
+                    sqlite3_bind_text(stmt, i, t, -1, SQLITE_TRANSIENT); i += 1
                 }
                 for t in spec.excludeTags {
                     sqlite3_bind_text(stmt, i, t, -1, SQLITE_TRANSIENT); i += 1
@@ -635,6 +642,11 @@ final class NJReconstructedNotePersistence: ObservableObject {
         return out
     }
 
+    private func protonPhotoNodeCount(_ protonJSON: String) -> Int {
+        guard !protonJSON.isEmpty else { return 0 }
+        return protonJSON.components(separatedBy: "\"kind\":\"photo\"").count - 1
+    }
+
     func hydrateProton(_ id: UUID) {
         guard let i = blocks.firstIndex(where: { $0.id == id }) else { return }
         let json = blocks[i].protonJSON
@@ -734,21 +746,17 @@ final class NJReconstructedNotePersistence: ObservableObject {
         }
 
         let originalAttr = editor.attributedText
-        let originalSel  = editor.selectedRange
-
-        if let cleaned = tagRes?.cleaned {
-            editor.setAttributedTextSafely(cleaned, targetSelection: originalSel)
+        let views = extractPhotoAttachments(from: originalAttr)
+        let sourceAttrForProton = tagRes?.cleaned ?? originalAttr
+        var protonJSON = b.protonHandle.exportProtonJSONString(from: sourceAttrForProton)
+        if !views.isEmpty && protonPhotoNodeCount(protonJSON) < views.count {
+            protonJSON = b.protonHandle.exportProtonJSONString(from: originalAttr)
         }
-
-        let protonJSON = b.protonHandle.exportProtonJSONString()
-
-        editor.setAttributedTextSafely(originalAttr, targetSelection: originalSel)
 
         b.protonJSON = protonJSON
         blocks[i].protonJSON = protonJSON
 
         let nowMs = DBNoteRepository.nowMs()
-        let views = extractPhotoAttachments(from: originalAttr)
         let existing = store.notes.listAttachments(blockID: b.blockID)
         var existingByID: [String: NJAttachmentRecord] = [:]
         for e in existing { existingByID[e.attachmentID] = e }

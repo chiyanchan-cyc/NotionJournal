@@ -19,6 +19,8 @@ final class DBNoteRepository {
     let calendarTable: DBCalendarTable
     let plannedExerciseTable: DBPlannedExerciseTable
     let planningNoteTable: DBPlanningNoteTable
+    let timeSlotTable: DBTimeSlotTable
+    let personalGoalTable: DBPersonalGoalTable
     private let cloudBridge: DBCloudBridge
     
     
@@ -56,6 +58,14 @@ final class DBNoteRepository {
             db: db,
             enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
         )
+        self.timeSlotTable = DBTimeSlotTable(
+            db: db,
+            enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
+        )
+        self.personalGoalTable = DBPersonalGoalTable(
+            db: db,
+            enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
+        )
         self.cloudBridge = DBCloudBridge(
             noteTable: self.noteTable,
             blockTable: self.blockTable,
@@ -64,7 +74,9 @@ final class DBNoteRepository {
             goalTable: self.goalTable,
             calendarTable: self.calendarTable,
             plannedExerciseTable: self.plannedExerciseTable,
-            planningNoteTable: self.planningNoteTable
+            planningNoteTable: self.planningNoteTable,
+            timeSlotTable: self.timeSlotTable,
+            personalGoalTable: self.personalGoalTable
         )
     }
     
@@ -164,18 +176,26 @@ final class DBNoteRepository {
         blockTable.setGoalID(blockID: blockID, goalID: goalID, updatedAtMs: Self.nowMs())
     }
 
-    func createQuickNoteBlock(payloadJSON: String) -> String? {
+    func createQuickNoteBlock(payloadJSON: String, createdAtMs: Int64? = nil, tags: [String] = []) -> String? {
         let title = NJQuickNotePayload.title(from: payloadJSON)
         if title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return nil }
         let blockID = UUID().uuidString
-        let now = Self.nowMs()
+        let now = createdAtMs ?? Self.nowMs()
+        let cleanedTags = Array(Set(tags.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })).sorted()
+        let tagJSON: String = {
+            guard !cleanedTags.isEmpty,
+                  let d = try? JSONSerialization.data(withJSONObject: cleanedTags),
+                  let s = String(data: d, encoding: .utf8)
+            else { return "" }
+            return s
+        }()
 
         blockTable.applyNJBlock([
             "block_id": blockID,
             "block_type": "quick",
             "payload_json": payloadJSON,
             "domain_tag": "",
-            "tag_json": "",
+            "tag_json": tagJSON,
             "goal_id": "",
             "lineage_id": "",
             "parent_block_id": "",
@@ -183,6 +203,9 @@ final class DBNoteRepository {
             "updated_at_ms": now,
             "deleted": Int64(0)
         ])
+        if !cleanedTags.isEmpty {
+            blockTable.upsertTagsForBlockID(blockID: blockID, tags: cleanedTags, nowMs: now)
+        }
 
         return blockID
     }
@@ -252,6 +275,10 @@ final class DBNoteRepository {
             for (_, f) in rows { applyRemoteUpsert(entity: "planned_exercise", fields: f) }
         case "planning_note":
             for (_, f) in rows { applyRemoteUpsert(entity: "planning_note", fields: f) }
+        case "time_slot":
+            for (_, f) in rows { applyRemoteUpsert(entity: "time_slot", fields: f) }
+        case "personal_goal":
+            for (_, f) in rows { applyRemoteUpsert(entity: "personal_goal", fields: f) }
 
         case "outline":
             for (_, f) in rows { applyRemoteUpsert(entity: "outline", fields: f) }
@@ -322,6 +349,8 @@ final class DBNoteRepository {
         case "calendar_item": table = "nj_calendar_item"
         case "planned_exercise": table = "nj_planned_exercise"
         case "planning_note": table = "nj_planning_note"
+        case "time_slot": table = "nj_time_slot"
+        case "personal_goal": table = "nj_personal_goal"
         case "outline": table = "nj_outline"
         case "outline_node": table = "nj_outline_node"
         default: return 0
@@ -595,7 +624,7 @@ final class DBNoteRepository {
         planningNoteTable.upsertNote(note)
     }
 
-    func upsertPlanningNote(kind: String, targetKey: String, note: String, nowMs: Int64) {
+    func upsertPlanningNote(kind: String, targetKey: String, note: String, protonJSON: String = "", nowMs: Int64) {
         let key = planningNoteTable.makePlanningKey(kind: kind, targetKey: targetKey)
         let existing = planningNoteTable.loadNoteIncludingDeleted(kind: kind, targetKey: targetKey)
         let row = NJPlanningNote(
@@ -603,6 +632,7 @@ final class DBNoteRepository {
             kind: kind,
             targetKey: targetKey,
             note: note,
+            protonJSON: protonJSON,
             createdAtMs: existing?.createdAtMs ?? nowMs,
             updatedAtMs: nowMs,
             deleted: 0
@@ -639,6 +669,30 @@ final class DBNoteRepository {
         let weekly = planningNoteTable.loadNote(kind: "weekly", targetKey: weekStartKey)?.note ?? ""
         let daily = planningNoteTable.loadNote(kind: "daily", targetKey: dateKey)?.note ?? ""
         return (weekly, daily)
+    }
+
+    func listTimeSlots(ownerScope: String = "ME") -> [NJTimeSlotRecord] {
+        timeSlotTable.list(ownerScope: ownerScope)
+    }
+
+    func upsertTimeSlot(_ row: NJTimeSlotRecord) {
+        timeSlotTable.upsert(row)
+    }
+
+    func deleteTimeSlot(timeSlotID: String, nowMs: Int64) {
+        timeSlotTable.markDeleted(timeSlotID: timeSlotID, nowMs: nowMs)
+    }
+
+    func listPersonalGoals(ownerScope: String = "ME") -> [NJPersonalGoalRecord] {
+        personalGoalTable.list(ownerScope: ownerScope)
+    }
+
+    func upsertPersonalGoal(_ row: NJPersonalGoalRecord) {
+        personalGoalTable.upsert(row)
+    }
+
+    func deletePersonalGoal(goalID: String, nowMs: Int64) {
+        personalGoalTable.markDeleted(goalID: goalID, nowMs: nowMs)
     }
     
     static func nowMs() -> Int64 {

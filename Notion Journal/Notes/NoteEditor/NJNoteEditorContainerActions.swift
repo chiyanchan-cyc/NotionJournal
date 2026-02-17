@@ -16,13 +16,16 @@ extension NJNoteEditorContainerView {
 
         handle.onUserTyped = { [weak p = persistence, weak handle] _, _ in
             guard let p, let id = handle?.ownerBlockUUID else { return }
+            p.focusedBlockID = id
             p.markDirty(id)
             p.scheduleCommit(id)
         }
 
         handle.onSnapshot = { [weak p = persistence, weak handle] _, _ in
             guard let p, let id = handle?.ownerBlockUUID else { return }
+            p.focusedBlockID = id
             p.markDirty(id)
+            p.scheduleCommit(id)
         }
 
         return handle

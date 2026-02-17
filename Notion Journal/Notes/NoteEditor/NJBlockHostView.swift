@@ -237,6 +237,7 @@ struct NJBlockHostView: View {
                                 .font(.body.weight(.semibold))
                                 .foregroundStyle(.primary)
                                 .lineLimit(1)
+                                .truncationMode(.tail)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .contentShape(Rectangle())
                                 .onTapGesture { onFocus() }
@@ -285,7 +286,6 @@ struct NJBlockHostView: View {
                 }
 
                 VStack {
-                    Spacer()
                     Menu {
                         let d = oneLine(domainPreview ?? "")
                         let g = oneLine(goalPreview ?? "")
@@ -338,9 +338,8 @@ struct NJBlockHostView: View {
                             .contentShape(Rectangle())
                     }
                     .menuStyle(.borderlessButton)
-                    Spacer()
                 }
-                .frame(maxHeight: .infinity)
+                .frame(maxHeight: .infinity, alignment: isCollapsed ? .center : .bottom)
                 .padding(.trailing, 6)
             }
         }

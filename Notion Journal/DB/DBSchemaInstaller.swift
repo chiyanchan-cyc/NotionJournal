@@ -175,6 +175,7 @@ enum DBSchemaInstaller {
                     title TEXT NOT NULL DEFAULT '',
                     photo_attachment_id TEXT NOT NULL DEFAULT '',
                     photo_local_id TEXT NOT NULL DEFAULT '',
+                    photo_cloud_id TEXT NOT NULL DEFAULT '',
                     photo_thumb_path TEXT NOT NULL DEFAULT '',
                     created_at_ms INTEGER NOT NULL,
                     updated_at_ms INTEGER NOT NULL,
@@ -186,6 +187,7 @@ enum DBSchemaInstaller {
                     ColumnSpec(name: "title", declForAlter: "TEXT NOT NULL DEFAULT ''"),
                     ColumnSpec(name: "photo_attachment_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
                     ColumnSpec(name: "photo_local_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "photo_cloud_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
                     ColumnSpec(name: "photo_thumb_path", declForAlter: "TEXT NOT NULL DEFAULT ''"),
                     ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
                     ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
@@ -235,6 +237,7 @@ enum DBSchemaInstaller {
                     kind TEXT NOT NULL DEFAULT '',
                     target_key TEXT NOT NULL DEFAULT '',
                     note TEXT NOT NULL DEFAULT '',
+                    proton_json TEXT NOT NULL DEFAULT '',
                     created_at_ms INTEGER NOT NULL,
                     updated_at_ms INTEGER NOT NULL,
                     deleted INTEGER NOT NULL DEFAULT 0
@@ -245,6 +248,7 @@ enum DBSchemaInstaller {
                     ColumnSpec(name: "kind", declForAlter: "TEXT NOT NULL DEFAULT ''"),
                     ColumnSpec(name: "target_key", declForAlter: "TEXT NOT NULL DEFAULT ''"),
                     ColumnSpec(name: "note", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "proton_json", declForAlter: "TEXT NOT NULL DEFAULT ''"),
                     ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
                     ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
                     ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
@@ -252,6 +256,73 @@ enum DBSchemaInstaller {
                 indexes: [
                     "CREATE INDEX IF NOT EXISTS idx_nj_planning_note_kind_target ON nj_planning_note(kind, target_key ASC);",
                     "CREATE INDEX IF NOT EXISTS idx_nj_planning_note_updated ON nj_planning_note(updated_at_ms DESC);"
+                ]
+            ),
+            TableSpec(
+                name: "nj_time_slot",
+                createSQL: """
+                CREATE TABLE IF NOT EXISTS nj_time_slot (
+                    time_slot_id TEXT PRIMARY KEY,
+                    owner_scope TEXT NOT NULL DEFAULT 'ME',
+                    title TEXT NOT NULL DEFAULT '',
+                    category TEXT NOT NULL DEFAULT 'personal',
+                    start_at_ms INTEGER NOT NULL,
+                    end_at_ms INTEGER NOT NULL,
+                    notes TEXT NOT NULL DEFAULT '',
+                    created_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL,
+                    deleted INTEGER NOT NULL DEFAULT 0
+                );
+                """,
+                columns: [
+                    ColumnSpec(name: "time_slot_id", declForAlter: "TEXT"),
+                    ColumnSpec(name: "owner_scope", declForAlter: "TEXT NOT NULL DEFAULT 'ME'"),
+                    ColumnSpec(name: "title", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "category", declForAlter: "TEXT NOT NULL DEFAULT 'personal'"),
+                    ColumnSpec(name: "start_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "end_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "notes", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
+                ],
+                indexes: [
+                    "CREATE INDEX IF NOT EXISTS idx_nj_time_slot_owner_start ON nj_time_slot(owner_scope, start_at_ms DESC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_time_slot_owner_updated ON nj_time_slot(owner_scope, updated_at_ms DESC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_time_slot_owner_category_start ON nj_time_slot(owner_scope, category, start_at_ms DESC);"
+                ]
+            ),
+            TableSpec(
+                name: "nj_personal_goal",
+                createSQL: """
+                CREATE TABLE IF NOT EXISTS nj_personal_goal (
+                    goal_id TEXT PRIMARY KEY,
+                    owner_scope TEXT NOT NULL DEFAULT 'ME',
+                    title TEXT NOT NULL DEFAULT '',
+                    focus TEXT NOT NULL DEFAULT 'keyword',
+                    keyword TEXT NOT NULL DEFAULT '',
+                    weekly_target INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    created_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL,
+                    deleted INTEGER NOT NULL DEFAULT 0
+                );
+                """,
+                columns: [
+                    ColumnSpec(name: "goal_id", declForAlter: "TEXT"),
+                    ColumnSpec(name: "owner_scope", declForAlter: "TEXT NOT NULL DEFAULT 'ME'"),
+                    ColumnSpec(name: "title", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "focus", declForAlter: "TEXT NOT NULL DEFAULT 'keyword'"),
+                    ColumnSpec(name: "keyword", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "weekly_target", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "status", declForAlter: "TEXT NOT NULL DEFAULT 'active'"),
+                    ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
+                ],
+                indexes: [
+                    "CREATE INDEX IF NOT EXISTS idx_nj_personal_goal_owner_status_updated ON nj_personal_goal(owner_scope, status, updated_at_ms DESC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_personal_goal_owner_focus_updated ON nj_personal_goal(owner_scope, focus, updated_at_ms DESC);"
                 ]
             ),
 

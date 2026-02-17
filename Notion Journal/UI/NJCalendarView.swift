@@ -1,7 +1,9 @@
 import SwiftUI
 import Photos
+import PhotosUI
 import UIKit
 import EventKit
+import Proton
 #if canImport(HealthKit)
 import HealthKit
 #endif
@@ -72,11 +74,21 @@ struct NJCalendarView: View {
     @State private var photoPickerDate: Date = Date()
     @State private var showPlanExerciseSheet = false
     @State private var planExerciseDate: Date = Date()
+    @State private var showWeeklyWorkoutSheet = false
+    @State private var weeklyWorkoutEntries: [NJWeeklyWorkoutEntry] = []
     @State private var showPlanningNoteSheet = false
     @State private var planningNoteKind: String = "daily"
     @State private var planningNoteTargetKey: String = ""
     @State private var planningNoteTitle: String = ""
     @State private var planningNoteText: String = ""
+    @State private var planningNoteProtonJSON: String = ""
+    @State private var planningNoteHandle = NJProtonEditorHandle()
+    @State private var planningNoteAttr = NSAttributedString(string: "")
+    @State private var planningNoteSel = NSRange(location: 0, length: 0)
+    @State private var planningNoteEditorHeight: CGFloat = 120
+    @State private var planningNotePickedPhotoItem: PhotosPickerItem? = nil
+    @State private var showPlanningClipboardPreviewSheet = false
+    @State private var planningClipboardDrafts: [NJPlanningClipboardDraft] = []
 
     private let calendar = Calendar.current
     private let eventStore = EKEventStore()
@@ -114,13 +126,33 @@ struct NJCalendarView: View {
                 savePlannedExercise(date: planExerciseDate, sport: sport, distanceKm: distKm, durationMin: durMin, notes: notes)
             }
         }
+        .sheet(isPresented: $showWeeklyWorkoutSheet) {
+            NJWeeklyWorkoutListSheet(
+                entries: weeklyWorkoutEntries,
+                title: weekRangeTitle(),
+                onExportToLLM: exportEntryToLLMJournal(_:)
+            )
+        }
         .sheet(isPresented: $showPlanningNoteSheet) {
             NJPlanningNoteSheet(
                 title: planningNoteTitle,
-                text: $planningNoteText,
-                onSave: { text in
-                    savePlanningNote(kind: planningNoteKind, targetKey: planningNoteTargetKey, text: text)
+                handle: planningNoteHandle,
+                initialAttributedText: planningNoteAttr,
+                initialSelectedRange: planningNoteSel,
+                initialProtonJSON: planningNoteProtonJSON,
+                snapshotAttributedText: $planningNoteAttr,
+                snapshotSelectedRange: $planningNoteSel,
+                measuredHeight: $planningNoteEditorHeight,
+                pickedPhotoItem: $planningNotePickedPhotoItem,
+                onSave: { plainText, protonJSON in
+                    savePlanningNote(kind: planningNoteKind, targetKey: planningNoteTargetKey, text: plainText, protonJSON: protonJSON)
                 }
+            )
+        }
+        .sheet(isPresented: $showPlanningClipboardPreviewSheet) {
+            NJPlanningClipboardPreviewSheet(
+                drafts: planningClipboardDrafts,
+                onSubmit: { submitWeekPlanningPreviewToClipboard() }
             )
         }
     }
@@ -157,6 +189,20 @@ struct NJCalendarView: View {
                     .font(.headline)
             }
             Spacer(minLength: 0)
+            if displayMode == .week {
+                Button {
+                    weeklyWorkoutEntries = loadWeeklyWorkoutEntries()
+                    showWeeklyWorkoutSheet = true
+                } label: {
+                    Image(systemName: "list.bullet")
+                        .font(.subheadline)
+                        .frame(width: 32, height: 32)
+                        .background(Color(UIColor.secondarySystemBackground))
+                        .clipShape(RoundedRectangle(cornerRadius: 7))
+                }
+                .buttonStyle(.plain)
+                .padding(.trailing, 8)
+            }
             contentModePicker()
         }
         .padding(.horizontal, 12)
@@ -465,6 +511,7 @@ struct NJCalendarView: View {
         if let saved = NJAttachmentCache.saveThumbnail(image: image, attachmentID: attachmentID, width: 400) {
             item.photoAttachmentID = attachmentID
             item.photoLocalID = localIdentifier
+            item.photoCloudID = cloudIdentifierString(for: localIdentifier)
             item.photoThumbPath = saved.url.path
             item.updatedAtMs = now
             item.deleted = 0
@@ -504,6 +551,36 @@ struct NJCalendarView: View {
             let ref = att.fullPhotoRef.trimmingCharacters(in: .whitespacesAndNewlines)
             if !ref.isEmpty { return ref }
         }
+        let cloudID = item.photoCloudID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cloudID.isEmpty, let mapped = localIdentifierFromCloudID(cloudID) {
+            return mapped
+        }
+        return nil
+    }
+
+    private func cloudIdentifierString(for localIdentifier: String) -> String {
+        let id = localIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty else { return "" }
+        if #available(iOS 15.0, *) {
+            let mappings = PHPhotoLibrary.shared().cloudIdentifierMappings(forLocalIdentifiers: [id])
+            if case .success(let cloudID)? = mappings[id] {
+                return cloudID.stringValue
+            }
+        }
+        return ""
+    }
+
+    private func localIdentifierFromCloudID(_ cloudID: String) -> String? {
+        let s = cloudID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !s.isEmpty else { return nil }
+        if #available(iOS 15.0, *) {
+            let cid = PHCloudIdentifier(stringValue: s)
+            let mappings = PHPhotoLibrary.shared().localIdentifierMappings(for: [cid])
+            if case .success(let localID)? = mappings[cid] {
+                let trimmed = localID.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { return trimmed }
+            }
+        }
         return nil
     }
 
@@ -522,6 +599,7 @@ struct NJCalendarView: View {
 
         item.photoAttachmentID = ""
         item.photoLocalID = ""
+        item.photoCloudID = ""
         item.photoThumbPath = ""
         item.updatedAtMs = now
 
@@ -1039,6 +1117,18 @@ struct NJCalendarView: View {
                         }
                         .buttonStyle(.plain)
                         .disabled(!canOpenWeekPlanningNote(for: focusedDate))
+
+                        Button {
+                            openWeekPlanningClipboardPreview(for: focusedDate)
+                        } label: {
+                            Image(systemName: "doc.on.clipboard")
+                                .font(.subheadline)
+                                .frame(width: 30, height: 30)
+                                .background(Color(UIColor.systemBackground).opacity(0.9))
+                                .clipShape(RoundedRectangle(cornerRadius: 7))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!canOpenWeekPlanningNote(for: focusedDate))
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1067,6 +1157,90 @@ struct NJCalendarView: View {
         return "\(formatter.string(from: start))  –  \(formatter.string(from: endDate))"
     }
 
+    private func weekRange(for date: Date) -> (Date, Date)? {
+        guard let iv = calendar.dateInterval(of: .weekOfYear, for: date) else { return nil }
+        return (iv.start, iv.end)
+    }
+
+    private func loadWeeklyWorkoutEntries() -> [NJWeeklyWorkoutEntry] {
+        guard let (start, end) = weekRange(for: focusedDate) else { return [] }
+        let startMs = Int64(start.timeIntervalSince1970 * 1000.0)
+        let endMs = Int64(end.timeIntervalSince1970 * 1000.0)
+
+        let sql = """
+        SELECT sample_id, start_ms, end_ms, value_num, value_str, metadata_json, source
+        FROM health_samples
+        WHERE type = 'workout'
+          AND start_ms >= \(startMs)
+          AND start_ms < \(endMs)
+        ORDER BY start_ms DESC;
+        """
+        let rows = store.db.queryRows(sql)
+        var out: [NJWeeklyWorkoutEntry] = []
+
+        for r in rows {
+            let sMs = Int64(r["start_ms"] ?? "") ?? 0
+            let eMs = Int64(r["end_ms"] ?? "") ?? sMs
+            let startDate = Date(timeIntervalSince1970: TimeInterval(sMs) / 1000.0)
+            let endDate = Date(timeIntervalSince1970: TimeInterval(eMs) / 1000.0)
+            let metadata = parseJSONDict(r["metadata_json"] ?? "")
+            let distanceKm = ((metadata["distance_m"] as? NSNumber)?.doubleValue ?? 0) / 1000.0
+            let durationMinFromValue = (Double(r["value_num"] ?? "") ?? 0) / 60.0
+            let durationMin = durationMinFromValue > 0 ? durationMinFromValue : max(0, endDate.timeIntervalSince(startDate) / 60.0)
+            let sport = normalizedActivityName(valueStr: r["value_str"] ?? "", metadata: metadata)
+            out.append(
+                NJWeeklyWorkoutEntry(
+                    id: r["sample_id"] ?? UUID().uuidString.lowercased(),
+                    sport: sport,
+                    startDate: startDate,
+                    endDate: endDate,
+                    durationMin: durationMin,
+                    distanceKm: distanceKm,
+                    source: r["source"] ?? "HealthKit",
+                    kind: .actual
+                )
+            )
+        }
+
+        let plans = store.notes.listPlannedExercises(startKey: dateKey(start), endKey: dateKey(calendar.date(byAdding: .day, value: -1, to: end) ?? start))
+        for p in plans {
+            if let day = parseDateKey(p.dateKey) {
+                let dayStart = calendar.startOfDay(for: day)
+                let endDate = calendar.date(byAdding: .minute, value: Int(p.targetDurationMin), to: dayStart) ?? dayStart
+                out.append(
+                    NJWeeklyWorkoutEntry(
+                        id: p.planID,
+                        sport: p.sport,
+                        startDate: dayStart,
+                        endDate: endDate,
+                        durationMin: p.targetDurationMin,
+                        distanceKm: p.targetDistanceKm,
+                        source: "Planned",
+                        kind: .planned
+                    )
+                )
+            }
+        }
+
+        return out.sorted { $0.startDate > $1.startDate }
+    }
+
+    private func parseDateKey(_ key: String) -> Date? {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd"
+        return f.date(from: key)
+    }
+
+    private func exportEntryToLLMJournal(_ entry: NJWeeklyWorkoutEntry) -> (ok: Bool, message: String) {
+        do {
+            let txID = try NJLLMJournalBridge.writeTimeSlot(entry: entry)
+            return (true, "Exported to LLM tx_inbox (\(txID.prefix(8))).")
+        } catch {
+            return (false, error.localizedDescription)
+        }
+    }
+
     private func weekPlanningTargetKey(for date: Date) -> String {
         DBNoteRepository.sundayWeekStartKey(for: date)
     }
@@ -1080,37 +1254,247 @@ struct NJCalendarView: View {
     private func openDayPlanningNoteEditor(for date: Date) {
         guard isFutureDate(date) else { return }
         let key = dateKey(date)
+        let row = store.notes.planningNote(kind: "daily", targetKey: key)
         planningNoteKind = "daily"
         planningNoteTargetKey = key
         planningNoteTitle = "Day Planning Note (\(formattedDate(date)))"
-        planningNoteText = store.notes.planningNote(kind: "daily", targetKey: key)?.note ?? ""
+        planningNoteText = row?.note ?? ""
+        planningNoteProtonJSON = row?.protonJSON ?? ""
+        planningNoteAttr = NSAttributedString(string: planningNoteText)
+        planningNoteSel = NSRange(location: 0, length: 0)
+        planningNoteEditorHeight = 120
+        planningNotePickedPhotoItem = nil
+        planningNoteHandle = makePlanningNoteHandle()
         showPlanningNoteSheet = true
     }
 
     private func openWeekPlanningNoteEditor(for date: Date) {
         guard canOpenWeekPlanningNote(for: date) else { return }
         let key = weekPlanningTargetKey(for: date)
+        let row = store.notes.planningNote(kind: "weekly", targetKey: key)
         planningNoteKind = "weekly"
         planningNoteTargetKey = key
         planningNoteTitle = "Week Planning Note (\(weekRangeTitle()))"
-        planningNoteText = store.notes.planningNote(kind: "weekly", targetKey: key)?.note ?? ""
+        planningNoteText = row?.note ?? ""
+        planningNoteProtonJSON = row?.protonJSON ?? ""
+        planningNoteAttr = NSAttributedString(string: planningNoteText)
+        planningNoteSel = NSRange(location: 0, length: 0)
+        planningNoteEditorHeight = 120
+        planningNotePickedPhotoItem = nil
+        planningNoteHandle = makePlanningNoteHandle()
         showPlanningNoteSheet = true
     }
 
-    private func savePlanningNote(kind: String, targetKey: String, text: String) {
+    private func savePlanningNote(kind: String, targetKey: String, text: String, protonJSON: String) {
         let now = DBNoteRepository.nowMs()
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             store.notes.deletePlanningNote(kind: kind, targetKey: targetKey, nowMs: now)
             return
         }
-        store.notes.upsertPlanningNote(kind: kind, targetKey: targetKey, note: trimmed, nowMs: now)
+        store.notes.upsertPlanningNote(kind: kind, targetKey: targetKey, note: trimmed, protonJSON: protonJSON, nowMs: now)
+    }
+
+    private func makePlanningNoteHandle() -> NJProtonEditorHandle {
+        let h = NJProtonEditorHandle()
+        h.attachmentResolver = { [weak store] id in
+            store?.notes.attachmentByID(id)
+        }
+        h.attachmentThumbPathCleaner = { [weak store] id in
+            store?.notes.clearAttachmentThumbPath(attachmentID: id, nowMs: DBNoteRepository.nowMs())
+        }
+        h.onOpenFullPhoto = { id in
+            NJPhotoLibraryPresenter.presentFullPhoto(localIdentifier: id)
+        }
+        return h
     }
 
     private func canOpenWeekPlanningNote(for date: Date) -> Bool {
         let today = calendar.startOfDay(for: Date())
         guard let week = calendar.dateInterval(of: .weekOfYear, for: date) else { return false }
         return week.end > today
+    }
+
+    private func openWeekPlanningClipboardPreview(for date: Date) {
+        planningClipboardDrafts = buildWeekPlanningClipboardDrafts(for: date)
+        showPlanningClipboardPreviewSheet = true
+    }
+
+    private func submitWeekPlanningPreviewToClipboard() {
+        for draft in planningClipboardDrafts {
+            store.createQuickNoteToClipboard(
+                payloadJSON: draft.payloadJSON,
+                createdAtMs: draft.createdAtMs,
+                tags: draft.tags
+            )
+        }
+        showPlanningClipboardPreviewSheet = false
+    }
+
+    private func buildWeekPlanningClipboardDrafts(for date: Date) -> [NJPlanningClipboardDraft] {
+        guard let sunday = sundayDate(for: date) else { return [] }
+        let weekKey = dateKey(sunday)
+        let weekKeyCompact = compactDateKey(from: weekKey)
+        var drafts: [NJPlanningClipboardDraft] = []
+
+        let weeklyPlanning = store.notes.planningNote(kind: "weekly", targetKey: weekKey)
+        let weeklyNote = weeklyPlanning?.note ?? ""
+        let weeklyProtonJSON = weeklyPlanning?.protonJSON ?? ""
+        let weeklyTitle = "(\(weekKeyCompact)) Weekly Focus"
+        var weeklySummaryLines: [String] = []
+        var weeklyPlanLines: [String] = []
+        for dayOffset in 1...6 {
+            guard let day = calendar.date(byAdding: .day, value: dayOffset, to: sunday) else { continue }
+            let key = dateKey(day)
+            let plans = plannedByDate[key] ?? []
+            for p in plans {
+                let weekdayShort = shortWeekdayName(day)
+                let notes = p.notes.trimmingCharacters(in: .whitespacesAndNewlines)
+                weeklyPlanLines.append(
+                    "\(weekdayShort): \(p.sport) \(fmtNum(p.targetDistanceKm))km / \(fmtNum(p.targetDurationMin))m\(notes.isEmpty ? "" : " - \(notes)")"
+                )
+            }
+        }
+        weeklySummaryLines.append("Weekly Block")
+        weeklySummaryLines.append("#WEEKLY")
+        if !weeklyPlanLines.isEmpty {
+            weeklySummaryLines.append("Planned Activities")
+            weeklySummaryLines.append(contentsOf: weeklyPlanLines)
+        }
+        let weeklySummaryBody = joinedLines(weeklySummaryLines)
+        let weeklyPreviewBody = joinedLines([weeklySummaryBody, weeklyNote])
+        drafts.append(
+            NJPlanningClipboardDraft(
+                title: weeklyTitle,
+                body: weeklyPreviewBody,
+                createdAtMs: msAtNoon(for: sunday),
+                tags: ["#WEEKLY"],
+                payloadJSON: makePlanningClipboardPayload(
+                    title: weeklyTitle,
+                    body: weeklySummaryBody,
+                    protonJSONBody: weeklyProtonJSON
+                )
+            )
+        )
+
+        for dayOffset in 1...6 {
+            guard let day = calendar.date(byAdding: .day, value: dayOffset, to: sunday) else { continue }
+            let dayKey = dateKey(day)
+            let dayCompact = compactDateKey(from: dayKey)
+            let weekdayShort = shortWeekdayName(day)
+            let dayPlanning = store.notes.planningNote(kind: "daily", targetKey: dayKey)?.note ?? ""
+            let calendarItem = store.notes.calendarItem(dateKey: dayKey)?.title ?? ""
+            let eventTitles = (eventsByDate[dayKey] ?? [])
+                .map { $0.title.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            var mergedEventLines: [String] = []
+            if !calendarItem.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                mergedEventLines.append(calendarItem.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+            for t in eventTitles where !mergedEventLines.contains(t) {
+                mergedEventLines.append(t)
+            }
+
+            let plans = plannedByDate[dayKey] ?? []
+            let planLines: [String] = plans.map {
+                "Planned: \($0.sport) \(fmtNum($0.targetDistanceKm))km / \(fmtNum($0.targetDurationMin))m\($0.notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : " - \($0.notes)")"
+            }
+
+            let health = healthByDate[dayKey] ?? NJCalendarHealthDay()
+            var healthLines: [String] = []
+            if health.sleepHours > 0 { healthLines.append("Sleep: \(fmtNum(health.sleepHours)) h") }
+            if health.workoutCount > 0 { healthLines.append("Workout done: \(fmtNum(health.workoutDistanceKm)) km / \(fmtNum(health.workoutDurationMin)) min") }
+            if let s = health.avgSystolic, let d = health.avgDiastolic { healthLines.append("BP: \(Int(s))/\(Int(d))") }
+            if health.medDoseCount > 0 { healthLines.append("Medication: logged") }
+
+            let dailyTitle = "(\(dayCompact)) \(weekdayShort) - Daily Focus"
+            let dailyBodyLines: [String] = [
+                joinedLines(mergedEventLines),
+                joinedLines(healthLines),
+                joinedLines(planLines),
+                dayPlanning
+            ]
+            drafts.append(
+                NJPlanningClipboardDraft(
+                    title: dailyTitle,
+                    body: joinedLines(dailyBodyLines),
+                    createdAtMs: msAtNoon(for: day),
+                    tags: ["#WEEKLY"],
+                    payloadJSON: makePlanningClipboardPayload(title: dailyTitle, body: joinedLines(dailyBodyLines))
+                )
+            )
+        }
+        return drafts
+    }
+
+    private func sundayDate(for date: Date) -> Date? {
+        let key = DBNoteRepository.sundayWeekStartKey(for: date, calendar: calendar)
+        return dateFromKey(key)
+    }
+
+    private func dateFromKey(_ key: String) -> Date? {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = calendar.timeZone
+        f.dateFormat = "yyyy-MM-dd"
+        return f.date(from: key)
+    }
+
+    private func compactDateKey(from key: String) -> String {
+        key.replacingOccurrences(of: "-", with: "")
+    }
+
+    private func shortWeekdayName(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.locale = Locale.current
+        f.dateFormat = "EEE"
+        return f.string(from: date)
+    }
+
+    private func joinedLines(_ lines: [String]) -> String {
+        lines
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+    }
+
+    private func makePlanningClipboardPayload(title: String, body: String, protonJSONBody: String = "") -> String {
+        let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanBody = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanTitle.isEmpty else { return NJQuickNotePayload.makePayloadJSON(from: cleanBody) }
+
+        let titleAttr = NSAttributedString(
+            string: cleanTitle,
+            attributes: [.font: UIFont.systemFont(ofSize: 18, weight: .semibold)]
+        )
+
+        let full = NSMutableAttributedString(attributedString: titleAttr)
+        if !cleanBody.isEmpty {
+            let bodyAttr = NSAttributedString(
+                string: "\n\(cleanBody)",
+                attributes: [.font: UIFont.systemFont(ofSize: 17, weight: .regular)]
+            )
+            full.append(bodyAttr)
+        }
+
+        let trimmedProton = protonJSONBody.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedProton.isEmpty {
+            let protonHandle = NJProtonEditorHandle()
+            let protonAttr = protonHandle.attributedStringFromProtonJSONString(trimmedProton)
+            if protonAttr.length > 0 {
+                full.append(NSAttributedString(string: "\n\n"))
+                full.append(protonAttr)
+            }
+        }
+
+        let rtfBase64 = DBNoteRepository.encodeRTFBase64FromAttributedText(full)
+        return NJQuickNotePayload.makePayloadJSON(protonJSON: "", rtfBase64: rtfBase64)
+    }
+
+    private func msAtNoon(for date: Date) -> Int64 {
+        let start = calendar.startOfDay(for: date)
+        let noon = calendar.date(byAdding: .hour, value: 12, to: start) ?? start
+        return Int64(noon.timeIntervalSince1970 * 1000.0)
     }
 
     private func miniMonthView() -> some View {
@@ -1402,36 +1786,117 @@ private struct NJPhotoAssetThumb: View {
     }
 }
 
-private struct NJPlanningNoteSheet: View {
+private struct NJPlanningClipboardDraft: Identifiable {
+    let id = UUID()
     let title: String
-    @Binding var text: String
-    let onSave: (String) -> Void
+    let body: String
+    let createdAtMs: Int64
+    let tags: [String]
+    let payloadJSON: String
+
+    var fullText: String {
+        if body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return title
+        }
+        return "\(title)\n\(body)"
+    }
+}
+
+private struct NJPlanningClipboardPreviewSheet: View {
+    let drafts: [NJPlanningClipboardDraft]
+    let onSubmit: () -> Void
 
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
-            ZStack(alignment: .topLeading) {
-                TextEditor(text: $text)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
-
-                if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text("Write planning note...")
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 14)
-                        .padding(.leading, 14)
+            List {
+                ForEach(Array(drafts.enumerated()), id: \.element.id) { idx, draft in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("\(idx + 1). \(draft.title)")
+                            .font(.headline)
+                        Text(draft.body.isEmpty ? "(empty)" : draft.body)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                    .padding(.vertical, 4)
                 }
             }
+            .navigationTitle("Clipboard Preview")
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Submit") {
+                        onSubmit()
+                        dismiss()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(drafts.isEmpty)
+                }
+            }
+        }
+    }
+}
+
+private struct NJPlanningNoteSheet: View {
+    let title: String
+    let handle: NJProtonEditorHandle
+    let initialAttributedText: NSAttributedString
+    let initialSelectedRange: NSRange
+    let initialProtonJSON: String
+    @Binding var snapshotAttributedText: NSAttributedString
+    @Binding var snapshotSelectedRange: NSRange
+    @Binding var measuredHeight: CGFloat
+    @Binding var pickedPhotoItem: PhotosPickerItem?
+    let onSave: (String, String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 12) {
+                NJProtonEditorView(
+                    initialAttributedText: initialAttributedText,
+                    initialSelectedRange: initialSelectedRange,
+                    snapshotAttributedText: $snapshotAttributedText,
+                    snapshotSelectedRange: $snapshotSelectedRange,
+                    measuredHeight: $measuredHeight,
+                    handle: handle
+                )
+                .frame(minHeight: measuredHeight)
+                .padding(10)
+                .background(Color(UIColor.secondarySystemBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                Spacer()
+            }
+            .padding(16)
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                NJProtonFloatingFormatBar(handle: handle, pickedPhotoItem: $pickedPhotoItem)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .background(.ultraThinMaterial)
+            }
+            .onAppear {
+                if !initialProtonJSON.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    handle.hydrateFromProtonJSONString(initialProtonJSON)
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Save") {
-                        onSave(text)
+                        handle.snapshot()
+                        let attr = handle.editor?.attributedText ?? snapshotAttributedText
+                        let plain = attr.string.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let proton = handle.exportProtonJSONString()
+                        onSave(plain, proton)
                         dismiss()
                     }
                 }
@@ -1457,6 +1922,7 @@ private struct NJPlanExerciseSheet: View {
                     Picker("Sport", selection: $sport) {
                         Text("Running").tag("Running")
                         Text("Cycling").tag("Cycling")
+                        Text("Tennis").tag("Tennis")
                         Text("Walking").tag("Walking")
                         Text("Swimming").tag("Swimming")
                         Text("Gym").tag("Gym")
@@ -1490,5 +1956,280 @@ private struct NJPlanExerciseSheet: View {
         f.locale = Locale.current
         f.dateStyle = .medium
         return "Plan \(f.string(from: date))"
+    }
+}
+
+private struct NJWeeklyWorkoutEntry: Identifiable {
+    enum Kind { case actual, planned }
+
+    let id: String
+    let sport: String
+    let startDate: Date
+    let endDate: Date
+    let durationMin: Double
+    let distanceKm: Double
+    let source: String
+    let kind: Kind
+
+    var timeSlotExportJSON: String {
+        let iso = ISO8601DateFormatter()
+        let payload: [String: Any] = [
+            "schema": "nj_timeslot_v1",
+            "title": sport,
+            "kind": (kind == .planned ? "planned" : "actual"),
+            "start_iso": iso.string(from: startDate),
+            "end_iso": iso.string(from: endDate),
+            "duration_min": durationMin,
+            "distance_km": distanceKm,
+            "source": source
+        ]
+        guard let d = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted]),
+              let s = String(data: d, encoding: .utf8) else { return "{}" }
+        return s
+    }
+}
+
+private struct NJWeeklyWorkoutListSheet: View {
+    let entries: [NJWeeklyWorkoutEntry]
+    let title: String
+    let onExportToLLM: (NJWeeklyWorkoutEntry) -> (ok: Bool, message: String)
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List(entries) { entry in
+                NavigationLink {
+                    NJWeeklyWorkoutDetailView(entry: entry, onExportToLLM: onExportToLLM)
+                } label: {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(entry.sport)
+                            .font(.subheadline)
+                        Text(line(entry))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .navigationTitle("Weekly Workouts")
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Close") { dismiss() }
+                }
+            }
+            .overlay {
+                if entries.isEmpty {
+                    Text("No workout/sport entries this week.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func line(_ e: NJWeeklyWorkoutEntry) -> String {
+        let f = DateFormatter()
+        f.locale = Locale.current
+        f.dateFormat = "EEE MMM d, HH:mm"
+        var out = f.string(from: e.startDate)
+        out += " · \(fmt(e.durationMin))m"
+        if e.distanceKm > 0 { out += " · \(fmt(e.distanceKm))km" }
+        out += " · \(e.source)"
+        return out
+    }
+
+    private func fmt(_ v: Double) -> String {
+        let n = NumberFormatter()
+        n.minimumFractionDigits = 0
+        n.maximumFractionDigits = 1
+        return n.string(from: NSNumber(value: v)) ?? String(format: "%.1f", v)
+    }
+}
+
+private struct NJWeeklyWorkoutDetailView: View {
+    let entry: NJWeeklyWorkoutEntry
+    let onExportToLLM: (NJWeeklyWorkoutEntry) -> (ok: Bool, message: String)
+    @State private var exportStatus: String = ""
+
+    var body: some View {
+        List {
+            row("Sport", entry.sport)
+            row("Start", dateTime(entry.startDate))
+            row("End", dateTime(entry.endDate))
+            row("Duration", "\(fmt(entry.durationMin)) min")
+            row("Distance", entry.distanceKm > 0 ? "\(fmt(entry.distanceKm)) km" : "-")
+            row("Source", entry.source)
+            Section("Export") {
+                Button {
+                    let r = onExportToLLM(entry)
+                    exportStatus = r.ok ? r.message : "Export failed: \(r.message)"
+                } label: {
+                    Label("Send to LLM Journal", systemImage: "square.and.arrow.up.on.square")
+                }
+                if !exportStatus.isEmpty {
+                    Text(exportStatus)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .navigationTitle("Workout Detail")
+    }
+
+    private func row(_ k: String, _ v: String) -> some View {
+        HStack {
+            Text(k)
+            Spacer(minLength: 0)
+            Text(v).foregroundStyle(.secondary)
+        }
+    }
+
+    private func dateTime(_ d: Date) -> String {
+        let f = DateFormatter()
+        f.locale = Locale.current
+        f.dateStyle = .medium
+        f.timeStyle = .short
+        return f.string(from: d)
+    }
+
+    private func fmt(_ v: Double) -> String {
+        let n = NumberFormatter()
+        n.minimumFractionDigits = 0
+        n.maximumFractionDigits = 1
+        return n.string(from: NSNumber(value: v)) ?? String(format: "%.1f", v)
+    }
+}
+
+private enum NJLLMJournalBridge {
+    private static let llmContainerID = "iCloud.com.CYC.LLMJournal"
+
+    private struct TxEnvelope: Codable {
+        let tx_id: String
+        let tx_type: String
+        let created_at: String
+        let payload: TxPayload
+    }
+
+    private struct TxPayload: Codable {
+        let device_id: String
+        let device_label: String
+        let device_kind: String
+        let doc_id: String
+        let doc_type: String
+        let date: String
+        let start: String
+        let end: String
+        let duration: Int
+        let domain: String
+        let doc_kind: Int
+        let path: String
+        let comment: String
+        let Processed_JSON: String
+    }
+
+    static func writeTimeSlot(entry: NJWeeklyWorkoutEntry) throws -> String {
+        guard let base = FileManager.default.url(forUbiquityContainerIdentifier: llmContainerID)?
+            .appendingPathComponent("Documents", isDirectory: true) else {
+            throw NSError(domain: "NJLLMJournalBridge", code: 1, userInfo: [NSLocalizedDescriptionKey: "LLMJournal iCloud container unavailable"])
+        }
+
+        let txID = UUID().uuidString.lowercased()
+        let docID = UUID().uuidString.lowercased()
+        let iso = ISO8601DateFormatter()
+        let dateKey = ymd(entry.startDate)
+        let docType = mapDocType(entry.sport)
+        let domain = mapDomain(entry.sport)
+        let durationSec = max(0, Int(entry.durationMin * 60.0))
+
+        let year = String(dateKey.prefix(4))
+        let month = String(dateKey.dropFirst(5).prefix(2))
+        let safeDocType = docType.replacingOccurrences(of: " ", with: "_")
+        let filename = "\(dateKey.replacingOccurrences(of: "-", with: ""))_\(safeDocType)_\(docID.prefix(8)).json"
+        let relPath = "\(year)/\(month)/\(filename)"
+        let docURL = base.appendingPathComponent(relPath)
+        try FileManager.default.createDirectory(at: docURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+        let docBody: [String: Any] = [
+            "schema": "notion_workout_timeslot_v1",
+            "sport": entry.sport,
+            "start_iso": iso.string(from: entry.startDate),
+            "end_iso": iso.string(from: entry.endDate),
+            "duration_min": entry.durationMin,
+            "distance_km": entry.distanceKm,
+            "kind": (entry.kind == .planned ? "planned" : "actual"),
+            "source": entry.source
+        ]
+        let docData = try JSONSerialization.data(withJSONObject: docBody, options: [.prettyPrinted, .sortedKeys])
+        try docData.write(to: docURL, options: [.atomic])
+
+        let processed: [String: Any] = [
+            "NOTION_WORKOUT": [
+                "body": docBody
+            ]
+        ]
+        let processedData = try JSONSerialization.data(withJSONObject: processed, options: [])
+        let processedJSON = String(data: processedData, encoding: .utf8) ?? "{}"
+
+        let payload = TxPayload(
+            device_id: UIDevice.current.identifierForVendor?.uuidString ?? "notion-journal",
+            device_label: UIDevice.current.name,
+            device_kind: UIDevice.current.userInterfaceIdiom == .pad ? "ipad" : "iphone",
+            doc_id: docID,
+            doc_type: docType,
+            date: dateKey,
+            start: iso.string(from: entry.startDate),
+            end: iso.string(from: entry.endDate),
+            duration: durationSec,
+            domain: domain,
+            doc_kind: 3,
+            path: relPath,
+            comment: "Imported from Notion Journal: \(entry.sport)",
+            Processed_JSON: processedJSON
+        )
+
+        let env = TxEnvelope(
+            tx_id: txID,
+            tx_type: "doc_upsert",
+            created_at: iso.string(from: Date()),
+            payload: payload
+        )
+
+        let inbox = base.appendingPathComponent("Sync/tx_inbox", isDirectory: true)
+        try FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+        let txURL = inbox.appendingPathComponent("\(txID).json")
+
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let txData = try enc.encode(env)
+        try txData.write(to: txURL, options: [.atomic])
+
+        return txID
+    }
+
+    private static func ymd(_ d: Date) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd"
+        return f.string(from: d)
+    }
+
+    private static func mapDocType(_ sport: String) -> String {
+        let s = sport.lowercased()
+        if s.contains("tennis") { return "Tennis_Practice" }
+        if s.contains("cycl") || s.contains("bike") { return "Cycling" }
+        if s.contains("run") || s.contains("jog") { return "Running" }
+        if s.contains("walk") { return "Walking" }
+        if s.contains("swim") { return "Swimming" }
+        if s.contains("gym") || s.contains("strength") { return "Gym" }
+        return "Workout"
+    }
+
+    private static func mapDomain(_ sport: String) -> String {
+        let s = sport.lowercased()
+        if s.contains("tennis") { return "zz.sport.tennis" }
+        if s.contains("cycl") || s.contains("bike") { return "zz.sport.cycling" }
+        if s.contains("run") || s.contains("jog") { return "zz.sport.running" }
+        if s.contains("walk") { return "zz.sport.walking" }
+        if s.contains("swim") { return "zz.sport.swimming" }
+        return "zz.sport.training"
     }
 }

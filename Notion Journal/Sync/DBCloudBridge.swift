@@ -9,6 +9,8 @@ final class DBCloudBridge {
     let calendarTable: DBCalendarTable
     let plannedExerciseTable: DBPlannedExerciseTable
     let planningNoteTable: DBPlanningNoteTable
+    let timeSlotTable: DBTimeSlotTable
+    let personalGoalTable: DBPersonalGoalTable
 
     init(
         noteTable: DBNoteTable,
@@ -18,7 +20,9 @@ final class DBCloudBridge {
         goalTable: DBGoalTable,
         calendarTable: DBCalendarTable,
         plannedExerciseTable: DBPlannedExerciseTable,
-        planningNoteTable: DBPlanningNoteTable
+        planningNoteTable: DBPlanningNoteTable,
+        timeSlotTable: DBTimeSlotTable,
+        personalGoalTable: DBPersonalGoalTable
     ) {
         self.noteTable = noteTable
         self.blockTable = blockTable
@@ -28,6 +32,8 @@ final class DBCloudBridge {
         self.calendarTable = calendarTable
         self.plannedExerciseTable = plannedExerciseTable
         self.planningNoteTable = planningNoteTable
+        self.timeSlotTable = timeSlotTable
+        self.personalGoalTable = personalGoalTable
     }
 
     func loadRecord(entity: String, id: String) -> [String: Any]? {
@@ -48,6 +54,10 @@ final class DBCloudBridge {
             return plannedExerciseTable.loadPlan(planID: id)
         case "planning_note":
             return planningNoteTable.loadPlanningNoteFields(planningKey: id)
+        case "time_slot":
+            return timeSlotTable.loadFields(timeSlotID: id)
+        case "personal_goal":
+            return personalGoalTable.loadFields(goalID: id)
         default:
             return nil
         }
@@ -71,6 +81,10 @@ final class DBCloudBridge {
             plannedExerciseTable.applyRemote(fields)
         case "planning_note":
             planningNoteTable.applyRemote(fields)
+        case "time_slot":
+            timeSlotTable.applyRemote(fields)
+        case "personal_goal":
+            personalGoalTable.applyRemote(fields)
         default:
             break
         }
@@ -150,6 +164,7 @@ final class DBCloudBridge {
             "date_key": item.dateKey,
             "title": item.title,
             "photo_attachment_id": item.photoAttachmentID,
+            "photo_cloud_id": item.photoCloudID,
             "created_at_ms": item.createdAtMs,
             "updated_at_ms": item.updatedAtMs,
             "deleted": item.deleted
@@ -162,6 +177,7 @@ final class DBCloudBridge {
 
         let title = (fields["title"] as? String) ?? ""
         let photoAttachmentID = (fields["photo_attachment_id"] as? String) ?? ""
+        let photoCloudID = (fields["photo_cloud_id"] as? String) ?? ""
         let createdAt = (fields["created_at_ms"] as? Int64) ?? 0
         let updatedAt = (fields["updated_at_ms"] as? Int64) ?? 0
         let deleted = (fields["deleted"] as? Int64) ?? 0
@@ -184,6 +200,7 @@ final class DBCloudBridge {
             title: title,
             photoAttachmentID: photoAttachmentID,
             photoLocalID: "",
+            photoCloudID: photoCloudID,
             photoThumbPath: thumbPath,
             createdAtMs: createdAt > 0 ? createdAt : (existing?.createdAtMs ?? 0),
             updatedAtMs: updatedAt,

@@ -13,6 +13,7 @@ final class NJGPSLogger: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published private(set) var writerLabel: String = ""
     @Published private(set) var lastWriteTsMs: Int64 = 0
     @Published private(set) var lastError: String = ""
+    @Published private(set) var lastTransitLog: String = ""
 
     private let mgr = CLLocationManager()
     private let defaultsKey = "NJGPSLogger.enabled.v1"
@@ -433,7 +434,15 @@ final class NJGPSLogger: NSObject, ObservableObject, CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didVisit visit: CLVisit) {
         guard enabled, isWriter else { return }
         guard visit.coordinate.latitude != 0 || visit.coordinate.longitude != 0 else { return }
-        let ts = (visit.arrivalDate == Date.distantPast) ? visit.departureDate : visit.arrivalDate
+        // Prefer departure when available; arrival-only timestamps can skew transit ordering.
+        let ts: Date
+        if visit.departureDate != Date.distantFuture {
+            ts = visit.departureDate
+        } else if visit.arrivalDate != Date.distantPast {
+            ts = visit.arrivalDate
+        } else {
+            ts = Date()
+        }
         appendLine(
             encode(
                 tsMs: Int64(ts.timeIntervalSince1970 * 1000.0),
@@ -493,7 +502,10 @@ extension NJGPSLogger {
     private func writeTransitSummary(for dayDate: Date) {
         guard let root = docsRootForViewer() else { return }
         let dayFile = gpsDayFileURL(root: root, date: dayDate)
-        guard let points = loadGPSPoints(from: dayFile), points.count >= 2 else { return }
+        guard let points = loadGPSPoints(from: dayFile), points.count >= 2 else {
+            lastTransitLog = "Transit summary \(ymdHKT(dayDate)): skipped (not enough points)"
+            return
+        }
 
         let summary = summarizeTransit(points: points)
         let dayKey = ymdHKT(dayDate)
@@ -523,6 +535,10 @@ extension NJGPSLogger {
             ensureDir(out.deletingLastPathComponent())
             try? data.write(to: out, options: .atomic)
         }
+
+        let line = "Transit summary \(dayKey): \(summary.transitSeconds)s (\(Int((Double(summary.transitSeconds) / 60.0).rounded()))m), distance \(Int(summary.totalDistanceM.rounded()))m, segments \(summary.segmentCount), points \(summary.pointsCount)"
+        lastTransitLog = line
+        print("🛰️ \(line)")
     }
 
     private func transitOutputRoots(primaryRoot: URL) -> [URL] {
@@ -545,6 +561,10 @@ extension NJGPSLogger {
         for i in 0..<(sorted.count - 1) {
             let a = sorted[i]
             let b = sorted[i + 1]
+
+            // CLVisit points are coarse place events and can create false movement spikes.
+            if a.src == "visit" || b.src == "visit" { continue }
+
             let dt = Int((b.tsMs - a.tsMs) / 1000)
             if dt <= 0 || dt > 3600 { continue }
 

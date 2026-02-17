@@ -65,6 +65,7 @@ struct NJCalendarItem: Identifiable, Codable, Hashable {
     var title: String
     var photoAttachmentID: String
     var photoLocalID: String
+    var photoCloudID: String
     var photoThumbPath: String
     var createdAtMs: Int64
     var updatedAtMs: Int64
@@ -77,6 +78,7 @@ struct NJCalendarItem: Identifiable, Codable, Hashable {
         title: String,
         photoAttachmentID: String,
         photoLocalID: String,
+        photoCloudID: String,
         photoThumbPath: String,
         createdAtMs: Int64,
         updatedAtMs: Int64,
@@ -86,6 +88,7 @@ struct NJCalendarItem: Identifiable, Codable, Hashable {
         self.title = title
         self.photoAttachmentID = photoAttachmentID
         self.photoLocalID = photoLocalID
+        self.photoCloudID = photoCloudID
         self.photoThumbPath = photoThumbPath
         self.createdAtMs = createdAtMs
         self.updatedAtMs = updatedAtMs
@@ -98,6 +101,7 @@ struct NJCalendarItem: Identifiable, Codable, Hashable {
             title: "",
             photoAttachmentID: "",
             photoLocalID: "",
+            photoCloudID: "",
             photoThumbPath: "",
             createdAtMs: nowMs,
             updatedAtMs: nowMs,
@@ -137,6 +141,7 @@ struct NJPlanningNote: Identifiable, Codable, Hashable {
     var kind: String
     var targetKey: String
     var note: String
+    var protonJSON: String
     var createdAtMs: Int64
     var updatedAtMs: Int64
     var deleted: Int
@@ -146,4 +151,34 @@ struct NJPlanningNote: Identifiable, Codable, Hashable {
     static func key(kind: String, targetKey: String) -> String {
         "\(kind):\(targetKey)"
     }
+}
+
+struct NJTimeSlotRecord: Identifiable, Codable, Hashable {
+    var timeSlotID: String
+    var ownerScope: String
+    var title: String
+    var category: String
+    var startAtMs: Int64
+    var endAtMs: Int64
+    var notes: String
+    var createdAtMs: Int64
+    var updatedAtMs: Int64
+    var deleted: Int64
+
+    var id: String { timeSlotID }
+}
+
+struct NJPersonalGoalRecord: Identifiable, Codable, Hashable {
+    var goalID: String
+    var ownerScope: String
+    var title: String
+    var focus: String
+    var keyword: String
+    var weeklyTarget: Int64
+    var status: String
+    var createdAtMs: Int64
+    var updatedAtMs: Int64
+    var deleted: Int64
+
+    var id: String { goalID }
 }

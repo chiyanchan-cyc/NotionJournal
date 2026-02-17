@@ -19,7 +19,7 @@ final class DBCalendarTable {
         db.withDB { dbp in
             var stmt: OpaquePointer?
             let rc0 = sqlite3_prepare_v2(dbp, """
-            SELECT date_key, title, photo_attachment_id, photo_local_id, photo_thumb_path,
+            SELECT date_key, title, photo_attachment_id, photo_local_id, photo_cloud_id, photo_thumb_path,
                    created_at_ms, updated_at_ms, deleted
             FROM nj_calendar_item
             WHERE date_key = ? AND deleted = 0
@@ -36,16 +36,18 @@ final class DBCalendarTable {
             let title = String(cString: sqlite3_column_text(stmt, 1))
             let photoAttachmentID = String(cString: sqlite3_column_text(stmt, 2))
             let photoLocalID = String(cString: sqlite3_column_text(stmt, 3))
-            let photoThumbPath = String(cString: sqlite3_column_text(stmt, 4))
-            let createdAtMs = sqlite3_column_int64(stmt, 5)
-            let updatedAtMs = sqlite3_column_int64(stmt, 6)
-            let deleted = Int(sqlite3_column_int64(stmt, 7))
+            let photoCloudID = String(cString: sqlite3_column_text(stmt, 4))
+            let photoThumbPath = String(cString: sqlite3_column_text(stmt, 5))
+            let createdAtMs = sqlite3_column_int64(stmt, 6)
+            let updatedAtMs = sqlite3_column_int64(stmt, 7)
+            let deleted = Int(sqlite3_column_int64(stmt, 8))
 
             return NJCalendarItem(
                 dateKey: key,
                 title: title,
                 photoAttachmentID: photoAttachmentID,
                 photoLocalID: photoLocalID,
+                photoCloudID: photoCloudID,
                 photoThumbPath: photoThumbPath,
                 createdAtMs: createdAtMs,
                 updatedAtMs: updatedAtMs,
@@ -58,7 +60,7 @@ final class DBCalendarTable {
         db.withDB { dbp in
             var stmt: OpaquePointer?
             let rc0 = sqlite3_prepare_v2(dbp, """
-            SELECT date_key, title, photo_attachment_id, photo_local_id, photo_thumb_path,
+            SELECT date_key, title, photo_attachment_id, photo_local_id, photo_cloud_id, photo_thumb_path,
                    created_at_ms, updated_at_ms, deleted
             FROM nj_calendar_item
             WHERE date_key = ?
@@ -75,16 +77,18 @@ final class DBCalendarTable {
             let title = String(cString: sqlite3_column_text(stmt, 1))
             let photoAttachmentID = String(cString: sqlite3_column_text(stmt, 2))
             let photoLocalID = String(cString: sqlite3_column_text(stmt, 3))
-            let photoThumbPath = String(cString: sqlite3_column_text(stmt, 4))
-            let createdAtMs = sqlite3_column_int64(stmt, 5)
-            let updatedAtMs = sqlite3_column_int64(stmt, 6)
-            let deleted = Int(sqlite3_column_int64(stmt, 7))
+            let photoCloudID = String(cString: sqlite3_column_text(stmt, 4))
+            let photoThumbPath = String(cString: sqlite3_column_text(stmt, 5))
+            let createdAtMs = sqlite3_column_int64(stmt, 6)
+            let updatedAtMs = sqlite3_column_int64(stmt, 7)
+            let deleted = Int(sqlite3_column_int64(stmt, 8))
 
             return NJCalendarItem(
                 dateKey: key,
                 title: title,
                 photoAttachmentID: photoAttachmentID,
                 photoLocalID: photoLocalID,
+                photoCloudID: photoCloudID,
                 photoThumbPath: photoThumbPath,
                 createdAtMs: createdAtMs,
                 updatedAtMs: updatedAtMs,
@@ -97,7 +101,7 @@ final class DBCalendarTable {
         db.withDB { dbp in
             var stmt: OpaquePointer?
             let rc0 = sqlite3_prepare_v2(dbp, """
-            SELECT date_key, title, photo_attachment_id, photo_local_id, photo_thumb_path,
+            SELECT date_key, title, photo_attachment_id, photo_local_id, photo_cloud_id, photo_thumb_path,
                    created_at_ms, updated_at_ms, deleted
             FROM nj_calendar_item
             WHERE deleted = 0 AND date_key BETWEEN ? AND ?
@@ -115,16 +119,18 @@ final class DBCalendarTable {
                 let title = String(cString: sqlite3_column_text(stmt, 1))
                 let photoAttachmentID = String(cString: sqlite3_column_text(stmt, 2))
                 let photoLocalID = String(cString: sqlite3_column_text(stmt, 3))
-                let photoThumbPath = String(cString: sqlite3_column_text(stmt, 4))
-                let createdAtMs = sqlite3_column_int64(stmt, 5)
-                let updatedAtMs = sqlite3_column_int64(stmt, 6)
-                let deleted = Int(sqlite3_column_int64(stmt, 7))
+                let photoCloudID = String(cString: sqlite3_column_text(stmt, 4))
+                let photoThumbPath = String(cString: sqlite3_column_text(stmt, 5))
+                let createdAtMs = sqlite3_column_int64(stmt, 6)
+                let updatedAtMs = sqlite3_column_int64(stmt, 7)
+                let deleted = Int(sqlite3_column_int64(stmt, 8))
 
                 out.append(NJCalendarItem(
                     dateKey: key,
                     title: title,
                     photoAttachmentID: photoAttachmentID,
                     photoLocalID: photoLocalID,
+                    photoCloudID: photoCloudID,
                     photoThumbPath: photoThumbPath,
                     createdAtMs: createdAtMs,
                     updatedAtMs: updatedAtMs,
@@ -140,14 +146,15 @@ final class DBCalendarTable {
             var stmt: OpaquePointer?
             let rc0 = sqlite3_prepare_v2(dbp, """
             INSERT INTO nj_calendar_item(
-              date_key, title, photo_attachment_id, photo_local_id, photo_thumb_path,
+              date_key, title, photo_attachment_id, photo_local_id, photo_cloud_id, photo_thumb_path,
               created_at_ms, updated_at_ms, deleted
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(date_key) DO UPDATE SET
               title = excluded.title,
               photo_attachment_id = excluded.photo_attachment_id,
               photo_local_id = excluded.photo_local_id,
+              photo_cloud_id = excluded.photo_cloud_id,
               photo_thumb_path = excluded.photo_thumb_path,
               created_at_ms = CASE
                 WHEN nj_calendar_item.created_at_ms IS NULL OR nj_calendar_item.created_at_ms = 0
@@ -164,10 +171,11 @@ final class DBCalendarTable {
             sqlite3_bind_text(stmt, 2, item.title, -1, SQLITE_TRANSIENT)
             sqlite3_bind_text(stmt, 3, item.photoAttachmentID, -1, SQLITE_TRANSIENT)
             sqlite3_bind_text(stmt, 4, item.photoLocalID, -1, SQLITE_TRANSIENT)
-            sqlite3_bind_text(stmt, 5, item.photoThumbPath, -1, SQLITE_TRANSIENT)
-            sqlite3_bind_int64(stmt, 6, item.createdAtMs)
-            sqlite3_bind_int64(stmt, 7, item.updatedAtMs)
-            sqlite3_bind_int64(stmt, 8, Int64(item.deleted))
+            sqlite3_bind_text(stmt, 5, item.photoCloudID, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 6, item.photoThumbPath, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int64(stmt, 7, item.createdAtMs)
+            sqlite3_bind_int64(stmt, 8, item.updatedAtMs)
+            sqlite3_bind_int64(stmt, 9, Int64(item.deleted))
 
             let rc1 = sqlite3_step(stmt)
             if rc1 != SQLITE_DONE { db.dbgErr(dbp, "calendar.upsert.step", rc1) }
@@ -200,7 +208,7 @@ final class DBCalendarTable {
         db.withDB { dbp in
             var stmt: OpaquePointer?
             let rc0 = sqlite3_prepare_v2(dbp, """
-            SELECT date_key, title, photo_attachment_id, photo_local_id, photo_thumb_path,
+            SELECT date_key, title, photo_attachment_id, photo_local_id, photo_cloud_id, photo_thumb_path,
                    created_at_ms, updated_at_ms, deleted
             FROM nj_calendar_item
             WHERE deleted = 0 AND date_key < ?
@@ -217,16 +225,18 @@ final class DBCalendarTable {
                 let title = String(cString: sqlite3_column_text(stmt, 1))
                 let photoAttachmentID = String(cString: sqlite3_column_text(stmt, 2))
                 let photoLocalID = String(cString: sqlite3_column_text(stmt, 3))
-                let photoThumbPath = String(cString: sqlite3_column_text(stmt, 4))
-                let createdAtMs = sqlite3_column_int64(stmt, 5)
-                let updatedAtMs = sqlite3_column_int64(stmt, 6)
-                let deleted = Int(sqlite3_column_int64(stmt, 7))
+                let photoCloudID = String(cString: sqlite3_column_text(stmt, 4))
+                let photoThumbPath = String(cString: sqlite3_column_text(stmt, 5))
+                let createdAtMs = sqlite3_column_int64(stmt, 6)
+                let updatedAtMs = sqlite3_column_int64(stmt, 7)
+                let deleted = Int(sqlite3_column_int64(stmt, 8))
 
                 out.append(NJCalendarItem(
                     dateKey: key,
                     title: title,
                     photoAttachmentID: photoAttachmentID,
                     photoLocalID: photoLocalID,
+                    photoCloudID: photoCloudID,
                     photoThumbPath: photoThumbPath,
                     createdAtMs: createdAtMs,
                     updatedAtMs: updatedAtMs,
@@ -271,13 +281,13 @@ final class DBPlanningNoteTable {
             var stmt: OpaquePointer?
             let sql = includeDeleted
                 ? """
-                SELECT planning_key, kind, target_key, note, created_at_ms, updated_at_ms, deleted
+                SELECT planning_key, kind, target_key, note, proton_json, created_at_ms, updated_at_ms, deleted
                 FROM nj_planning_note
                 WHERE planning_key = ?
                 LIMIT 1;
                 """
                 : """
-                SELECT planning_key, kind, target_key, note, created_at_ms, updated_at_ms, deleted
+                SELECT planning_key, kind, target_key, note, proton_json, created_at_ms, updated_at_ms, deleted
                 FROM nj_planning_note
                 WHERE planning_key = ? AND deleted = 0
                 LIMIT 1;
@@ -298,12 +308,13 @@ final class DBPlanningNoteTable {
             var stmt: OpaquePointer?
             let sql = """
             INSERT INTO nj_planning_note(
-                planning_key, kind, target_key, note, created_at_ms, updated_at_ms, deleted
-            ) VALUES(?, ?, ?, ?, ?, ?, ?)
+                planning_key, kind, target_key, note, proton_json, created_at_ms, updated_at_ms, deleted
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(planning_key) DO UPDATE SET
                 kind = excluded.kind,
                 target_key = excluded.target_key,
                 note = excluded.note,
+                proton_json = excluded.proton_json,
                 created_at_ms = CASE
                     WHEN nj_planning_note.created_at_ms IS NULL OR nj_planning_note.created_at_ms = 0
                     THEN excluded.created_at_ms
@@ -320,9 +331,10 @@ final class DBPlanningNoteTable {
             sqlite3_bind_text(stmt, 2, n.kind, -1, SQLITE_TRANSIENT)
             sqlite3_bind_text(stmt, 3, n.targetKey, -1, SQLITE_TRANSIENT)
             sqlite3_bind_text(stmt, 4, n.note, -1, SQLITE_TRANSIENT)
-            sqlite3_bind_int64(stmt, 5, n.createdAtMs)
-            sqlite3_bind_int64(stmt, 6, n.updatedAtMs)
-            sqlite3_bind_int64(stmt, 7, Int64(n.deleted))
+            sqlite3_bind_text(stmt, 5, n.protonJSON, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int64(stmt, 6, n.createdAtMs)
+            sqlite3_bind_int64(stmt, 7, n.updatedAtMs)
+            sqlite3_bind_int64(stmt, 8, Int64(n.deleted))
 
             let rc1 = sqlite3_step(stmt)
             if rc1 != SQLITE_DONE { db.dbgErr(dbp, "planningNote.upsert.step", rc1) }
@@ -357,6 +369,7 @@ final class DBPlanningNoteTable {
             "kind": n.kind,
             "target_key": n.targetKey,
             "note": n.note,
+            "proton_json": n.protonJSON,
             "created_at_ms": n.createdAtMs,
             "updated_at_ms": n.updatedAtMs,
             "deleted": n.deleted
@@ -370,6 +383,7 @@ final class DBPlanningNoteTable {
         let kind = (fields["kind"] as? String) ?? ""
         let targetKey = (fields["target_key"] as? String) ?? (fields["targetKey"] as? String) ?? ""
         let note = (fields["note"] as? String) ?? ""
+        let protonJSON = (fields["proton_json"] as? String) ?? (fields["protonJSON"] as? String) ?? ""
         let createdAt = (fields["created_at_ms"] as? Int64) ?? ((fields["created_at_ms"] as? NSNumber)?.int64Value ?? 0)
         let updatedAt = (fields["updated_at_ms"] as? Int64) ?? ((fields["updated_at_ms"] as? NSNumber)?.int64Value ?? 0)
         let deleted = Int((fields["deleted"] as? Int64) ?? ((fields["deleted"] as? NSNumber)?.int64Value ?? 0))
@@ -400,6 +414,7 @@ final class DBPlanningNoteTable {
             kind: resolvedKind,
             targetKey: resolvedTarget,
             note: note,
+            protonJSON: protonJSON,
             createdAtMs: createdAt > 0 ? createdAt : (loadNoteByPlanningKeyIncludingDeleted(planningKey: planningKey)?.createdAtMs ?? 0),
             updatedAtMs: updatedAt,
             deleted: deleted
@@ -412,14 +427,16 @@ final class DBPlanningNoteTable {
         let kind = String(cString: sqlite3_column_text(stmt, 1))
         let targetKey = String(cString: sqlite3_column_text(stmt, 2))
         let note = String(cString: sqlite3_column_text(stmt, 3))
-        let createdAt = sqlite3_column_int64(stmt, 4)
-        let updatedAt = sqlite3_column_int64(stmt, 5)
-        let deleted = Int(sqlite3_column_int64(stmt, 6))
+        let protonJSON = String(cString: sqlite3_column_text(stmt, 4))
+        let createdAt = sqlite3_column_int64(stmt, 5)
+        let updatedAt = sqlite3_column_int64(stmt, 6)
+        let deleted = Int(sqlite3_column_int64(stmt, 7))
         return NJPlanningNote(
             planningKey: planningKey,
             kind: kind,
             targetKey: targetKey,
             note: note,
+            protonJSON: protonJSON,
             createdAtMs: createdAt,
             updatedAtMs: updatedAt,
             deleted: deleted

@@ -152,6 +152,11 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         return out
     }
 
+    private func protonPhotoNodeCount(_ protonJSON: String) -> Int {
+        guard !protonJSON.isEmpty else { return 0 }
+        return protonJSON.components(separatedBy: "\"kind\":\"photo\"").count - 1
+    }
+
     private func dbLoadClipPDFRel(_ blockID: String) -> String {
         guard let store else { return "" }
         return store.notes.db.withDB { dbp in
@@ -625,21 +630,17 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         }
 
         let originalAttr = editor.attributedText
-        let originalSel  = editor.selectedRange
-
-        if let cleaned = tagRes?.cleaned {
-            editor.setAttributedTextSafely(cleaned, targetSelection: originalSel)
+        let views = extractPhotoAttachments(from: originalAttr)
+        let sourceAttrForProton = tagRes?.cleaned ?? originalAttr
+        var protonJSON = b.protonHandle.exportProtonJSONString(from: sourceAttrForProton)
+        if !views.isEmpty && protonPhotoNodeCount(protonJSON) < views.count {
+            protonJSON = b.protonHandle.exportProtonJSONString(from: originalAttr)
         }
-
-        let protonJSON = b.protonHandle.exportProtonJSONString()
-
-        editor.setAttributedTextSafely(originalAttr, targetSelection: originalSel)
 
         b.protonJSON = protonJSON
         blocks[i].protonJSON = protonJSON
 
         let nowMs = DBNoteRepository.nowMs()
-        let views = extractPhotoAttachments(from: originalAttr)
         let existing = store.notes.listAttachments(blockID: b.blockID)
         var existingByID: [String: NJAttachmentRecord] = [:]
         for e in existing { existingByID[e.attachmentID] = e }

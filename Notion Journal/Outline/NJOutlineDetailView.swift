@@ -220,9 +220,10 @@ struct NJOutlineDetailView: View {
             focusedNodeID = n.nodeID
         }
         .onTapGesture(count: 2) {
-            store.selectedOutlineNodeID = n.nodeID
-            focusedNodeID = n.nodeID
-            openWindow(id: "outline-node-detail", value: n.nodeID)
+            openNodeDetail(n.nodeID)
+        }
+        .onLongPressGesture(minimumDuration: 0.35) {
+            openNodeDetail(n.nodeID)
         }
         .padding(.vertical, 0)
     }
@@ -250,6 +251,12 @@ struct NJOutlineDetailView: View {
         outline.reorderNodeWithinParent(nodeID: moving.nodeID, toSiblingIndex: siblingIndex)
         store.selectedOutlineNodeID = moving.nodeID
         focusedNodeID = moving.nodeID
+    }
+
+    private func openNodeDetail(_ nodeID: String) {
+        store.selectedOutlineNodeID = nodeID
+        focusedNodeID = nodeID
+        openWindow(id: "outline-node-detail", value: nodeID)
     }
 }
 
@@ -303,7 +310,11 @@ struct NJOutlineNodeDetailWindowView: View {
             .navigationTitle(titleDraft.isEmpty ? "Node" : titleDraft)
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if let h = focusedHandle ?? persistence.blocks.first(where: { $0.id == persistence.focusedBlockID })?.protonHandle {
-                    NJProtonFloatingFormatBar(handle: h, pickedPhotoItem: $pickedPhotoItem)
+                    NJProtonFloatingFormatBar(
+                        handle: h,
+                        pickedPhotoItem: $pickedPhotoItem,
+                        currentHandle: { focusedHandle ?? persistence.blocks.first(where: { $0.id == persistence.focusedBlockID })?.protonHandle }
+                    )
                         .padding(.horizontal, 8)
                         .padding(.vertical, 6)
                         .background(.ultraThinMaterial)

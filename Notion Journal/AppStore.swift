@@ -137,8 +137,8 @@ final class AppStore: ObservableObject {
         quickClipboardCount = notes.listOrphanQuickBlocks(limit: 2000).count
     }
 
-    func createQuickNoteToClipboard(payloadJSON: String) {
-        guard notes.createQuickNoteBlock(payloadJSON: payloadJSON) != nil else { return }
+    func createQuickNoteToClipboard(payloadJSON: String, createdAtMs: Int64? = nil, tags: [String] = []) {
+        guard notes.createQuickNoteBlock(payloadJSON: payloadJSON, createdAtMs: createdAtMs, tags: tags) != nil else { return }
         refreshQuickClipboardCount()
         sync.schedulePush(debounceMs: 0)
     }
@@ -186,6 +186,9 @@ final class AppStore: ObservableObject {
     private var audioTranscribeRunning = false
 
     @MainActor
+    private var timeInboxIngestRunning = false
+
+    @MainActor
     func runClipIngestIfNeeded() {
         if clipIngestRunning { return }
         clipIngestRunning = true
@@ -228,6 +231,73 @@ final class AppStore: ObservableObject {
             }
         }
         #endif
+    }
+
+    @MainActor
+    func runTimeModuleInboxIngestIfNeeded() {
+        if timeInboxIngestRunning { return }
+        timeInboxIngestRunning = true
+        defer { timeInboxIngestRunning = false }
+
+        guard let shared = UserDefaults(suiteName: NJTimeSlotStore.appGroupID) else { return }
+        let slotsKey = "nj_time_module_slots_v1"
+        let goalsKey = "nj_time_module_goals_v1"
+
+        var changed = false
+
+        if let data = shared.data(forKey: slotsKey),
+           let rows = try? JSONDecoder().decode([NJTimeSlot].self, from: data),
+           !rows.isEmpty {
+            for r in rows {
+                let startMs = Int64(r.startDate.timeIntervalSince1970 * 1000.0)
+                let endMs = Int64(r.endDate.timeIntervalSince1970 * 1000.0)
+                let now = DBNoteRepository.nowMs()
+                notes.upsertTimeSlot(
+                    NJTimeSlotRecord(
+                        timeSlotID: r.id,
+                        ownerScope: "ME",
+                        title: r.title,
+                        category: r.category.rawValue.lowercased(),
+                        startAtMs: startMs,
+                        endAtMs: max(endMs, startMs + 15 * 60 * 1000),
+                        notes: r.notes,
+                        createdAtMs: startMs > 0 ? startMs : now,
+                        updatedAtMs: now,
+                        deleted: 0
+                    )
+                )
+            }
+            shared.removeObject(forKey: slotsKey)
+            changed = true
+        }
+
+        if let data = shared.data(forKey: goalsKey),
+           let rows = try? JSONDecoder().decode([NJPersonalGoal].self, from: data),
+           !rows.isEmpty {
+            for r in rows {
+                let now = DBNoteRepository.nowMs()
+                notes.upsertPersonalGoal(
+                    NJPersonalGoalRecord(
+                        goalID: r.id,
+                        ownerScope: "ME",
+                        title: r.title,
+                        focus: r.focus.rawValue.lowercased(),
+                        keyword: r.keyword,
+                        weeklyTarget: Int64(max(1, r.weeklyTarget)),
+                        status: "active",
+                        createdAtMs: now,
+                        updatedAtMs: now,
+                        deleted: 0
+                    )
+                )
+            }
+            shared.removeObject(forKey: goalsKey)
+            changed = true
+        }
+
+        if changed {
+            sync.schedulePush(debounceMs: 0)
+        }
     }
     
     func reloadNotebooksTabsFromDB() {
@@ -429,4 +499,6 @@ enum NJUIModule: String, CaseIterable {
     case note
     case goal
     case outline
+    case time
+    case planning
 }

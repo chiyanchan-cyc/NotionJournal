@@ -34,6 +34,7 @@ struct NJReconstructedSpec: Equatable, Identifiable {
 
     var limit: Int
     var newestFirst: Bool
+    var includeTags: [String]
     var excludeTags: [String]
 
     static func weekly() -> NJReconstructedSpec {
@@ -61,11 +62,12 @@ struct NJReconstructedSpec: Equatable, Identifiable {
             endMs: endMs,
             limit: 500,
             newestFirst: true,
+            includeTags: [],
             excludeTags: []
         )
     }
 
-    static func tagExact(_ tag: String, startMs: Int64? = nil, endMs: Int64? = nil, timeField: NJReconstructedTimeField = .blockCreatedAtMs, limit: Int = 500, newestFirst: Bool = true) -> NJReconstructedSpec {
+    static func tagExact(_ tag: String, startMs: Int64? = nil, endMs: Int64? = nil, timeField: NJReconstructedTimeField = .blockCreatedAtMs, limit: Int = 500, newestFirst: Bool = true, includeTags: [String] = [], excludeTags: [String] = []) -> NJReconstructedSpec {
         NJReconstructedSpec(
             id: "recon:exact:\(tag):\(startMs ?? 0):\(endMs ?? 0):\(timeField)",
             title: tag,
@@ -76,11 +78,12 @@ struct NJReconstructedSpec: Equatable, Identifiable {
             endMs: endMs,
             limit: limit,
             newestFirst: newestFirst,
-            excludeTags: []
+            includeTags: includeTags,
+            excludeTags: excludeTags
         )
     }
 
-    static func tagPrefix(_ prefix: String, startMs: Int64? = nil, endMs: Int64? = nil, timeField: NJReconstructedTimeField = .blockCreatedAtMs, limit: Int = 500, newestFirst: Bool = true) -> NJReconstructedSpec {
+    static func tagPrefix(_ prefix: String, startMs: Int64? = nil, endMs: Int64? = nil, timeField: NJReconstructedTimeField = .blockCreatedAtMs, limit: Int = 500, newestFirst: Bool = true, includeTags: [String] = [], excludeTags: [String] = []) -> NJReconstructedSpec {
         NJReconstructedSpec(
             id: "recon:prefix:\(prefix):\(startMs ?? 0):\(endMs ?? 0):\(timeField)",
             title: prefix,
@@ -91,14 +94,16 @@ struct NJReconstructedSpec: Equatable, Identifiable {
             endMs: endMs,
             limit: limit,
             newestFirst: newestFirst,
-            excludeTags: []
+            includeTags: includeTags,
+            excludeTags: excludeTags
         )
     }
 
-    static func all(startMs: Int64? = nil, endMs: Int64? = nil, limit: Int = 1000, newestFirst: Bool = true, excludeTags: [String] = []) -> NJReconstructedSpec {
+    static func all(startMs: Int64? = nil, endMs: Int64? = nil, limit: Int = 1000, newestFirst: Bool = true, includeTags: [String] = [], excludeTags: [String] = []) -> NJReconstructedSpec {
+        let includeKey = includeTags.map { $0.lowercased() }.joined(separator: "|")
         let excludeKey = excludeTags.map { $0.lowercased() }.joined(separator: "|")
         return NJReconstructedSpec(
-            id: "recon:all:\(startMs ?? 0):\(endMs ?? 0):\(excludeKey)",
+            id: "recon:all:\(startMs ?? 0):\(endMs ?? 0):\(includeKey):\(excludeKey)",
             title: "ALL",
             tab: "RECONSTRUCTED",
             match: .all,
@@ -107,6 +112,7 @@ struct NJReconstructedSpec: Equatable, Identifiable {
             endMs: endMs,
             limit: limit,
             newestFirst: newestFirst,
+            includeTags: includeTags,
             excludeTags: excludeTags
         )
     }
@@ -128,6 +134,7 @@ struct NJReconstructedSpec: Equatable, Identifiable {
             endMs: nil,
             limit: limit,
             newestFirst: newestFirst,
+            includeTags: [],
             excludeTags: []
         )
     }

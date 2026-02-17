@@ -130,9 +130,29 @@ struct Sidebar: View {
                                 ModuleToolbarButtons.Item(id: "outline", title: "Outline", systemImage: "list.bullet.rectangle", isOn: store.selectedModule == .outline, action: {
                                     store.selectedModule = .outline
                                     selectedNoteID = nil
+                                }),
+                                ModuleToolbarButtons.Item(id: "time", title: "Time", systemImage: "applewatch", isOn: store.selectedModule == .time, action: {
+                                    store.selectedModule = .time
+                                    selectedNoteID = nil
+                                }),
+                                ModuleToolbarButtons.Item(id: "planning", title: "Planning", systemImage: "calendar", isOn: false, action: {
+                                    openCalendarView()
                                 })
                             ]
                         )
+                        Button {
+                            openWeeklyReconstructed()
+                        } label: {
+                            Image(systemName: "scope")
+                                .font(.system(size: 12, weight: .semibold))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .fill(Color(UIColor.secondarySystemBackground))
+                                )
+                        }
+                        .buttonStyle(.plain)
                         Spacer()
                     }
                     .padding(.horizontal, 8)
@@ -288,20 +308,12 @@ struct Sidebar: View {
 
             if store.selectedModule == .note {
                 HStack(spacing: 12) {
-                    SidebarSquareButton(systemName: "target") {
-                        openWeeklyReconstructed()
-                    }
-
                     SidebarSquareButton(systemName: "magnifyingglass") {
                         openManualReconstructed()
                     }
 
                     SidebarSquareButton(systemName: "clock") {
                         openChronoView()
-                    }
-
-                    SidebarSquareButton(systemName: "calendar") {
-                        openCalendarView()
                     }
 
                     SidebarSquareButton(systemName: "heart.text.square") {
@@ -333,22 +345,44 @@ struct Sidebar: View {
         .toolbar {
             if !isPhone {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    ModuleToolbarButtons(
-                        items: [
-                            ModuleToolbarButtons.Item(id: "note", title: "Note", systemImage: "doc.text", isOn: store.selectedModule == .note, action: {
-                                store.selectedModule = .note
-                                selectedNoteID = nil
-                            }),
-                            ModuleToolbarButtons.Item(id: "goal", title: "Goal", systemImage: "target", isOn: store.selectedModule == .goal, action: {
-                                store.selectedModule = .goal
-                                selectedNoteID = nil
-                            }),
-                            ModuleToolbarButtons.Item(id: "outline", title: "Outline", systemImage: "list.bullet.rectangle", isOn: store.selectedModule == .outline, action: {
-                                store.selectedModule = .outline
-                                selectedNoteID = nil
-                            })
-                        ]
-                    )
+                    HStack(spacing: 8) {
+                        ModuleToolbarButtons(
+                            items: [
+                                ModuleToolbarButtons.Item(id: "note", title: "Note", systemImage: "doc.text", isOn: store.selectedModule == .note, action: {
+                                    store.selectedModule = .note
+                                    selectedNoteID = nil
+                                }),
+                                ModuleToolbarButtons.Item(id: "goal", title: "Goal", systemImage: "target", isOn: store.selectedModule == .goal, action: {
+                                    store.selectedModule = .goal
+                                    selectedNoteID = nil
+                                }),
+                                ModuleToolbarButtons.Item(id: "outline", title: "Outline", systemImage: "list.bullet.rectangle", isOn: store.selectedModule == .outline, action: {
+                                    store.selectedModule = .outline
+                                    selectedNoteID = nil
+                                }),
+                                ModuleToolbarButtons.Item(id: "time", title: "Time", systemImage: "applewatch", isOn: store.selectedModule == .time, action: {
+                                    store.selectedModule = .time
+                                    selectedNoteID = nil
+                                }),
+                                ModuleToolbarButtons.Item(id: "planning", title: "Planning", systemImage: "calendar", isOn: false, action: {
+                                    openCalendarView()
+                                })
+                            ]
+                        )
+                        Button {
+                            openWeeklyReconstructed()
+                        } label: {
+                            Image(systemName: "scope")
+                                .font(.system(size: 12, weight: .semibold))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .fill(Color(UIColor.secondarySystemBackground))
+                                )
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
             }
         }
@@ -661,7 +695,7 @@ struct NotebookTopBar: View {
                             Text(nb.title)
                                 .font(.system(size: fontSize, weight: .regular))
                                 .multilineTextAlignment(.center)
-                                .lineLimit(2)
+                                .lineLimit(1)
                                 .minimumScaleFactor(0.65)
                                 .allowsTightening(true)
                                 .frame(width: itemW - 14, alignment: .center)

@@ -204,7 +204,11 @@ struct NJNoteEditorContainerView: View {
 //        )
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if let h = focusedHandle() {
-                NJProtonFloatingFormatBar(handle: h, pickedPhotoItem: $pickedPhotoItem)
+                NJProtonFloatingFormatBar(
+                    handle: h,
+                    pickedPhotoItem: $pickedPhotoItem,
+                    currentHandle: { focusedHandle() }
+                )
                     .padding(.horizontal, 8)
                     .padding(.vertical, 6)
                     .background(.ultraThinMaterial)
@@ -300,6 +304,9 @@ struct NJNoteEditorContainerView: View {
             persistence.reload(makeHandle: makeWiredHandle)
         }
         .onReceive(NotificationCenter.default.publisher(for: .njForceReloadNote)) { _ in
+            if let id = persistence.focusedBlockID {
+                persistence.forceEndEditingAndCommitNow(id)
+            }
             persistence.reload(makeHandle: makeWiredHandle)
         }
         .onDisappear {

@@ -73,6 +73,9 @@ struct NJGPSLoggerPage: View {
                 if !logger.lastError.isEmpty {
                     Text(logger.lastError).font(.footnote).foregroundStyle(.secondary)
                 }
+                if !logger.lastTransitLog.isEmpty {
+                    Text(logger.lastTransitLog).font(.footnote).foregroundStyle(.secondary)
+                }
             }
         }
         .navigationTitle("GPS Logger")

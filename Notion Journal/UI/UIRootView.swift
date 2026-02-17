@@ -54,12 +54,19 @@ struct RootView: View {
                         } else {
                             ContentUnavailableView("Select an outline", systemImage: "list.bullet.rectangle")
                         }
+                    case .time:
+                        NJTimeModuleView()
+                            .environmentObject(store)
+                    case .planning:
+                        NJCalendarView()
+                            .environmentObject(store)
                     }
                 }
                 .onAppear {
                     store.runClipIngestIfNeeded()
                     store.runAudioIngestIfNeeded()
                     store.runAudioTranscribeIfNeeded()
+                    store.runTimeModuleInboxIngestIfNeeded()
                     NJLocalBLRunner(db: store.db).run(.deriveBlockTagIndexAndDomainV1)
                     NJHealthLogger.shared.configure(db: store.db)
                     NJHealthLogger.shared.appDidBecomeActive()
@@ -69,6 +76,7 @@ struct RootView: View {
                         store.runClipIngestIfNeeded()
                         store.runAudioIngestIfNeeded()
                         store.runAudioTranscribeIfNeeded()
+                        store.runTimeModuleInboxIngestIfNeeded()
                         NJLocalBLRunner(db: store.db).run(.deriveBlockTagIndexAndDomainV1)
                         NJHealthLogger.shared.configure(db: store.db)
                         NJHealthLogger.shared.appDidBecomeActive()

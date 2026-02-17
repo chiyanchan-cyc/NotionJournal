@@ -152,6 +152,7 @@ struct NJReconstructedManualView: View {
     private func row(_ b: NJNoteEditorContainerPersistence.BlockState) -> some View {
         let id = b.id
         let h = b.protonHandle
+        let collapsedBinding = bindingCollapsed(id)
         let liveTagJSON: String? = persistence.blocks.first(where: { $0.id == id })?.tagJSON
 
         let onSaveTags: (String) -> Void = { newJSON in
@@ -173,7 +174,7 @@ struct NJReconstructedManualView: View {
             hasClipPDF: false,
             onOpenClipPDF: { },
             protonHandle: h,
-            isCollapsed: bindingCollapsed(id),
+            isCollapsed: collapsedBinding,
             isFocused: id == persistence.focusedBlockID,
             attr: Binding(
                 get: { persistence.blocks.first(where: { $0.id == id })?.attr ?? NSAttributedString(string: "\u{200B}") },
@@ -221,10 +222,20 @@ struct NJReconstructedManualView: View {
                 store.notes.listTagSuggestions(prefix: prefix, limit: limit)
             }
         )
+        .id("\(id.uuidString)-\(collapsedBinding.wrappedValue ? "c" : "e")")
         .listRowInsets(EdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 12))
         .listRowBackground(persistence.rowBackgroundColor(blockID: b.blockID))
         .listRowSeparator(.hidden)
         .onAppear { persistence.hydrateProton(id) }
+        .onChange(of: collapsedBinding.wrappedValue) { _, v in
+            guard !v else { return }
+            DispatchQueue.main.async {
+                persistence.hydrateProton(id)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                persistence.hydrateProton(id)
+            }
+        }
     }
 
     // Logic to bridge UI inputs to the Spec

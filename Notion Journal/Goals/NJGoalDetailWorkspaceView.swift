@@ -26,7 +26,11 @@ struct NJGoalDetailWorkspaceView: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if let h = focusedHandle ?? persistence.focusedHandle {
-                NJProtonFloatingFormatBar(handle: h, pickedPhotoItem: $pickedPhotoItem)
+                NJProtonFloatingFormatBar(
+                    handle: h,
+                    pickedPhotoItem: $pickedPhotoItem,
+                    currentHandle: { focusedHandle ?? persistence.focusedHandle }
+                )
                     .padding(.horizontal, 8)
                     .padding(.vertical, 6)
                     .background(.ultraThinMaterial)
