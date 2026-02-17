@@ -1918,7 +1918,7 @@ final class NJProtonEditorHandle {
             body: body,
             isCollapsed: isCollapsed
         )
-        view.onContentChange = nil
+        view.onContentChange = { [weak self] in self?.snapshot() }
         view.onContentCommit = { [weak self] in self?.snapshot() }
         view.onCollapseToggle = { [weak self] in
             self?.replaceCollapsibleAttachment(attachmentID: attachmentID)
@@ -1931,6 +1931,9 @@ final class NJProtonEditorHandle {
 
     func removeNearestCollapsibleSection() {
         guard let editor else { return }
+        if let activeID = NJCollapsibleAttachmentView.activeAttachmentID() {
+            if unwrapCollapsibleAttachment(attachmentID: activeID) { return }
+        }
         let full = NSRange(location: 0, length: editor.attributedText.length)
         if full.length == 0 { return }
 
@@ -1952,7 +1955,14 @@ final class NJProtonEditorHandle {
             }
         }
 
-        guard let (range, view) = target else { return }
+        guard let (_, view) = target else { return }
+        _ = unwrapCollapsibleAttachment(attachmentID: view.attachmentID)
+    }
+
+    @discardableResult
+    private func unwrapCollapsibleAttachment(attachmentID: String) -> Bool {
+        guard let editor else { return false }
+        guard let (range, view) = findCollapsibleAttachment(attachmentID: attachmentID, in: editor.attributedText) else { return false }
 
         let title = view.titleAttributedText.string.trimmingCharacters(in: .whitespacesAndNewlines)
         let body = view.bodyAttributedText
@@ -1975,8 +1985,11 @@ final class NJProtonEditorHandle {
         let newLoc = min(range.location + replacement.length, s.length)
         let newRange = NSRange(location: newLoc, length: 0)
         editor.selectedRange = newRange
-        tv?.selectedRange = newRange
+        if let tv = activeTextView() {
+            tv.selectedRange = newRange
+        }
         snapshot()
+        return true
     }
 
     private func clampedSelection(_ range: NSRange, maxLength: Int) -> NSRange {
@@ -1996,7 +2009,9 @@ final class NJProtonEditorHandle {
     }
 
     private func makeCollapsibleBody(from selected: NSAttributedString, title: String) -> NSAttributedString {
-        let trimmed = trimLeadingAndTrailingNewlines(from: selected)
+        let normalized = normalizeAttachmentsForCollapsibleBody(selected)
+        let withNewlines = normalizeLineSeparatorsForCollapsibleBody(normalized)
+        let trimmed = trimLeadingAndTrailingNewlines(from: withNewlines)
         if trimmed.length == 0 { return trimmed }
         let ns = trimmed.string as NSString
         let p0 = ns.paragraphRange(for: NSRange(location: 0, length: 0))
@@ -2007,6 +2022,70 @@ final class NJProtonEditorHandle {
             return trimLeadingAndTrailingNewlines(from: tail)
         }
         return trimmed
+    }
+
+    private func normalizeLineSeparatorsForCollapsibleBody(_ input: NSAttributedString) -> NSAttributedString {
+        guard input.length > 0 else { return input }
+        let out = NSMutableAttributedString(attributedString: input)
+        let full = NSRange(location: 0, length: out.length)
+        let text = out.string as NSString
+        var replacementRanges: [NSRange] = []
+        for i in 0..<text.length {
+            let c = text.character(at: i)
+            if c == 0x2028 || c == 0x2029 {
+                replacementRanges.append(NSRange(location: i, length: 1))
+            }
+        }
+        if replacementRanges.isEmpty { return out }
+        for r in replacementRanges.reversed() {
+            out.replaceCharacters(in: r, with: "\n")
+        }
+        return out
+    }
+
+    private func normalizeAttachmentsForCollapsibleBody(_ selected: NSAttributedString) -> NSAttributedString {
+        guard selected.length > 0 else { return selected }
+        let out = NSMutableAttributedString(attributedString: selected)
+        let full = NSRange(location: 0, length: out.length)
+        var replacements: [(NSRange, NSAttributedString)] = []
+
+        out.enumerateAttribute(.attachment, in: full, options: []) { value, range, _ in
+            guard let att = value as? Attachment else { return }
+            guard let view = att.contentView else { return }
+            guard let image = snapshotImage(for: view) else { return }
+            let text = imageAttachmentText(image, preferredSize: view.bounds.size)
+            replacements.append((range, text))
+        }
+
+        if replacements.isEmpty { return out }
+        for (range, replacement) in replacements.reversed() {
+            out.replaceCharacters(in: range, with: replacement)
+        }
+        return out
+    }
+
+    private func snapshotImage(for view: UIView) -> UIImage? {
+        if let p = view as? NJPhotoAttachmentView, let image = p.image {
+            return image
+        }
+        let size = view.bounds.size
+        let w = max(1, size.width)
+        let h = max(1, size.height)
+        guard w > 0, h > 0 else { return nil }
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: w, height: h))
+        return renderer.image { _ in
+            view.drawHierarchy(in: CGRect(x: 0, y: 0, width: w, height: h), afterScreenUpdates: true)
+        }
+    }
+
+    private func imageAttachmentText(_ image: UIImage, preferredSize: CGSize) -> NSAttributedString {
+        let targetW = max(120, preferredSize.width > 1 ? preferredSize.width : min(360, image.size.width))
+        let ratio = image.size.height / max(1, image.size.width)
+        let targetH = max(1, targetW * ratio)
+        let ta = NSTextAttachment()
+        ta.image = image
+        ta.bounds = CGRect(x: 0, y: 0, width: targetW, height: targetH)
+        return NSAttributedString(attachment: ta)
     }
 
     private func trimLeadingAndTrailingNewlines(from selected: NSAttributedString) -> NSAttributedString {

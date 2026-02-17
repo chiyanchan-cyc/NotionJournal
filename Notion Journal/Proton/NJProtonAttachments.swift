@@ -1,6 +1,7 @@
 import Foundation
 import UIKit
 import Proton
+import ObjectiveC.runtime
 
 extension EditorContent.Name {
     static let njPhoto = EditorContent.Name("nj_photo")
@@ -14,6 +15,8 @@ enum NJTableAction {
 }
 
 final class NJCollapsibleAttachmentView: UIView, AttachmentViewIdentifying, UITextViewDelegate, UITextFieldDelegate {
+    private static weak var activeBodyTextView: UITextView?
+    private static var bodyOwnerKey: UInt8 = 0
     let attachmentID: String
     var name: EditorContent.Name { .njCollapsible }
     var type: AttachmentType { .block }
@@ -92,6 +95,11 @@ final class NJCollapsibleAttachmentView: UIView, AttachmentViewIdentifying, UITe
     func textViewDidChange(_ textView: UITextView) {
         guard !isInternalUpdate else { return }
         recalculatePreferredHeight()
+        onContentChange?()
+    }
+
+    func textViewDidBeginEditing(_ textView: UITextView) {
+        Self.activeBodyTextView = textView
     }
 
     func textFieldDidEndEditing(_ textField: UITextField) {
@@ -106,6 +114,7 @@ final class NJCollapsibleAttachmentView: UIView, AttachmentViewIdentifying, UITe
 
     @objc private func titleChanged() {
         guard !isInternalUpdate else { return }
+        onContentChange?()
     }
 
     @objc private func toggleCollapsed() {
@@ -146,6 +155,7 @@ final class NJCollapsibleAttachmentView: UIView, AttachmentViewIdentifying, UITe
         bodyTextView.delegate = self
         bodyTextView.font = UIFont.systemFont(ofSize: 15, weight: .regular)
         bodyTextView.textColor = .label
+        objc_setAssociatedObject(bodyTextView, &Self.bodyOwnerKey, self, .OBJC_ASSOCIATION_ASSIGN)
         stack.addArrangedSubview(bodyTextView)
 
         let headerConstraints = [
@@ -207,6 +217,76 @@ final class NJCollapsibleAttachmentView: UIView, AttachmentViewIdentifying, UITe
             preferredHeightConstraint?.constant = next
             invalidateIntrinsicContentSize()
             superview?.setNeedsLayout()
+        }
+    }
+
+    static func insertImageIntoActiveBody(_ image: UIImage) -> Bool {
+        guard let tv = activeBodyTextView else { return false }
+        let existing = tv.attributedText ?? NSAttributedString(string: "")
+        let m = NSMutableAttributedString(attributedString: existing)
+        let safeLoc = min(max(0, tv.selectedRange.location), m.length)
+        let safeLen = min(max(0, tv.selectedRange.length), m.length - safeLoc)
+        let range = NSRange(location: safeLoc, length: safeLen)
+
+        let maxW = max(120, tv.bounds.width - 8)
+        let prepared = downscaledImage(image, maxDisplayWidth: maxW, displayScale: max(1, tv.traitCollection.displayScale))
+        let ratio = prepared.size.height / max(1, prepared.size.width)
+        let w = max(1, maxW)
+        let h = max(1, w * ratio)
+
+        let att = NSTextAttachment()
+        att.image = prepared
+        att.bounds = CGRect(x: 0, y: 0, width: w, height: h)
+        let attText = NSAttributedString(attachment: att)
+        let replacement = NSMutableAttributedString()
+        let ns = m.string as NSString
+        let needsLeadingNewline = range.location > 0 && ns.character(at: range.location - 1) != 10 && ns.character(at: range.location - 1) != 13
+        let endIndex = range.location + range.length
+        let needsTrailingNewline = endIndex < ns.length && ns.character(at: endIndex) != 10 && ns.character(at: endIndex) != 13
+        if needsLeadingNewline { replacement.append(NSAttributedString(string: "\n")) }
+        replacement.append(attText)
+        replacement.append(NSAttributedString(string: needsTrailingNewline ? "\n\n" : "\n"))
+
+        m.replaceCharacters(in: range, with: replacement)
+        tv.attributedText = m
+        tv.selectedRange = NSRange(location: min(range.location + replacement.length, m.length), length: 0)
+
+        if let owner = objc_getAssociatedObject(tv, &Self.bodyOwnerKey) as? NJCollapsibleAttachmentView {
+            owner.recalculatePreferredHeight()
+            owner.onContentChange?()
+            owner.onContentCommit?()
+        }
+        return true
+    }
+
+    static func activeAttachmentID() -> String? {
+        guard let tv = activeBodyTextView else { return nil }
+        guard let owner = objc_getAssociatedObject(tv, &Self.bodyOwnerKey) as? NJCollapsibleAttachmentView else { return nil }
+        return owner.attachmentID
+    }
+
+    static func flushActiveBodyEditing() {
+        guard let tv = activeBodyTextView else { return }
+        if tv.isFirstResponder {
+            _ = tv.resignFirstResponder()
+        }
+        if let owner = objc_getAssociatedObject(tv, &Self.bodyOwnerKey) as? NJCollapsibleAttachmentView {
+            owner.onContentCommit?()
+        }
+    }
+
+    private static func downscaledImage(_ image: UIImage, maxDisplayWidth: CGFloat, displayScale: CGFloat) -> UIImage {
+        let maxPixelWidth = max(240, maxDisplayWidth * displayScale * 1.5)
+        let srcW = max(1, image.size.width)
+        if srcW <= maxPixelWidth { return image }
+
+        let scale = maxPixelWidth / srcW
+        let newSize = CGSize(width: floor(image.size.width * scale), height: floor(image.size.height * scale))
+        let fmt = UIGraphicsImageRendererFormat.default()
+        fmt.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: newSize, format: fmt)
+        return renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: newSize))
         }
     }
 }

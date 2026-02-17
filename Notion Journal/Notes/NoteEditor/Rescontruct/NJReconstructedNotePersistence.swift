@@ -669,6 +669,7 @@ final class NJReconstructedNotePersistence: ObservableObject {
     func forceEndEditingAndCommitNow(_ id: UUID) {
         commitWork[id]?.cancel()
         commitWork[id] = nil
+        NJCollapsibleAttachmentView.flushActiveBodyEditing()
         guard let i = blocks.firstIndex(where: { $0.id == id }) else { return }
         blocks[i].protonHandle.isEditing = false
         markDirty(id)

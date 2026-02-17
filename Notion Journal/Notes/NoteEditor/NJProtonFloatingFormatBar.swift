@@ -113,6 +113,12 @@ struct NJProtonFloatingFormatBar: View {
                     loadData: { try? await newItem.loadTransferable(type: Data.self) }
                 ) {
                     await MainActor.run {
+                        if NJCollapsibleAttachmentView.insertImageIntoActiveBody(img) {
+                            pickedPhotoItem = nil
+                            photoTargetHandle = nil
+                            isPhotoPickerPresented = false
+                            return
+                        }
                         let h = photoTargetHandle ?? resolvedHandle()
                         guard let h else { return }
                         print("NJ_PHOTO_PICKER_HANDLE owner=\(String(describing: h.ownerBlockUUID))")

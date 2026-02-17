@@ -529,6 +529,8 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         commitWork[id]?.cancel()
         commitWork[id] = nil
 
+        NJCollapsibleAttachmentView.flushActiveBodyEditing()
+
         guard let i = blocks.firstIndex(where: { $0.id == id }) else { return }
         blocks[i].protonHandle.isEditing = false
         markDirty(id)
