@@ -28,18 +28,31 @@ struct NJProtonFloatingFormatBar: View {
         action(h)
     }
 
+    private func withFormattingAction(
+        sectionAction: NJCollapsibleAttachmentView.BodyFormatAction,
+        handleAction: @escaping (NJProtonEditorHandle) -> Void
+    ) {
+        if NJCollapsibleAttachmentView.performActionOnActiveBody(sectionAction) {
+            return
+        }
+        withHandle {
+            handleAction($0)
+            $0.snapshot()
+        }
+    }
+
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
-                Button { withHandle { $0.decreaseFont(); $0.snapshot() } } label: { Image(systemName: "textformat.size.smaller") }
-                Button { withHandle { $0.increaseFont(); $0.snapshot() } } label: { Image(systemName: "textformat.size.larger") }
+                Button { withFormattingAction(sectionAction: .decreaseFont) { $0.decreaseFont() } } label: { Image(systemName: "textformat.size.smaller") }
+                Button { withFormattingAction(sectionAction: .increaseFont) { $0.increaseFont() } } label: { Image(systemName: "textformat.size.larger") }
 
                 Divider().frame(height: 18)
 
-                Button { withHandle { $0.toggleBold(); $0.snapshot() } } label: { Image(systemName: "bold") }
-                Button { withHandle { $0.toggleItalic(); $0.snapshot() } } label: { Image(systemName: "italic") }
-                Button { withHandle { $0.toggleUnderline(); $0.snapshot() } } label: { Image(systemName: "underline") }
-                Button { withHandle { $0.toggleStrike(); $0.snapshot() } } label: { Image(systemName: "strikethrough") }
+                Button { withFormattingAction(sectionAction: .toggleBold) { $0.toggleBold() } } label: { Image(systemName: "bold") }
+                Button { withFormattingAction(sectionAction: .toggleItalic) { $0.toggleItalic() } } label: { Image(systemName: "italic") }
+                Button { withFormattingAction(sectionAction: .toggleUnderline) { $0.toggleUnderline() } } label: { Image(systemName: "underline") }
+                Button { withFormattingAction(sectionAction: .toggleStrike) { $0.toggleStrike() } } label: { Image(systemName: "strikethrough") }
 
                 Divider().frame(height: 18)
 

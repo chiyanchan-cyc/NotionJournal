@@ -75,7 +75,7 @@ final class DBNoteBlockTable {
 
             let noteID = sqlite3_column_text(stmt, 1).flatMap { String(cString: $0) } ?? ""
             let blockID = sqlite3_column_text(stmt, 2).flatMap { String(cString: $0) } ?? ""
-            let orderKey = sqlite3_column_int64(stmt, 3)
+            let orderKey = sqlite3_column_double(stmt, 3)
             let createdAtMs = sqlite3_column_int64(stmt, 4)
             let updatedAtMs = sqlite3_column_int64(stmt, 5)
             let deleted = sqlite3_column_int64(stmt, 6)
@@ -92,6 +92,16 @@ final class DBNoteBlockTable {
         }
     }
 
+    private func doubleAny(_ v: Any?) -> Double {
+        if let v = v as? Double { return v }
+        if let v = v as? Float { return Double(v) }
+        if let v = v as? Int { return Double(v) }
+        if let v = v as? Int64 { return Double(v) }
+        if let v = v as? NSNumber { return v.doubleValue }
+        if let v = v as? String { return Double(v) ?? 0 }
+        return 0
+    }
+
     func applyNJNoteBlock(_ f: [String: Any]) {
         let instanceID =
           (f["instance_id"] as? String) ??
@@ -102,12 +112,43 @@ final class DBNoteBlockTable {
 
         let noteID = (f["note_id"] as? String) ?? ""
         let blockID = (f["block_id"] as? String) ?? ""
-        let orderKey = (f["order_key"] as? Int64) ?? 0
+        let orderKey = doubleAny(f["order_key"])
         let createdAtMs = (f["created_at_ms"] as? Int64) ?? 0
         let updatedAtMs = (f["updated_at_ms"] as? Int64) ?? 0
         let deleted = (f["deleted"] as? Int64) ?? 0
+        let fallbackMs = updatedAtMs > 0 ? updatedAtMs : (createdAtMs > 0 ? createdAtMs : Int64(Date().timeIntervalSince1970 * 1000.0))
+
+        if let existing = loadNJNoteBlock(instanceID: instanceID) {
+            let existingUpdatedAt = (existing["updated_at_ms"] as? Int64) ?? 0
+            let existingDeleted = (existing["deleted"] as? Int64) ?? 0
+            if existingUpdatedAt > updatedAtMs, updatedAtMs > 0 {
+                return
+            }
+            if existingUpdatedAt == updatedAtMs,
+               existingDeleted > deleted {
+                return
+            }
+        }
 
         db.withDB { dbp in
+            if !blockID.isEmpty {
+                var ensureBlockStmt: OpaquePointer?
+                let ensureBlockSQL = """
+                INSERT OR IGNORE INTO nj_block(
+                  block_id, block_type, payload_json, domain_tag, tag_json, goal_id,
+                  lineage_id, parent_block_id, created_at_ms, updated_at_ms, deleted, dirty_bl
+                )
+                VALUES(?, 'text', '{}', '', '', NULL, '', '', ?, ?, 0, 0);
+                """
+                if sqlite3_prepare_v2(dbp, ensureBlockSQL, -1, &ensureBlockStmt, nil) == SQLITE_OK {
+                    sqlite3_bind_text(ensureBlockStmt, 1, blockID, -1, SQLITE_TRANSIENT)
+                    sqlite3_bind_int64(ensureBlockStmt, 2, fallbackMs)
+                    sqlite3_bind_int64(ensureBlockStmt, 3, fallbackMs)
+                    _ = sqlite3_step(ensureBlockStmt)
+                }
+                sqlite3_finalize(ensureBlockStmt)
+            }
+
             var stmt: OpaquePointer?
             let rc0 = sqlite3_prepare_v2(dbp, """
             INSERT INTO nj_note_block(
@@ -134,7 +175,7 @@ final class DBNoteBlockTable {
             sqlite3_bind_text(stmt, 1, instanceID, -1, SQLITE_TRANSIENT)
             sqlite3_bind_text(stmt, 2, noteID, -1, SQLITE_TRANSIENT)
             sqlite3_bind_text(stmt, 3, blockID, -1, SQLITE_TRANSIENT)
-            sqlite3_bind_int64(stmt, 4, orderKey)
+            sqlite3_bind_double(stmt, 4, orderKey)
             sqlite3_bind_int64(stmt, 5, createdAtMs)
             sqlite3_bind_int64(stmt, 6, updatedAtMs)
             sqlite3_bind_int64(stmt, 7, deleted)
@@ -142,8 +183,7 @@ final class DBNoteBlockTable {
             let rc1 = sqlite3_step(stmt)
             if rc1 != SQLITE_DONE { db.dbgErr(dbp, "applyNJNoteBlock.step", rc1) }
         }
-
-        enqueueDirty(entity: "note_block", entityID: instanceID, op: "upsert", updatedAtMs: updatedAtMs)
+        // Remote apply must not enqueue dirty again; local edit paths already do that.
     }
 
     func findFirstInstanceByBlock(blockID: String) -> (noteID: String, instanceID: String)? {
@@ -187,5 +227,72 @@ final class DBNoteBlockTable {
         }
 
         enqueueDirty(entity: "note_block", entityID: instanceID, op: "upsert", updatedAtMs: nowMs)
+    }
+
+    func hasLiveInstance(blockID: String) -> Bool {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let rc0 = sqlite3_prepare_v2(dbp, """
+            SELECT 1
+            FROM nj_note_block
+            WHERE block_id=? AND deleted=0
+            LIMIT 1;
+            """, -1, &stmt, nil)
+            if rc0 != SQLITE_OK { db.dbgErr(dbp, "hasLiveInstance.prepare", rc0); return false }
+            defer { sqlite3_finalize(stmt) }
+
+            sqlite3_bind_text(stmt, 1, blockID, -1, SQLITE_TRANSIENT)
+            return sqlite3_step(stmt) == SQLITE_ROW
+        }
+    }
+
+    func liveInstances(noteID: String) -> [(instanceID: String, blockID: String)] {
+        db.withDB { dbp in
+            var out: [(instanceID: String, blockID: String)] = []
+            var stmt: OpaquePointer?
+            let rc0 = sqlite3_prepare_v2(dbp, """
+            SELECT instance_id, block_id
+            FROM nj_note_block
+            WHERE note_id=? AND deleted=0
+            ORDER BY order_key ASC;
+            """, -1, &stmt, nil)
+            if rc0 != SQLITE_OK { db.dbgErr(dbp, "liveInstances.prepare", rc0); return [] }
+            defer { sqlite3_finalize(stmt) }
+
+            sqlite3_bind_text(stmt, 1, noteID, -1, SQLITE_TRANSIENT)
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let instanceID = sqlite3_column_text(stmt, 0).flatMap { String(cString: $0) } ?? ""
+                let blockID = sqlite3_column_text(stmt, 1).flatMap { String(cString: $0) } ?? ""
+                if !instanceID.isEmpty && !blockID.isEmpty {
+                    out.append((instanceID, blockID))
+                }
+            }
+            return out
+        }
+    }
+
+    func liveInstances(blockID: String) -> [(instanceID: String, noteID: String)] {
+        db.withDB { dbp in
+            var out: [(instanceID: String, noteID: String)] = []
+            var stmt: OpaquePointer?
+            let rc0 = sqlite3_prepare_v2(dbp, """
+            SELECT instance_id, note_id
+            FROM nj_note_block
+            WHERE block_id=? AND deleted=0
+            ORDER BY order_key ASC;
+            """, -1, &stmt, nil)
+            if rc0 != SQLITE_OK { db.dbgErr(dbp, "liveInstancesByBlock.prepare", rc0); return [] }
+            defer { sqlite3_finalize(stmt) }
+
+            sqlite3_bind_text(stmt, 1, blockID, -1, SQLITE_TRANSIENT)
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let instanceID = sqlite3_column_text(stmt, 0).flatMap { String(cString: $0) } ?? ""
+                let noteID = sqlite3_column_text(stmt, 1).flatMap { String(cString: $0) } ?? ""
+                if !instanceID.isEmpty && !noteID.isEmpty {
+                    out.append((instanceID, noteID))
+                }
+            }
+            return out
+        }
     }
 }

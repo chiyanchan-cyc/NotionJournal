@@ -33,7 +33,7 @@ final class CloudSyncEngine: ObservableObject {
             guard let self else { return }
 
             await DBDirtyQueueTable.withPullScopeAsync {
-                await self.coordinator.pullAll(forceSinceZero: true)
+                await self.coordinator.pullAll(forceSinceZero: false)
             }
             NotificationCenter.default.post(name: .njPullCompleted, object: nil)
 
@@ -44,7 +44,9 @@ final class CloudSyncEngine: ObservableObject {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                self?.schedulePush(debounceMs: 150)
+                Task { @MainActor [weak self] in
+                    self?.schedulePush(debounceMs: 150)
+                }
             }
 
             self.schedulePush(debounceMs: 150)

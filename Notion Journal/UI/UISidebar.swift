@@ -37,6 +37,7 @@ struct Sidebar: View {
     @State private var quickNoteEditorHeight: CGFloat = 180
     @State private var quickNotePickedPhotoItem: PhotosPickerItem? = nil
     @State private var quickNoteHandle = NJProtonEditorHandle()
+    @State private var showRecoverFromCloudConfirm = false
 
 
     private var notesInScope: [NJNote] {
@@ -113,95 +114,186 @@ struct Sidebar: View {
         }
     }
 
+    @ViewBuilder
+    private var scopeToolbarButton: some View {
+        Button {
+            openWeeklyReconstructed()
+        } label: {
+            Image(systemName: "scope")
+                .font(.system(size: 12, weight: .semibold))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color(UIColor.secondarySystemBackground))
+                )
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private var gpsToolbarButton: some View {
+        Button {
+            showGPSLogger = true
+        } label: {
+            Image(systemName: "location.circle")
+                .font(.system(size: 17, weight: .semibold))
+                .frame(width: 32, height: 32)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color(UIColor.secondarySystemBackground))
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("GPS Logger")
+    }
+
+    private var moduleToolbarItems: [ModuleToolbarButtons.Item] {
+        [
+            ModuleToolbarButtons.Item(id: "note", title: "Note", systemImage: "doc.text", isOn: store.selectedModule == .note, action: {
+                store.selectedModule = .note
+                selectedNoteID = nil
+            }),
+            ModuleToolbarButtons.Item(id: "goal", title: "Goal", systemImage: "target", isOn: store.selectedModule == .goal, action: {
+                store.selectedModule = .goal
+                selectedNoteID = nil
+            }),
+            ModuleToolbarButtons.Item(id: "outline", title: "Outline", systemImage: "list.bullet.rectangle", isOn: store.selectedModule == .outline, action: {
+                store.selectedModule = .outline
+                selectedNoteID = nil
+            }),
+            ModuleToolbarButtons.Item(id: "time", title: "Time", systemImage: "applewatch", isOn: store.selectedModule == .time, action: {
+                store.selectedModule = .time
+                selectedNoteID = nil
+            }),
+            ModuleToolbarButtons.Item(id: "planning", title: "Planning", systemImage: "calendar", isOn: false, action: {
+                openCalendarView()
+            })
+        ]
+    }
+
+    @ViewBuilder
+    private var sharedModuleRow: some View {
+        HStack {
+            ScrollView(.horizontal, showsIndicators: false) {
+                ModuleToolbarButtons(items: moduleToolbarItems)
+            }
+
+            if store.selectedModule == .note {
+                HStack(spacing: 6) {
+                    scopeToolbarButton
+                    NJGPSStatusBadge()
+                    if !isPhone {
+                        gpsToolbarButton
+                    }
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8)
+        .padding(.top, 4)
+        .padding(.bottom, 6)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-                if isPhone {
-                    HStack {
-                        ModuleToolbarButtons(
-                            items: [
-                                ModuleToolbarButtons.Item(id: "note", title: "Note", systemImage: "doc.text", isOn: store.selectedModule == .note, action: {
-                                    store.selectedModule = .note
-                                    selectedNoteID = nil
-                                }),
-                                ModuleToolbarButtons.Item(id: "goal", title: "Goal", systemImage: "target", isOn: store.selectedModule == .goal, action: {
-                                    store.selectedModule = .goal
-                                    selectedNoteID = nil
-                                }),
-                                ModuleToolbarButtons.Item(id: "outline", title: "Outline", systemImage: "list.bullet.rectangle", isOn: store.selectedModule == .outline, action: {
-                                    store.selectedModule = .outline
-                                    selectedNoteID = nil
-                                }),
-                                ModuleToolbarButtons.Item(id: "time", title: "Time", systemImage: "applewatch", isOn: store.selectedModule == .time, action: {
-                                    store.selectedModule = .time
-                                    selectedNoteID = nil
-                                }),
-                                ModuleToolbarButtons.Item(id: "planning", title: "Planning", systemImage: "calendar", isOn: false, action: {
-                                    openCalendarView()
-                                })
-                            ]
-                        )
-                        Button {
-                            openWeeklyReconstructed()
-                        } label: {
-                            Image(systemName: "scope")
-                                .font(.system(size: 12, weight: .semibold))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 6)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .fill(Color(UIColor.secondarySystemBackground))
-                                )
-                        }
-                        .buttonStyle(.plain)
-                        Spacer()
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.top, 4)
-                    .padding(.bottom, 6)
-                }
+                sharedModuleRow
                 if store.selectedModule == .note {
-                    HStack(spacing: 10) {
-                        Spacer()
+                    Group {
+                        if isPhone {
+                            HStack(spacing: 8) {
+                                Spacer()
 
-                        Button(action: createNote) { Image(systemName: "plus") }
-                            .disabled(store.selectedTabID == nil || store.selectedNotebookID == nil)
+                                Button(action: createNote) { Image(systemName: "plus") }
+                                    .disabled(store.selectedTabID == nil || store.selectedNotebookID == nil)
 
-                        addMenu()
+                                addMenu()
 
-                        Menu {
-                            Button("GPS Logger", systemImage: "location.circle") {
-                                showGPSLogger = true
+                                Menu {
+                                    Button("GPS Logger", systemImage: "location.circle") {
+                                        showGPSLogger = true
+                                    }
+
+                                    Button("Health Logger", systemImage: "heart.circle") {
+                                        showHealthLogger = true
+                                    }
+
+                                    Button("DB Debug", systemImage: "terminal") {
+                                        store.showDBDebugPanel = true
+                                    }
+
+                                    Button("Force Pull", systemImage: "arrow.down.circle") {
+                                        store.forcePullNow(forceSinceZero: true)
+                                    }
+
+                                    Button("Recover from Cloud", systemImage: "icloud.and.arrow.down") {
+                                        showRecoverFromCloudConfirm = true
+                                    }
+
+                                    Button("Export", systemImage: "square.and.arrow.up") {
+                                        showExport = true
+                                    }
+
+                                    Divider()
+
+                                    Button("Rebuild Tag Index", systemImage: "arrow.triangle.2.circlepath") {
+                                        NJLocalBLRunner(db: store.db).runDeriveBlockTagIndexAndDomainV1All(limit: 8000)
+                                    }
+                                } label: {
+                                    Image(systemName: "slider.horizontal.3")
+                                }
                             }
+                            .frame(height: 36)
+                        } else {
+                            HStack(spacing: 8) {
+                                Spacer(minLength: 0)
 
-                            Button("Health Logger", systemImage: "heart.circle") {
-                                showHealthLogger = true
+                                Button(action: createNote) { Image(systemName: "plus") }
+                                    .disabled(store.selectedTabID == nil || store.selectedNotebookID == nil)
+
+                                addMenu()
+
+                                Menu {
+                                    Button("GPS Logger", systemImage: "location.circle") {
+                                        showGPSLogger = true
+                                    }
+
+                                    Button("Health Logger", systemImage: "heart.circle") {
+                                        showHealthLogger = true
+                                    }
+
+                                    Button("DB Debug", systemImage: "terminal") {
+                                        store.showDBDebugPanel = true
+                                    }
+
+                                    Button("Force Pull", systemImage: "arrow.down.circle") {
+                                        store.forcePullNow(forceSinceZero: true)
+                                    }
+
+                                    Button("Recover from Cloud", systemImage: "icloud.and.arrow.down") {
+                                        showRecoverFromCloudConfirm = true
+                                    }
+
+                                    Button("Export", systemImage: "square.and.arrow.up") {
+                                        showExport = true
+                                    }
+
+                                    Divider()
+
+                                    Button("Rebuild Tag Index", systemImage: "arrow.triangle.2.circlepath") {
+                                        NJLocalBLRunner(db: store.db).runDeriveBlockTagIndexAndDomainV1All(limit: 8000)
+                                    }
+                                } label: {
+                                    Image(systemName: "slider.horizontal.3")
+                                }
                             }
-
-                            Button("DB Debug", systemImage: "terminal") {
-                                store.showDBDebugPanel = true
-                            }
-
-                            Button("Force Pull", systemImage: "arrow.down.circle") {
-                                store.forcePullNow(forceSinceZero: true)
-                            }
-
-                            Button("Export", systemImage: "square.and.arrow.up") {
-                                showExport = true
-                            }
-
-                            Divider()
-
-                            Button("Rebuild Tag Index", systemImage: "arrow.triangle.2.circlepath") {
-                                NJLocalBLRunner(db: store.db).runDeriveBlockTagIndexAndDomainV1All(limit: 8000)
-                            }
-                        } label: {
-                            Image(systemName: "slider.horizontal.3")
+                            .frame(height: 36)
                         }
                     }
                     .padding(.trailing, 10)
                     .padding(.top, 6)
                     .padding(.bottom, 6)
-                    .frame(height: 36)
                     .background(Color(UIColor.systemBackground))
                 }
 
@@ -342,51 +434,7 @@ struct Sidebar: View {
             .padding(.trailing, 14)
             .padding(.bottom, store.selectedModule == .note ? 64 : 14)
         }
-        .toolbar {
-            if !isPhone {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    HStack(spacing: 8) {
-                        ModuleToolbarButtons(
-                            items: [
-                                ModuleToolbarButtons.Item(id: "note", title: "Note", systemImage: "doc.text", isOn: store.selectedModule == .note, action: {
-                                    store.selectedModule = .note
-                                    selectedNoteID = nil
-                                }),
-                                ModuleToolbarButtons.Item(id: "goal", title: "Goal", systemImage: "target", isOn: store.selectedModule == .goal, action: {
-                                    store.selectedModule = .goal
-                                    selectedNoteID = nil
-                                }),
-                                ModuleToolbarButtons.Item(id: "outline", title: "Outline", systemImage: "list.bullet.rectangle", isOn: store.selectedModule == .outline, action: {
-                                    store.selectedModule = .outline
-                                    selectedNoteID = nil
-                                }),
-                                ModuleToolbarButtons.Item(id: "time", title: "Time", systemImage: "applewatch", isOn: store.selectedModule == .time, action: {
-                                    store.selectedModule = .time
-                                    selectedNoteID = nil
-                                }),
-                                ModuleToolbarButtons.Item(id: "planning", title: "Planning", systemImage: "calendar", isOn: false, action: {
-                                    openCalendarView()
-                                })
-                            ]
-                        )
-                        Button {
-                            openWeeklyReconstructed()
-                        } label: {
-                            Image(systemName: "scope")
-                                .font(.system(size: 12, weight: .semibold))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 6)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .fill(Color(UIColor.secondarySystemBackground))
-                                )
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-        }
-        .toolbar(isPhone ? .hidden : .automatic, for: .navigationBar)
+        .toolbar(.hidden, for: .navigationBar)
         .sheet(isPresented: $showQuickNoteSheet) {
             NavigationStack {
                 VStack(spacing: 12) {
@@ -557,18 +605,26 @@ struct Sidebar: View {
         .sheet(isPresented: $store.showDBDebugPanel) {
             NJDebugSQLConsole(db: store.db)
         }
+        .alert("Recover from Cloud?", isPresented: $showRecoverFromCloudConfirm) {
+            Button("Cancel", role: .cancel) { }
+            Button("Recover", role: .destructive) {
+                store.recoverFromCloudNow()
+            }
+        } message: {
+            Text("This resets only this Mac app's local CloudKit pull cursors and re-downloads notes and blocks from iCloud. It does not erase data from your iPhone or iPad.")
+        }
     }
 
     private func openWeeklyReconstructed() {
         if shouldUseWindowForReconstructed {
             #if os(macOS)
             if #available(macOS 13.0, *) {
-                openWindow(id: "reconstructed-weekly")
+                openWindow(id: "reconstructed-weekly", value: "weekly")
             } else {
                 showWeeklyReconstructed = true
             }
             #else
-            openWindow(id: "reconstructed-weekly")
+            openWindow(id: "reconstructed-weekly", value: "weekly")
             #endif
         } else {
             showWeeklyReconstructed = true

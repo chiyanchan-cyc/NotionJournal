@@ -42,6 +42,12 @@ struct NJOutlineReconstructedRow: Identifiable, Hashable {
     let title: String
 }
 
+struct NJOutlineBlockRef: Identifiable, Hashable {
+    var id: String { blockID }
+    let blockID: String
+    var extraDomain: String
+}
+
 struct NJOutlineFilterRule: Identifiable, Hashable {
     enum Field: String, CaseIterable, Hashable {
         case domain = "domain"

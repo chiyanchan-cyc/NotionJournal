@@ -5,8 +5,10 @@ struct NJOutlineSidebarView: View {
     @ObservedObject var outline: NJOutlineStore
 
     @State private var showCreateOutline = false
+    @State private var showRenameOutline = false
     @State private var outlineTitleDraft = ""
     @State private var outlineCategoryDraft = ""
+    @State private var editingOutlineID: String? = nil
 
     private let mainTabs: [String] = ["ME", "ZZ", "MM"]
     private let railWidth: CGFloat = 72
@@ -14,11 +16,11 @@ struct NJOutlineSidebarView: View {
     private func subTabs(for main: String) -> [String] {
         switch main.uppercased() {
         case "ME":
-            return ["ALL", "Planner", "Lifelong"]
+            return ["ALL", "Planner", "Lifelong", "Brainstorm"]
         case "ZZ":
-            return ["ALL", "EDU", "ADHD"]
+            return ["ALL", "EDU", "ADHD", "Brainstorm"]
         case "MM":
-            return ["ALL"]
+            return ["ALL", "Brainstorm"]
         default:
             return ["ALL"]
         }
@@ -84,6 +86,30 @@ struct NJOutlineSidebarView: View {
                     }
                     ToolbarItem(placement: .confirmationAction) {
                         Button("Create") { createOutline() }
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showRenameOutline) {
+            NavigationStack {
+                Form {
+                    Section("Outline Name") {
+                        TextField("Title", text: $outlineTitleDraft)
+                    }
+                }
+                .navigationTitle("Rename Outline")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { showRenameOutline = false }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Save") {
+                            guard let id = editingOutlineID else { return }
+                            outline.updateOutlineTitle(outlineID: id, title: outlineTitleDraft)
+                            outline.reloadOutlines(category: nil)
+                            store.sync.schedulePush(debounceMs: 0)
+                            showRenameOutline = false
+                        }
                     }
                 }
             }
@@ -207,6 +233,11 @@ struct NJOutlineSidebarView: View {
                     }
                     .buttonStyle(.plain)
                     .tag(item.outlineID)
+                    .onTapGesture(count: 2) {
+                        editingOutlineID = item.outlineID
+                        outlineTitleDraft = item.title
+                        showRenameOutline = true
+                    }
                 }
             }
         }

@@ -51,24 +51,45 @@ struct NJComplicationProvider: TimelineProvider {
 @available(watchOS 10.0, *)
 struct NJComplicationWidgetView: View {
     let entry: NJComplicationEntry
+    @Environment(\.widgetFamily) private var family
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Time")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            Text("Today \(entry.todayCount)")
-                .font(.headline)
-            HStack(spacing: 8) {
-                Button(intent: quickIntent(.piano, title: "Piano Practice")) {
-                    Image(systemName: "pianokeys")
+        Group {
+            switch family {
+            case .accessoryInline:
+                Text("Time \(entry.todayCount)")
+            case .accessoryCircular:
+                ZStack {
+                    Circle()
+                        .fill(.tertiary)
+                    VStack(spacing: 1) {
+                        Text("Time")
+                            .font(.system(size: 7, weight: .medium))
+                        Text("\(entry.todayCount)")
+                            .font(.system(size: 15, weight: .bold))
+                    }
                 }
-                .buttonStyle(.borderless)
+            case .accessoryRectangular:
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Time")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text("Today \(entry.todayCount)")
+                        .font(.headline)
+                    HStack(spacing: 8) {
+                        Button(intent: quickIntent(.piano, title: "Piano Practice")) {
+                            Image(systemName: "pianokeys")
+                        }
+                        .buttonStyle(.borderless)
 
-                Button(intent: quickIntent(.exercise, title: "Exercise")) {
-                    Image(systemName: "figure.run")
+                        Button(intent: quickIntent(.exercise, title: "Exercise")) {
+                            Image(systemName: "figure.run")
+                        }
+                        .buttonStyle(.borderless)
+                    }
                 }
-                .buttonStyle(.borderless)
+            default:
+                Text("Time \(entry.todayCount)")
             }
         }
         .containerBackground(.fill.tertiary, for: .widget)

@@ -16,6 +16,7 @@ struct NJNoteEditorContainerView: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) var dismiss
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.scenePhase) private var scenePhase
     let noteID: NJNoteID
 
     @StateObject var persistence = NJNoteEditorContainerPersistence()
@@ -39,6 +40,7 @@ struct NJNoteEditorContainerView: View {
     @State private var showClipboardInbox = false
     @State private var pickedPhotoItem: PhotosPickerItem? = nil
     @State private var showGoalQuickPick = false
+    @State private var showRemoteAppliedHint = false
 
     private struct NJGoalSheetItem: Identifiable {
         let id = UUID()
@@ -61,6 +63,9 @@ struct NJNoteEditorContainerView: View {
                 TextField("Title", text: $persistence.title)
                     .font(.title2)
                     .textFieldStyle(.roundedBorder)
+                    .onChange(of: persistence.title) { _ in
+                        persistence.scheduleNoteMetaCommit()
+                    }
             }
             
             .padding(.horizontal, 12)
@@ -142,6 +147,11 @@ struct NJNoteEditorContainerView: View {
                         )
                     }
 
+                    let onSaveCreatedAtMs: (Int64) -> Void = { newMs in
+                        persistence.forceEndEditingAndCommitNow(id)
+                        persistence.updateBlockCreatedAt(id, createdAtMs: newMs)
+                    }
+
                     let rel = b.clipPDFRel.trimmingCharacters(in: .whitespacesAndNewlines)
 
                     NJBlockHostView(
@@ -149,6 +159,7 @@ struct NJNoteEditorContainerView: View {
                         createdAtMs: b.createdAtMs,
                         domainPreview: b.domainPreview,
                         onEditTags: nil,
+                        onSaveCreatedAtMs: onSaveCreatedAtMs,
                         goalPreview: b.goalPreview,
                         onAddGoal: {
                             lastGoalBlockID = b.blockID
@@ -203,15 +214,18 @@ struct NJNoteEditorContainerView: View {
 //            .allowsHitTesting(false)
 //        )
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if let h = focusedHandle() {
-                NJProtonFloatingFormatBar(
-                    handle: h,
-                    pickedPhotoItem: $pickedPhotoItem,
-                    currentHandle: { focusedHandle() }
-                )
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
-                    .background(.ultraThinMaterial)
+            VStack(spacing: 0) {
+                statusStrip()
+                if let h = focusedHandle() {
+                    NJProtonFloatingFormatBar(
+                        handle: h,
+                        pickedPhotoItem: $pickedPhotoItem,
+                        currentHandle: { focusedHandle() }
+                    )
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
+                        .background(.ultraThinMaterial)
+                }
             }
         }
         .toolbar {
@@ -304,15 +318,28 @@ struct NJNoteEditorContainerView: View {
             persistence.reload(makeHandle: makeWiredHandle)
         }
         .onReceive(NotificationCenter.default.publisher(for: .njForceReloadNote)) { _ in
-            if let id = persistence.focusedBlockID {
-                persistence.forceEndEditingAndCommitNow(id)
-            }
-            persistence.reload(makeHandle: makeWiredHandle)
+            applyRemoteRefreshIfPossible(forcePending: true)
+        }
+        .onChange(of: persistence.hasPendingNoteMetaChanges) { _, _ in
+            applyRemoteRefreshIfPossible(forcePending: false)
         }
         .onDisappear {
-            if let id = persistence.focusedBlockID {
-                persistence.forceEndEditingAndCommitNow(id)
+            persistence.commitNoteMetaNow()
+            persistence.forceEndEditingAndCommitAllDirtyNow()
+        }
+        .onChange(of: scenePhase) { phase in
+            if phase == .inactive || phase == .background {
+                persistence.commitNoteMetaNow()
+                persistence.forceEndEditingAndCommitAllDirtyNow()
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
+            persistence.commitNoteMetaNow()
+            persistence.forceEndEditingAndCommitAllDirtyNow()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+            persistence.commitNoteMetaNow()
+            persistence.forceEndEditingAndCommitAllDirtyNow()
         }
     }
 
@@ -402,6 +429,54 @@ struct NJNoteEditorContainerView: View {
         return persistence.blocks.first(where: { $0.id == id })?.protonHandle
     }
 
+    private func statusStrip() -> some View {
+        let (text, color) = currentStatus()
+        return HStack {
+            Text(text)
+                .font(.caption2)
+                .foregroundStyle(color)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 22)
+        .background(.ultraThinMaterial)
+    }
+
+    private func currentStatus() -> (String, Color) {
+        if persistence.hasPendingRemoteRefresh {
+            return ("Remote updates pending. They will apply after your local edits finish.", .orange)
+        }
+        if showRemoteAppliedHint {
+            return ("Remote updates applied.", .green)
+        }
+        if persistence.hasActivelyEditingBlock() || persistence.blocks.contains(where: { $0.isDirty }) {
+            return ("You are editing. Local changes are being saved and synced.", .secondary)
+        }
+        return ("", .clear)
+    }
+
+    private func applyRemoteRefreshIfPossible(forcePending: Bool) {
+        if forcePending {
+            persistence.markPendingRemoteRefresh()
+        }
+        guard persistence.hasPendingRemoteRefresh else { return }
+        if !persistence.hasRemoteContentUpdateAvailable() {
+            persistence.clearPendingRemoteRefresh()
+            return
+        }
+        let hasPendingLocalEdits = persistence.blocks.contains { $0.isDirty }
+        if hasPendingLocalEdits || persistence.hasActivelyEditingBlock() || persistence.hasPendingNoteMetaChanges {
+            return
+        }
+        persistence.reload(makeHandle: makeWiredHandle)
+        showRemoteAppliedHint = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            showRemoteAppliedHint = false
+        }
+    }
+
     private func mergeTagJSONWithInherited(json: String, inheritedTags: [String]) -> String {
         let base: [String] = {
             guard let data = json.data(using: .utf8),
@@ -436,6 +511,12 @@ struct NJNoteEditorContainerView: View {
                     }
                     if !persistence.blocks[i].attr.isEqual(to: v) {
                         persistence.blocks[i].attr = v
+                        persistence.blocks[i].sel = clampSelectionRange(
+                            persistence.blocks[i].sel,
+                            textLength: v.length
+                        )
+                        persistence.markDirty(id)
+                        persistence.scheduleCommit(id)
                     }
                 }
             }
@@ -453,12 +534,22 @@ struct NJNoteEditorContainerView: View {
                         if let prev { persistence.forceEndEditingAndCommitNow(prev) }
                         persistence.focusedBlockID = persistence.blocks[i].id
                     }
-                    persistence.blocks[i].sel = v
+                    persistence.blocks[i].sel = clampSelectionRange(v, textLength: persistence.blocks[i].attr.length)
                 }
             }
         )
     }
 
+}
+
+private func clampSelectionRange(_ range: NSRange, textLength: Int) -> NSRange {
+    let safeLen = max(0, textLength)
+    if safeLen == 0 { return NSRange(location: 0, length: 0) }
+
+    let start = min(max(0, range.location), safeLen)
+    let remaining = max(0, safeLen - start)
+    let len = min(max(0, range.length), remaining)
+    return NSRange(location: start, length: len)
 }
 
 private extension NJNoteEditorContainerView {

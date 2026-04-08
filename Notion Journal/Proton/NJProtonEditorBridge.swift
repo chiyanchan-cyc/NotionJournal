@@ -14,6 +14,14 @@ private var NJKeyCommandsOriginalIMP: IMP?
 
 private var NJEditorViewHandleKey: UInt8 = 0
 
+private func NJCanonicalBodyFont(size: CGFloat = 17) -> UIFont {
+    UIFont.systemFont(ofSize: size, weight: .regular)
+}
+
+private func NJHasExplicitBoldTrait(_ font: UIFont) -> Bool {
+    font.fontDescriptor.symbolicTraits.contains(.traitBold)
+}
+
 private extension EditorView {
     var njProtonHandle: NJProtonEditorHandle? {
         get { objc_getAssociatedObject(self, &NJEditorViewHandleKey) as? NJProtonEditorHandle }
@@ -26,22 +34,14 @@ private func NJStandardizeFontFamily(_ font: UIFont) -> UIFont {
     if fd.symbolicTraits.contains(.traitMonoSpace) { return font }
 
     let size = font.pointSize
-
-    let wRaw = (fd.object(forKey: .traits) as? [UIFontDescriptor.TraitKey: Any])?[.weight] as? CGFloat
-    let w0 = UIFont.Weight(wRaw ?? UIFont.Weight.regular.rawValue)
-
-    let hadBoldTrait = fd.symbolicTraits.contains(.traitBold)
+    let hadBoldTrait = NJHasExplicitBoldTrait(font)
     let hadItalic = fd.symbolicTraits.contains(.traitItalic)
+    let base = NJCanonicalBodyFont(size: size)
 
-    let isBold = hadBoldTrait || (w0 >= .semibold)
-
-    let w: UIFont.Weight = isBold ? (w0 < .semibold ? .semibold : w0) : .light
-    let base = UIFont.systemFont(ofSize: size, weight: w)
-
-    var keep: UIFontDescriptor.SymbolicTraits = []
+    var keep = base.fontDescriptor.symbolicTraits
+    if hadBoldTrait { keep.insert(.traitBold) }
     if hadItalic { keep.insert(.traitItalic) }
 
-    if keep.isEmpty { return base }
     if let nfd = base.fontDescriptor.withSymbolicTraits(keep) {
         return UIFont(descriptor: nfd, size: size)
     }
@@ -263,7 +263,7 @@ private func NJInstallTextViewCanPerformActionHook(_ tv: UITextView) {
 
 final class NJProtonListFormattingProvider: EditorListFormattingProvider {
     let listLineFormatting = LineFormatting(indentation: 24, spacingBefore: 2, spacingAfter: 2)
-    private let font: UIFont = .systemFont(ofSize: 17, weight: .light)
+    private let font: UIFont = NJCanonicalBodyFont()
 
     func listLineMarkerFor(editor: EditorView, index: Int, level: Int, previousLevel: Int, attributeValue: Any?) -> ListLineMarker {
         let kind: NJListKind = {
@@ -1292,6 +1292,7 @@ final class NJProtonEditorHandle {
                 view.onContentCommit = onCollapsibleContentChange
                 view.onCollapseToggle = { onCollapsibleToggle?(attachmentID) }
                 let att = Attachment(view, size: .fullWidth)
+                view.boundsObserver = att
                 att.selectOnTap = false
                 att.selectBeforeDelete = false
                 return att.string
@@ -1924,6 +1925,7 @@ final class NJProtonEditorHandle {
             self?.replaceCollapsibleAttachment(attachmentID: attachmentID)
         }
         let att = Attachment(view, size: .fullWidth)
+        view.boundsObserver = att
         att.selectOnTap = false
         att.selectBeforeDelete = false
         return att
@@ -2399,7 +2401,7 @@ final class NJProtonEditorHandle {
         let r = tv.selectedRange
 
         let div = NSAttributedString(string: "\n──────────\n", attributes: [
-            .font: UIFont.systemFont(ofSize: 17, weight: .light),
+            .font: NJCanonicalBodyFont(),
             .foregroundColor: UIColor.secondaryLabel
         ])
 
@@ -2418,7 +2420,7 @@ final class NJProtonEditorHandle {
         let m = NSMutableAttributedString(attributedString: tv.attributedText)
         let r = tv.selectedRange
         let box = NSAttributedString(string: "☐ ", attributes: [
-            .font: UIFont.systemFont(ofSize: 17, weight: .light),
+            .font: NJCanonicalBodyFont(),
             .foregroundColor: UIColor.label
         ])
 
@@ -2438,7 +2440,7 @@ final class NJProtonEditorHandle {
         df.dateFormat = "yyyy-MM-dd"
         let s = df.string(from: Date())
         let stamp = NSAttributedString(string: s, attributes: [
-            .font: UIFont.systemFont(ofSize: 17, weight: .light),
+            .font: NJCanonicalBodyFont(),
             .foregroundColor: UIColor.secondaryLabel
         ])
 
@@ -2479,7 +2481,7 @@ final class NJProtonEditorHandle {
         let r = tv.selectedRange
 
         let attrs: [NSAttributedString.Key: Any] = [
-            .font: (tv.typingAttributes[.font] as? UIFont) ?? UIFont.systemFont(ofSize: 17, weight: .light),
+            .font: (tv.typingAttributes[.font] as? UIFont) ?? NJCanonicalBodyFont(),
             .foregroundColor: (tv.typingAttributes[.foregroundColor] as? UIColor) ?? UIColor.label
         ]
 
@@ -2501,23 +2503,15 @@ final class NJProtonEditorHandle {
     private func toggleBoldWeight() {
         guard let tv = activeTextView() else { return }
 
-        func weightOf(_ font: UIFont) -> UIFont.Weight {
-            let wRaw = (font.fontDescriptor.object(forKey: .traits) as? [UIFontDescriptor.TraitKey: Any])?[.weight] as? CGFloat
-            return UIFont.Weight(wRaw ?? UIFont.Weight.regular.rawValue)
-        }
-
         func applyBold(_ on: Bool, _ font: UIFont) -> UIFont {
             let size = font.pointSize
             let fd = font.fontDescriptor
             let hadItalic = fd.symbolicTraits.contains(.traitItalic)
-
-            let w0 = weightOf(font)
-            let w1: UIFont.Weight = on ? (w0 < .semibold ? .semibold : w0) : .light
-
-            let base = UIFont.systemFont(ofSize: size, weight: w1)
-
-            if !hadItalic { return base }
-            if let nfd = base.fontDescriptor.withSymbolicTraits([.traitItalic]) {
+            let base = NJCanonicalBodyFont(size: size)
+            var traits = base.fontDescriptor.symbolicTraits
+            if on { traits.insert(.traitBold) }
+            if hadItalic { traits.insert(.traitItalic) }
+            if let nfd = base.fontDescriptor.withSymbolicTraits(traits) {
                 return UIFont(descriptor: nfd, size: size)
             }
             return base
@@ -2525,21 +2519,21 @@ final class NJProtonEditorHandle {
 
         let r = tv.selectedRange
         if r.length == 0 {
-            let old = (tv.typingAttributes[.font] as? UIFont) ?? UIFont.systemFont(ofSize: 17, weight: .light)
-            let isBoldNow = old.fontDescriptor.symbolicTraits.contains(.traitBold) || (weightOf(old) >= .semibold)
+            let old = (tv.typingAttributes[.font] as? UIFont) ?? NJCanonicalBodyFont()
+            let isBoldNow = NJHasExplicitBoldTrait(old)
             tv.typingAttributes[.font] = applyBold(!isBoldNow, old)
             return
         }
 
         let storage = tv.textStorage
         let isBoldNow: Bool = {
-            let old = (storage.attribute(.font, at: r.location, effectiveRange: nil) as? UIFont) ?? UIFont.systemFont(ofSize: 17, weight: .light)
-            return old.fontDescriptor.symbolicTraits.contains(.traitBold) || (weightOf(old) >= .semibold)
+            let old = (storage.attribute(.font, at: r.location, effectiveRange: nil) as? UIFont) ?? NJCanonicalBodyFont()
+            return NJHasExplicitBoldTrait(old)
         }()
 
         storage.beginEditing()
         storage.enumerateAttribute(.font, in: r, options: []) { v, range, _ in
-            let old = (v as? UIFont) ?? UIFont.systemFont(ofSize: 17, weight: .light)
+            let old = (v as? UIFont) ?? NJCanonicalBodyFont()
             let nf = applyBold(!isBoldNow, old)
             storage.addAttribute(.font, value: nf, range: range)
         }
@@ -2561,7 +2555,7 @@ final class NJProtonEditorHandle {
 
         let r = tv.selectedRange
         if r.length == 0 {
-            let old = (tv.typingAttributes[.font] as? UIFont) ?? UIFont.systemFont(ofSize: 17, weight: .light)
+            let old = (tv.typingAttributes[.font] as? UIFont) ?? NJCanonicalBodyFont()
             let newSize = max(8, min(48, old.pointSize + delta))
             let newFont = UIFont(descriptor: old.fontDescriptor, size: newSize)
             tv.typingAttributes[.font] = newFont
@@ -2570,7 +2564,7 @@ final class NJProtonEditorHandle {
 
         tv.textStorage.beginEditing()
         tv.textStorage.enumerateAttribute(.font, in: r, options: []) { value, range, _ in
-            let old = (value as? UIFont) ?? UIFont.systemFont(ofSize: 17, weight: .light)
+            let old = (value as? UIFont) ?? NJCanonicalBodyFont()
             let newSize = max(8, min(48, old.pointSize + delta))
             let newFont = UIFont(descriptor: old.fontDescriptor, size: newSize)
             tv.textStorage.addAttribute(.font, value: newFont, range: range)
@@ -2585,7 +2579,7 @@ final class NJProtonEditorHandle {
 
         let r = tv.selectedRange
         if r.length == 0 {
-            let old = (tv.typingAttributes[.font] as? UIFont) ?? UIFont.systemFont(ofSize: 17, weight: .light)
+            let old = (tv.typingAttributes[.font] as? UIFont) ?? NJCanonicalBodyFont()
             let fd = old.fontDescriptor
             let has = fd.symbolicTraits.contains(trait)
             var traits = fd.symbolicTraits
@@ -2598,7 +2592,7 @@ final class NJProtonEditorHandle {
 
         tv.textStorage.beginEditing()
         tv.textStorage.enumerateAttribute(.font, in: r, options: []) { value, range, _ in
-            let old = (value as? UIFont) ?? UIFont.systemFont(ofSize: 17, weight: .light)
+            let old = (value as? UIFont) ?? NJCanonicalBodyFont()
             let fd = old.fontDescriptor
             let has = fd.symbolicTraits.contains(trait)
             var traits = fd.symbolicTraits
@@ -2750,7 +2744,7 @@ final class NJProtonEditorHandle {
         guard textView != nil else { return }
         guard let editor else { return }
 
-        let baseFont = UIFont.systemFont(ofSize: 17, weight: .light)
+        let baseFont = NJCanonicalBodyFont()
 
         func apply(_ a: NSAttributedString) {
             let fixedFonts = NJApplyBaseFontWhereMissing(a, baseFont: baseFont)
@@ -3096,7 +3090,7 @@ struct NJProtonEditorView: UIViewRepresentable {
         if let f = ta[.font] as? UIFont {
             ta[.font] = NJStandardizeFontFamily(f)
         } else {
-            ta[.font] = UIFont.systemFont(ofSize: 17, weight: .light)
+            ta[.font] = NJCanonicalBodyFont()
         }
 
         if ta[.foregroundColor] == nil {

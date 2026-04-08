@@ -158,12 +158,148 @@ extension DBNoteRepository {
         }
     }
 
+    func exportBlockRowsByCreatedDate(fromDate: Date, toDate: Date, tagFilter: String?) throws -> [NJBlockExporter.Row] {
+        let tz = TimeZone(identifier: "Asia/Hong_Kong") ?? .current
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = tz
+
+        let start = cal.startOfDay(for: fromDate)
+        let endExclusive = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: toDate)) ?? toDate
+
+        let startMs = Int64(start.timeIntervalSince1970 * 1000.0)
+        let endMs = Int64(endExclusive.timeIntervalSince1970 * 1000.0)
+
+        let tokens = Self.parseFilterTokens(tagFilter)
+        var tagWhere = ""
+        var binders: [(OpaquePointer?) -> Void] = []
+
+        binders.append({ stmt in sqlite3_bind_int64(stmt, 1, startMs) })
+        binders.append({ stmt in sqlite3_bind_int64(stmt, 2, endMs) })
+
+        if !tokens.isEmpty {
+            var parts: [String] = []
+            var idx = 3
+
+            for rawTok in tokens {
+                let tok = rawTok.lowercased()
+                if tok.hasSuffix(".*") {
+                    let p = String(tok.dropLast(2))
+                    let like = p.isEmpty ? "%" : "\(p).%"
+                    parts.append("LOWER(t.tag) LIKE ?")
+                    let j = idx
+                    binders.append({ stmt in sqlite3_bind_text(stmt, Int32(j), like, -1, SQLITE_TRANSIENT) })
+                    idx += 1
+                } else if tok.hasSuffix(".") {
+                    let like = "\(tok)%"
+                    parts.append("LOWER(t.tag) LIKE ?")
+                    let j = idx
+                    binders.append({ stmt in sqlite3_bind_text(stmt, Int32(j), like, -1, SQLITE_TRANSIENT) })
+                    idx += 1
+                } else if tok.contains(".") {
+                    parts.append("(LOWER(t.tag) = ? OR LOWER(t.tag) LIKE ? OR LOWER(t.tag) LIKE ? OR LOWER(t.tag) LIKE ?)")
+
+                    let j0 = idx
+                    binders.append({ stmt in sqlite3_bind_text(stmt, Int32(j0), tok, -1, SQLITE_TRANSIENT) })
+                    idx += 1
+
+                    let j1 = idx
+                    binders.append({ stmt in sqlite3_bind_text(stmt, Int32(j1), "\(tok).%", -1, SQLITE_TRANSIENT) })
+                    idx += 1
+
+                    let j2 = idx
+                    binders.append({ stmt in sqlite3_bind_text(stmt, Int32(j2), "%.\(tok)", -1, SQLITE_TRANSIENT) })
+                    idx += 1
+
+                    let j3 = idx
+                    binders.append({ stmt in sqlite3_bind_text(stmt, Int32(j3), "%.\(tok).%", -1, SQLITE_TRANSIENT) })
+                    idx += 1
+                } else {
+                    parts.append("LOWER(t.tag) = ?")
+                    let j = idx
+                    binders.append({ stmt in sqlite3_bind_text(stmt, Int32(j), tok, -1, SQLITE_TRANSIENT) })
+                    idx += 1
+                }
+            }
+
+            tagWhere = """
+            AND EXISTS (
+                SELECT 1
+                FROM nj_block_tag t
+                WHERE t.block_id = b.block_id
+                  AND (\(parts.joined(separator: " OR ")))
+            )
+            """
+        }
+
+        let sql = """
+        SELECT
+            COALESCE(nb.note_id, '') AS note_id,
+            COALESCE(n.tab_domain, '') AS note_domain,
+            b.block_id AS block_id,
+            COALESCE(b.tag_json, '') AS block_domain_json,
+            COALESCE(b.payload_json, '') AS payload_json,
+            b.created_at_ms AS ts_ms,
+            COALESCE((SELECT GROUP_CONCAT(t2.tag, '|') FROM nj_block_tag t2 WHERE t2.block_id = b.block_id), '') AS tags_csv
+        FROM nj_block b
+        LEFT JOIN (
+            SELECT block_id, note_id, MIN(order_key) AS min_order
+            FROM nj_note_block
+            WHERE deleted = 0
+            GROUP BY block_id
+        ) nb ON nb.block_id = b.block_id
+        LEFT JOIN nj_note n ON n.note_id = nb.note_id AND n.deleted = 0
+        WHERE b.deleted = 0
+          AND b.created_at_ms >= ?
+          AND b.created_at_ms < ?
+          \(tagWhere)
+        ORDER BY b.created_at_ms ASC,
+                 nb.min_order ASC;
+        """
+
+        return db.withDB { dbp in
+            var out: [NJBlockExporter.Row] = []
+            var stmt: OpaquePointer?
+            let rc = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
+            if rc != SQLITE_OK { return out }
+            defer { sqlite3_finalize(stmt) }
+
+            for f in binders { f(stmt) }
+
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let noteID = sqlite3_column_text(stmt, 0).flatMap { String(cString: $0) } ?? ""
+                let noteDomain = sqlite3_column_text(stmt, 1).flatMap { String(cString: $0) } ?? ""
+                let blockID = sqlite3_column_text(stmt, 2).flatMap { String(cString: $0) } ?? ""
+                let tagJSON = sqlite3_column_text(stmt, 3).flatMap { String(cString: $0) } ?? ""
+                let payloadJSON = sqlite3_column_text(stmt, 4).flatMap { String(cString: $0) } ?? ""
+                let tsMs = sqlite3_column_int64(stmt, 5)
+                let tagsCSV = sqlite3_column_text(stmt, 6).flatMap { String(cString: $0) } ?? ""
+                let blockTags = tagsCSV.isEmpty ? [] : tagsCSV.split(separator: "|").map { String($0) }
+
+                out.append(NJBlockExporter.Row(
+                    blockID: blockID,
+                    noteID: noteID,
+                    noteDomain: noteDomain,
+                    tagJSON: tagJSON,
+                    tsMs: tsMs,
+                    payloadJSON: payloadJSON,
+                    blockTags: blockTags
+                ))
+            }
+
+            return out
+        }
+    }
+
     private static func parseFilterTokens(_ s: String?) -> [String] {
         let raw = (s ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if raw.isEmpty { return [] }
         return raw
             .split { $0 == "," || $0 == " " || $0 == "\n" || $0 == "\t" }
-            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .map {
+                String($0)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+            }
             .filter { !$0.isEmpty && $0 != "#" }
     }
 }

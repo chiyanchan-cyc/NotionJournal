@@ -267,6 +267,86 @@ final class DBBlockTable {
         }
     }
 
+    func countBlocksForTag(_ tag: String) -> Int {
+        let trimmed = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return 0 }
+        let alternate = trimmed.hasPrefix("#") ? String(trimmed.dropFirst()) : "#\(trimmed)"
+        return db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT COUNT(DISTINCT b.block_id)
+            FROM nj_block_tag t
+            JOIN nj_block b
+              ON b.block_id = t.block_id
+            WHERE (lower(t.tag) = lower(?) OR lower(t.tag) = lower(?))
+              AND b.deleted = 0;
+            """
+            let rc = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
+            if rc != SQLITE_OK { return 0 }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, trimmed, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 2, alternate, -1, SQLITE_TRANSIENT)
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                return Int(sqlite3_column_int64(stmt, 0))
+            }
+            return 0
+        }
+    }
+
+    func latestBlockIDForTag(_ tag: String) -> String {
+        let trimmed = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return "" }
+        let alternate = trimmed.hasPrefix("#") ? String(trimmed.dropFirst()) : "#\(trimmed)"
+        return db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sqlIndexed = """
+            SELECT b.block_id
+            FROM nj_block_tag t
+            JOIN nj_block b
+              ON b.block_id = t.block_id
+            WHERE (lower(t.tag) = lower(?) OR lower(t.tag) = lower(?))
+              AND b.deleted = 0
+            ORDER BY b.created_at_ms DESC, b.updated_at_ms DESC
+            LIMIT 1;
+            """
+            let rc = sqlite3_prepare_v2(dbp, sqlIndexed, -1, &stmt, nil)
+            if rc != SQLITE_OK { return "" }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, trimmed, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 2, alternate, -1, SQLITE_TRANSIENT)
+            if sqlite3_step(stmt) == SQLITE_ROW,
+               let c = sqlite3_column_text(stmt, 0) {
+                return String(cString: c)
+            }
+
+            sqlite3_finalize(stmt)
+            stmt = nil
+
+            let sqlFallback = """
+            SELECT b.block_id
+            FROM nj_block b
+            WHERE b.deleted = 0
+              AND (
+                lower(COALESCE(b.tag_json, '')) LIKE lower(?)
+                OR lower(COALESCE(b.tag_json, '')) LIKE lower(?)
+              )
+            ORDER BY b.created_at_ms DESC, b.updated_at_ms DESC
+            LIMIT 1;
+            """
+            let rcFallback = sqlite3_prepare_v2(dbp, sqlFallback, -1, &stmt, nil)
+            if rcFallback != SQLITE_OK { return "" }
+            let p1 = "%\"\(trimmed)\"%"
+            let p2 = "%\"\(alternate)\"%"
+            sqlite3_bind_text(stmt, 1, p1, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 2, p2, -1, SQLITE_TRANSIENT)
+            if sqlite3_step(stmt) == SQLITE_ROW,
+               let c = sqlite3_column_text(stmt, 0) {
+                return String(cString: c)
+            }
+            return ""
+        }
+    }
+
     func markBlockDeleted(blockID: String) {
         let now = DBNoteRepository.nowMs()
         db.withDB { dbp in
@@ -290,6 +370,73 @@ final class DBBlockTable {
         enqueueDirty(entity: "block", entityID: blockID, op: "upsert", updatedAtMs: now)
     }
 
+    func repairFutureUpdatedAtMsForAllBlocks(nowMs: Int64, skewMs: Int64 = 5 * 60 * 1000) -> Int {
+        var repaired: [String] = []
+
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let selectSQL = """
+            SELECT block_id
+            FROM nj_block
+            WHERE deleted = 0
+              AND updated_at_ms > ?;
+            """
+            if sqlite3_prepare_v2(dbp, selectSQL, -1, &stmt, nil) == SQLITE_OK {
+                sqlite3_bind_int64(stmt, 1, nowMs + skewMs)
+                while sqlite3_step(stmt) == SQLITE_ROW {
+                    if let c = sqlite3_column_text(stmt, 0) {
+                        repaired.append(String(cString: c))
+                    }
+                }
+            }
+            sqlite3_finalize(stmt)
+
+            guard !repaired.isEmpty else { return }
+
+            var updateStmt: OpaquePointer?
+            let updateSQL = """
+            UPDATE nj_block
+            SET updated_at_ms = ?, dirty_bl = 1
+            WHERE block_id = ?;
+            """
+            if sqlite3_prepare_v2(dbp, updateSQL, -1, &updateStmt, nil) == SQLITE_OK {
+                for blockID in repaired {
+                    sqlite3_reset(updateStmt)
+                    sqlite3_clear_bindings(updateStmt)
+                    sqlite3_bind_int64(updateStmt, 1, nowMs)
+                    sqlite3_bind_text(updateStmt, 2, blockID, -1, SQLITE_TRANSIENT)
+                    _ = sqlite3_step(updateStmt)
+                }
+            }
+            sqlite3_finalize(updateStmt)
+        }
+
+        for blockID in repaired {
+            enqueueDirty(entity: "block", entityID: blockID, op: "upsert", updatedAtMs: nowMs)
+        }
+
+        return repaired.count
+    }
+
+    func hasFutureUpdatedAtBlocks(nowMs: Int64, skewMs: Int64 = 5 * 60 * 1000) -> Bool {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT 1
+            FROM nj_block
+            WHERE deleted = 0
+              AND updated_at_ms > ?
+            LIMIT 1;
+            """
+            let rc = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
+            if rc != SQLITE_OK { return false }
+            defer { sqlite3_finalize(stmt) }
+
+            sqlite3_bind_int64(stmt, 1, nowMs + skewMs)
+            return sqlite3_step(stmt) == SQLITE_ROW
+        }
+    }
+
     func updateBlockPayloadJSON(blockID: String, payloadJSON: String, updatedAtMs: Int64) {
         db.withDB { dbp in
             var stmt: OpaquePointer?
@@ -310,6 +457,30 @@ final class DBBlockTable {
 
             let rc2 = sqlite3_step(stmt)
             if rc2 != SQLITE_DONE { db.dbgErr(dbp, "updateBlockPayloadJSON.step", rc2) }
+        }
+        enqueueDirty(entity: "block", entityID: blockID, op: "upsert", updatedAtMs: updatedAtMs)
+    }
+
+    func updateBlockCreatedAtMs(blockID: String, createdAtMs: Int64, updatedAtMs: Int64) {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let rc = sqlite3_prepare_v2(dbp, """
+            UPDATE nj_block
+            SET created_at_ms=?,
+                updated_at_ms=?,
+                dirty_bl=1,
+                deleted=0
+            WHERE block_id=?;
+            """, -1, &stmt, nil)
+            if rc != SQLITE_OK { db.dbgErr(dbp, "updateBlockCreatedAtMs.prepare", rc); return }
+            defer { sqlite3_finalize(stmt) }
+
+            sqlite3_bind_int64(stmt, 1, createdAtMs)
+            sqlite3_bind_int64(stmt, 2, updatedAtMs)
+            sqlite3_bind_text(stmt, 3, blockID, -1, SQLITE_TRANSIENT)
+
+            let rc2 = sqlite3_step(stmt)
+            if rc2 != SQLITE_DONE { db.dbgErr(dbp, "updateBlockCreatedAtMs.step", rc2) }
         }
         enqueueDirty(entity: "block", entityID: blockID, op: "upsert", updatedAtMs: updatedAtMs)
     }
@@ -471,10 +642,6 @@ final class DBBlockTable {
 
         let blockType = (f["block_type"] as? String) ?? ""
         let hasPayloadKey = f.keys.contains("payload_json")
-        let payloadJSON: String = {
-            if hasPayloadKey { return (f["payload_json"] as? String) ?? "" }
-            return loadBlockPayloadJSON(blockID: blockID)
-        }()
         let domainTag = (f["domain_tag"] as? String) ?? ""
         let tagJSON = (f["tag_json"] as? String) ?? ""
         let goalID = (f["goal_id"] as? String) ?? ""
@@ -484,6 +651,24 @@ final class DBBlockTable {
         let updatedAtMs = (f["updated_at_ms"] as? Int64) ?? 0
         let deleted = (f["deleted"] as? Int64) ?? 0
 
+        let existing = loadNJBlock(blockID: blockID)
+        let existingDeleted = (existing?["deleted"] as? Int64) ?? 0
+        let existingUpdatedAtMs = (existing?["updated_at_ms"] as? Int64) ?? 0
+        if existingDeleted == 0, existingUpdatedAtMs > updatedAtMs, updatedAtMs > 0 {
+            return
+        }
+
+        let existingPayload = (existing?["payload_json"] as? String) ?? ""
+        let incomingPayload = (f["payload_json"] as? String) ?? ""
+        let payloadJSON: String = {
+            if hasPayloadKey {
+                if incomingPayload.isEmpty, !existingPayload.isEmpty {
+                    return existingPayload
+                }
+                return incomingPayload
+            }
+            return existingPayload
+        }()
 
         db.withDB { dbp in
             var stmt: OpaquePointer?

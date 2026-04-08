@@ -42,6 +42,13 @@ struct NJTimeModuleView: View {
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button {
+                    store.runTimeModuleInboxIngestIfNeeded()
+                    reload()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+
+                Button {
                     if selectedSection == .slots {
                         showAddSlot = true
                     } else {
@@ -83,6 +90,8 @@ struct NJTimeModuleView: View {
                     deleted: 0
                 )
                 store.notes.upsertTimeSlot(row)
+                store.publishTimeSlotWidgetSnapshot()
+                store.syncTimeSlotOverrunNotifications()
                 store.sync.schedulePush(debounceMs: 0)
                 reload()
             }
@@ -123,11 +132,21 @@ struct NJTimeModuleView: View {
                     deleted: 0
                 )
                 store.notes.upsertTimeSlot(updated)
+                store.publishTimeSlotWidgetSnapshot()
+                store.syncTimeSlotOverrunNotifications()
                 store.sync.schedulePush(debounceMs: 0)
                 reload()
             }
         }
-        .onAppear { reload() }
+        .onAppear {
+            store.runTimeModuleInboxIngestIfNeeded()
+            ensureDefaultDailyGoals()
+            reload()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .njTimeSlotInboxDidChange)) { _ in
+            store.runTimeModuleInboxIngestIfNeeded()
+            reload()
+        }
     }
 
     private func reload() {
@@ -136,6 +155,11 @@ struct NJTimeModuleView: View {
     }
 
     private func timeSlotsView() -> some View {
+        if sortedSlots.isEmpty {
+            return AnyView(timeSlotsEmptyView())
+        }
+
+        return AnyView(
         List {
             if useSections {
                 Section {
@@ -229,6 +253,55 @@ struct NJTimeModuleView: View {
             }
         }
         .listStyle(.insetGrouped)
+        )
+    }
+
+    private func timeSlotsEmptyView() -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("No Time Slots Yet")
+                        .font(.title3.weight(.semibold))
+                    Text("Watch Quick Log should land here after you stop a timer. You can also add one manually.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Label("MM Reading", systemImage: "book")
+                    Label("MM Play Time", systemImage: "figure.play")
+                    Label("Piano", systemImage: "pianokeys")
+                }
+                .font(.subheadline)
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(UIColor.secondarySystemBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+                HStack(spacing: 12) {
+                    Button {
+                        store.runTimeModuleInboxIngestIfNeeded()
+                        reload()
+                    } label: {
+                        Label("Refresh Inbox", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button {
+                        showAddSlot = true
+                    } label: {
+                        Label("Add Manually", systemImage: "plus")
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+
+                Text("If watch logs still do not appear, the remaining issue is watch-to-phone sync, not this page.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     private var sortedSlots: [NJTimeSlotRecord] {
@@ -248,6 +321,8 @@ struct NJTimeModuleView: View {
         for id in ids {
             store.notes.deleteTimeSlot(timeSlotID: id, nowMs: now)
         }
+        store.publishTimeSlotWidgetSnapshot()
+        store.syncTimeSlotOverrunNotifications()
         store.sync.schedulePush(debounceMs: 0)
         reload()
     }
@@ -272,17 +347,19 @@ struct NJTimeModuleView: View {
                                 let ratio = min(1.0, max(0.0, Double(progress) / Double(target)))
                                 VStack(alignment: .leading, spacing: 8) {
                                     HStack {
-                                        Text(goal.title)
-                                            .font(.headline)
-                                        Spacer(minLength: 0)
-                                        Text("\(progress)/\(target)")
-                                            .font(.caption)
-                                            .foregroundStyle(progress >= target ? .green : .secondary)
-                                    }
-                                    ProgressView(value: ratio)
-                                    Text(goalSubtitle(goal))
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
+                            Text(goal.title)
+                                .font(.headline)
+                            Spacer(minLength: 0)
+                            let metric = progressMetric(for: goal)
+                            Text("\(metric.progress)/\(metric.target)")
+                                .font(.caption)
+                                .foregroundStyle(metric.progress >= metric.target ? .green : .secondary)
+                        }
+                        let metric = progressMetric(for: goal)
+                        ProgressView(value: min(1.0, max(0.0, Double(metric.progress) / Double(max(1, metric.target)))))
+                        Text(goalSubtitle(goal))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                                 }
                                 .padding(.vertical, 4)
                             }
@@ -308,11 +385,13 @@ struct NJTimeModuleView: View {
                                 Text(goal.title)
                                     .font(.headline)
                                 Spacer(minLength: 0)
-                                Text("\(progress)/\(target)")
+                                let metric = progressMetric(for: goal)
+                                Text("\(metric.progress)/\(metric.target)")
                                     .font(.caption)
-                                    .foregroundStyle(progress >= target ? .green : .secondary)
+                                    .foregroundStyle(metric.progress >= metric.target ? .green : .secondary)
                             }
-                            ProgressView(value: ratio)
+                            let metric = progressMetric(for: goal)
+                            ProgressView(value: min(1.0, max(0.0, Double(metric.progress) / Double(max(1, metric.target)))))
                             Text(goalSubtitle(goal))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -357,8 +436,8 @@ struct NJTimeModuleView: View {
 
     private var goalsSummary: String {
         let goalCount = sortedGoals.count
-        let progress = sortedGoals.reduce(0) { $0 + progressThisWeek(for: $1) }
-        let target = sortedGoals.reduce(0) { $0 + max(1, Int($1.weeklyTarget)) }
+        let progress = sortedGoals.reduce(0) { $0 + progressMetric(for: $1).progress }
+        let target = sortedGoals.reduce(0) { $0 + max(1, progressMetric(for: $1).target) }
         return "\(goalCount) goal\(goalCount == 1 ? "" : "s") • \(progress)/\(max(1, target)) this week"
     }
 
@@ -397,6 +476,39 @@ struct NJTimeModuleView: View {
         }.count
     }
 
+    private func progressMetric(for goal: NJPersonalGoalRecord, now: Date = Date()) -> (progress: Int, target: Int) {
+        if let dailyTarget = dailyMinuteTarget(for: goal) {
+            let cal = Calendar.current
+            let start = cal.startOfDay(for: now)
+            let end = cal.date(byAdding: .day, value: 1, to: start) ?? start
+            let startMs = ms(start)
+            let endMs = ms(end)
+            let minutes = slots.filter { slot in
+                guard slot.startAtMs >= startMs, slot.startAtMs < endMs else { return false }
+                return slotMatchesGoal(slot: slot, goal: goal)
+            }.reduce(0.0) { partial, slot in
+                partial + Double(max(0, slot.endAtMs - slot.startAtMs)) / 60000.0
+            }
+            return (Int(minutes.rounded()), max(1, dailyTarget))
+        }
+        return (progressThisWeek(for: goal, now: now), max(1, Int(goal.weeklyTarget)))
+    }
+
+    private func dailyMinuteTarget(for goal: NJPersonalGoalRecord) -> Int? {
+        let t = goal.title.lowercased()
+        let k = goal.keyword.lowercased()
+        if goal.focus.lowercased() == "piano" || t.contains("piano") {
+            return 30
+        }
+        if t.contains("read with mushy mushy") || k.contains("mm reading") || k.contains("mushy reading") {
+            return 10
+        }
+        if t.contains("play with mushy mushy") || k.contains("mm play") || k.contains("mushy play") {
+            return 30
+        }
+        return nil
+    }
+
     private func slotMatchesGoal(slot: NJTimeSlotRecord, goal: NJPersonalGoalRecord) -> Bool {
         let haystack = "\(slot.title) \(slot.notes) \(slot.category)".lowercased()
         switch goal.focus.lowercased() {
@@ -404,7 +516,7 @@ struct NJTimeModuleView: View {
             return slot.category.lowercased() == "piano" || haystack.contains("piano")
         case "exercise":
             if slot.category.lowercased() == "exercise" { return true }
-            let hints = ["exercise", "workout", "run", "walk", "swim", "gym", "cycle", "bike", "tennis"]
+            let hints = ["exercise", "workout", "run", "walk", "swim", "gym", "cycle", "bike", "tennis", "hike", "hiking"]
             return hints.contains { haystack.contains($0) }
         default:
             let key = goal.keyword.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -414,6 +526,9 @@ struct NJTimeModuleView: View {
     }
 
     private func goalSubtitle(_ goal: NJPersonalGoalRecord) -> String {
+        if let daily = dailyMinuteTarget(for: goal) {
+            return "Daily cumulative target: \(daily) min"
+        }
         switch goal.focus.lowercased() {
         case "piano":
             return "Focus: Piano"
@@ -422,6 +537,38 @@ struct NJTimeModuleView: View {
         default:
             let clean = goal.keyword.trimmingCharacters(in: .whitespacesAndNewlines)
             return clean.isEmpty ? "Focus: Keyword" : "Focus: Keyword (\(clean))"
+        }
+    }
+
+    private func ensureDefaultDailyGoals() {
+        let existing = store.notes.listPersonalGoals(ownerScope: "ME").filter { $0.deleted == 0 }
+        let existingTitles = Set(existing.map { $0.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
+        let defaults: [(title: String, focus: String, keyword: String, target: Int64)] = [
+            ("Piano 30 min per day", "piano", "piano", 30),
+            ("Read with Mushy Mushy 10 min per day", "keyword", "mm reading", 10),
+            ("Play with Mushy Mushy 30 min per day", "keyword", "mm play", 30)
+        ]
+        let now = DBNoteRepository.nowMs()
+        var inserted = false
+        for item in defaults {
+            if existingTitles.contains(item.title.lowercased()) { continue }
+            let row = NJPersonalGoalRecord(
+                goalID: UUID().uuidString.lowercased(),
+                ownerScope: "ME",
+                title: item.title,
+                focus: item.focus,
+                keyword: item.keyword,
+                weeklyTarget: item.target,
+                status: "active",
+                createdAtMs: now,
+                updatedAtMs: now,
+                deleted: 0
+            )
+            store.notes.upsertPersonalGoal(row)
+            inserted = true
+        }
+        if inserted {
+            store.sync.schedulePush(debounceMs: 0)
         }
     }
 

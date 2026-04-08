@@ -7,6 +7,7 @@ struct NJBlockHostView: View {
     let createdAtMs: Int64?
     let domainPreview: String?
     let onEditTags: (() -> Void)?
+    let onSaveCreatedAtMs: ((Int64) -> Void)?
 
     let inheritedTags: [String]
     let editableTags: [String]
@@ -25,6 +26,8 @@ struct NJBlockHostView: View {
     let onHydrateProton: () -> Void
     let onCommitProton: () -> Void
     let onMoveToClipboard: (() -> Void)?
+    let headerBadgeSymbolName: String?
+    let headerBadgeText: String?
 
     @Binding var isCollapsed: Bool
 
@@ -39,6 +42,8 @@ struct NJBlockHostView: View {
     @State private var editorHeight: CGFloat = 44
     
     @State private var showClipMenu: Bool = false
+    @State private var showCreatedAtSheet: Bool = false
+    @State private var createdAtDraft: Date = Date()
 
 
     @State private var showTagSheet: Bool = false
@@ -51,6 +56,7 @@ struct NJBlockHostView: View {
         createdAtMs: Int64?,
         domainPreview: String?,
         onEditTags: (() -> Void)?,
+        onSaveCreatedAtMs: ((Int64) -> Void)? = nil,
         goalPreview: String?,
         onAddGoal: (() -> Void)?,
         hasClipPDF: Bool,
@@ -66,6 +72,8 @@ struct NJBlockHostView: View {
         onHydrateProton: @escaping () -> Void,
         onCommitProton: @escaping () -> Void,
         onMoveToClipboard: (() -> Void)? = nil,
+        headerBadgeSymbolName: String? = nil,
+        headerBadgeText: String? = nil,
         inheritedTags: [String] = [],
         editableTags: [String] = [],
         tagJSON: String? = nil,
@@ -76,6 +84,7 @@ struct NJBlockHostView: View {
         self.createdAtMs = createdAtMs
         self.domainPreview = domainPreview
         self.onEditTags = onEditTags
+        self.onSaveCreatedAtMs = onSaveCreatedAtMs
         self.inheritedTags = inheritedTags
         self.editableTags = editableTags
         self.tagJSON = tagJSON
@@ -95,7 +104,29 @@ struct NJBlockHostView: View {
         self.onHydrateProton = onHydrateProton
         self.onCommitProton = onCommitProton
         self.onMoveToClipboard = onMoveToClipboard
+        self.headerBadgeSymbolName = headerBadgeSymbolName
+        self.headerBadgeText = headerBadgeText
         self.onDelete = onDelete
+    }
+
+    @ViewBuilder
+    private func headerBadgeView() -> some View {
+        if let headerBadgeText, !headerBadgeText.isEmpty {
+            HStack(spacing: 5) {
+                if let headerBadgeSymbolName, !headerBadgeSymbolName.isEmpty {
+                    Image(systemName: headerBadgeSymbolName)
+                }
+                Text(headerBadgeText)
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.blue)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                Capsule()
+                    .fill(Color.blue.opacity(0.12))
+            )
+        }
     }
 
     private func oneLine(_ s: String) -> String {
@@ -152,6 +183,12 @@ struct NJBlockHostView: View {
         tagNewText = ""
         tagSuggestions = []
         showTagSheet = true
+    }
+
+    private func openCreatedAtSheet() {
+        let baseMs = (createdAtMs ?? 0) > 0 ? (createdAtMs ?? 0) : Int64(Date().timeIntervalSince1970 * 1000.0)
+        createdAtDraft = Date(timeIntervalSince1970: TimeInterval(baseMs) / 1000.0)
+        showCreatedAtSheet = true
     }
 
     private func replaceTag(_ from: String, with to: String) {
@@ -233,20 +270,27 @@ struct NJBlockHostView: View {
                 ZStack(alignment: .topLeading) {
                     VStack(alignment: .leading, spacing: 6) {
                         if isCollapsed {
-                            Text(oneLine(attr.string))
-                                .font(.body.weight(.semibold))
-                                .foregroundStyle(.primary)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .contentShape(Rectangle())
-                                .onTapGesture { onFocus() }
+                            HStack(alignment: .center, spacing: 8) {
+                                Text(oneLine(attr.string))
+                                    .font(.body.weight(.semibold))
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                headerBadgeView()
+                            }
+                            .contentShape(Rectangle())
+                            .onTapGesture { onFocus() }
                         } else {
-                            if let ms = createdAtMs, ms > 0 {
-                                Text(dateLine(ms))
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                    .padding(.top, 2)
+                            HStack(alignment: .center, spacing: 8) {
+                                if let ms = createdAtMs, ms > 0 {
+                                    Text(dateLine(ms))
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .padding(.top, 2)
+                                }
+                                Spacer(minLength: 0)
+                                headerBadgeView()
                             }
 
                             NJProtonEditorView(
@@ -297,6 +341,13 @@ struct NJBlockHostView: View {
                         }
 
                         .disabled(false)
+
+                        Button {
+                            openCreatedAtSheet()
+                        } label: {
+                            Label(createdAtSummary(), systemImage: "calendar")
+                        }
+                        .disabled(onSaveCreatedAtMs == nil)
 
                         if g.isEmpty {
                             Label("Goal: (none)", systemImage: "target").foregroundStyle(.secondary)
@@ -468,6 +519,36 @@ struct NJBlockHostView: View {
                 }
             }
         }
+        .sheet(isPresented: $showCreatedAtSheet) {
+            NavigationStack {
+                Form {
+                    Section("Created At") {
+                        DatePicker(
+                            "Block date",
+                            selection: $createdAtDraft,
+                            displayedComponents: [.date, .hourAndMinute]
+                        )
+                        Text("Use a future timestamp if you want this block to participate in date-sensitive flows later.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .navigationTitle("Edit Block Date")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { showCreatedAtSheet = false }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Save") {
+                            let ms = Int64(createdAtDraft.timeIntervalSince1970 * 1000.0)
+                            onSaveCreatedAtMs?(max(1, ms))
+                            showCreatedAtSheet = false
+                        }
+                        .disabled(onSaveCreatedAtMs == nil)
+                    }
+                }
+            }
+        }
         
         .confirmationDialog("Clip", isPresented: $showClipMenu, titleVisibility: .visible) {
             Button("Open PDF") { onOpenClipPDF?() }
@@ -493,6 +574,16 @@ struct NJBlockHostView: View {
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyy-MM-dd"
         return f.string(from: d)
+    }
+
+    private func createdAtSummary() -> String {
+        guard let ms = createdAtMs, ms > 0 else { return "Created At: (none)" }
+        let d = Date(timeIntervalSince1970: TimeInterval(ms) / 1000.0)
+        let f = DateFormatter()
+        f.locale = Locale.current
+        f.dateStyle = .medium
+        f.timeStyle = .short
+        return "Created At: \(f.string(from: d))"
     }
 
     private func domainBottom3(_ raw: String) -> String {

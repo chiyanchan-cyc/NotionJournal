@@ -204,10 +204,18 @@ enum DBSchemaInstaller {
                 CREATE TABLE IF NOT EXISTS nj_planned_exercise (
                     plan_id TEXT PRIMARY KEY,
                     date_key TEXT NOT NULL,
+                    week_key TEXT NOT NULL DEFAULT '',
+                    title TEXT NOT NULL DEFAULT '',
+                    category TEXT NOT NULL DEFAULT '',
                     sport TEXT NOT NULL DEFAULT '',
+                    session_type TEXT NOT NULL DEFAULT '',
                     target_distance_km REAL NOT NULL DEFAULT 0,
                     target_duration_min REAL NOT NULL DEFAULT 0,
                     notes TEXT NOT NULL DEFAULT '',
+                    goal_json TEXT NOT NULL DEFAULT '',
+                    cue_json TEXT NOT NULL DEFAULT '',
+                    block_json TEXT NOT NULL DEFAULT '',
+                    source_plan_id TEXT NOT NULL DEFAULT '',
                     created_at_ms INTEGER NOT NULL,
                     updated_at_ms INTEGER NOT NULL,
                     deleted INTEGER NOT NULL DEFAULT 0
@@ -216,16 +224,25 @@ enum DBSchemaInstaller {
                 columns: [
                     ColumnSpec(name: "plan_id", declForAlter: "TEXT"),
                     ColumnSpec(name: "date_key", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "week_key", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "title", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "category", declForAlter: "TEXT NOT NULL DEFAULT ''"),
                     ColumnSpec(name: "sport", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "session_type", declForAlter: "TEXT NOT NULL DEFAULT ''"),
                     ColumnSpec(name: "target_distance_km", declForAlter: "REAL NOT NULL DEFAULT 0"),
                     ColumnSpec(name: "target_duration_min", declForAlter: "REAL NOT NULL DEFAULT 0"),
                     ColumnSpec(name: "notes", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "goal_json", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "cue_json", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "block_json", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "source_plan_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
                     ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
                     ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
                     ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
                 ],
                 indexes: [
                     "CREATE INDEX IF NOT EXISTS idx_nj_planned_exercise_date ON nj_planned_exercise(date_key ASC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_planned_exercise_week ON nj_planned_exercise(week_key ASC, date_key ASC);",
                     "CREATE INDEX IF NOT EXISTS idx_nj_planned_exercise_updated ON nj_planned_exercise(updated_at_ms DESC);"
                 ]
             ),
@@ -256,6 +273,277 @@ enum DBSchemaInstaller {
                 indexes: [
                     "CREATE INDEX IF NOT EXISTS idx_nj_planning_note_kind_target ON nj_planning_note(kind, target_key ASC);",
                     "CREATE INDEX IF NOT EXISTS idx_nj_planning_note_updated ON nj_planning_note(updated_at_ms DESC);"
+                ]
+            ),
+            TableSpec(
+                name: "nj_finance_macro_event",
+                createSQL: """
+                CREATE TABLE IF NOT EXISTS nj_finance_macro_event (
+                    event_id TEXT PRIMARY KEY,
+                    date_key TEXT NOT NULL,
+                    title TEXT NOT NULL DEFAULT '',
+                    category TEXT NOT NULL DEFAULT '',
+                    region TEXT NOT NULL DEFAULT '',
+                    time_text TEXT NOT NULL DEFAULT '',
+                    impact TEXT NOT NULL DEFAULT '',
+                    source TEXT NOT NULL DEFAULT '',
+                    notes TEXT NOT NULL DEFAULT '',
+                    created_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL,
+                    deleted INTEGER NOT NULL DEFAULT 0
+                );
+                """,
+                columns: [
+                    ColumnSpec(name: "event_id", declForAlter: "TEXT"),
+                    ColumnSpec(name: "date_key", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "title", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "category", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "region", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "time_text", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "impact", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "source", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "notes", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
+                ],
+                indexes: [
+                    "CREATE INDEX IF NOT EXISTS idx_nj_finance_macro_event_date ON nj_finance_macro_event(date_key ASC, time_text ASC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_finance_macro_event_updated ON nj_finance_macro_event(updated_at_ms DESC);"
+                ]
+            ),
+            TableSpec(
+                name: "nj_finance_daily_brief",
+                createSQL: """
+                CREATE TABLE IF NOT EXISTS nj_finance_daily_brief (
+                    date_key TEXT PRIMARY KEY,
+                    news_summary TEXT NOT NULL DEFAULT '',
+                    expectation_summary TEXT NOT NULL DEFAULT '',
+                    watch_items TEXT NOT NULL DEFAULT '',
+                    bias TEXT NOT NULL DEFAULT '',
+                    created_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL,
+                    deleted INTEGER NOT NULL DEFAULT 0
+                );
+                """,
+                columns: [
+                    ColumnSpec(name: "date_key", declForAlter: "TEXT"),
+                    ColumnSpec(name: "news_summary", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "expectation_summary", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "watch_items", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "bias", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
+                ],
+                indexes: [
+                    "CREATE INDEX IF NOT EXISTS idx_nj_finance_daily_brief_updated ON nj_finance_daily_brief(updated_at_ms DESC);"
+                ]
+            ),
+            TableSpec(
+                name: "nj_finance_research_session",
+                createSQL: """
+                CREATE TABLE IF NOT EXISTS nj_finance_research_session (
+                    session_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL DEFAULT '',
+                    theme_id TEXT NOT NULL DEFAULT '',
+                    premise_id TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT '',
+                    summary TEXT NOT NULL DEFAULT '',
+                    last_message_at_ms INTEGER NOT NULL DEFAULT 0,
+                    created_at_ms INTEGER NOT NULL DEFAULT 0,
+                    updated_at_ms INTEGER NOT NULL DEFAULT 0,
+                    deleted INTEGER NOT NULL DEFAULT 0
+                );
+                """,
+                columns: [
+                    ColumnSpec(name: "session_id", declForAlter: "TEXT"),
+                    ColumnSpec(name: "title", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "theme_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "premise_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "status", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "summary", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "last_message_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
+                ],
+                indexes: [
+                    "CREATE INDEX IF NOT EXISTS idx_nj_finance_research_session_premise ON nj_finance_research_session(premise_id ASC, updated_at_ms DESC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_finance_research_session_updated ON nj_finance_research_session(updated_at_ms DESC);"
+                ]
+            ),
+            TableSpec(
+                name: "nj_finance_research_message",
+                createSQL: """
+                CREATE TABLE IF NOT EXISTS nj_finance_research_message (
+                    message_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    role TEXT NOT NULL DEFAULT '',
+                    body TEXT NOT NULL DEFAULT '',
+                    source_refs_json TEXT NOT NULL DEFAULT '',
+                    retrieval_context_json TEXT NOT NULL DEFAULT '',
+                    task_request_json TEXT NOT NULL DEFAULT '',
+                    sync_status TEXT NOT NULL DEFAULT '',
+                    created_at_ms INTEGER NOT NULL DEFAULT 0,
+                    updated_at_ms INTEGER NOT NULL DEFAULT 0,
+                    deleted INTEGER NOT NULL DEFAULT 0
+                );
+                """,
+                columns: [
+                    ColumnSpec(name: "message_id", declForAlter: "TEXT"),
+                    ColumnSpec(name: "session_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "role", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "body", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "source_refs_json", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "retrieval_context_json", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "task_request_json", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "sync_status", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
+                ],
+                indexes: [
+                    "CREATE INDEX IF NOT EXISTS idx_nj_finance_research_message_session_created ON nj_finance_research_message(session_id ASC, created_at_ms ASC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_finance_research_message_sync_status ON nj_finance_research_message(sync_status ASC, updated_at_ms DESC);"
+                ]
+            ),
+            TableSpec(
+                name: "nj_finance_research_task",
+                createSQL: """
+                CREATE TABLE IF NOT EXISTS nj_finance_research_task (
+                    task_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL DEFAULT '',
+                    message_id TEXT NOT NULL DEFAULT '',
+                    task_kind TEXT NOT NULL DEFAULT '',
+                    instruction TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT '',
+                    priority INTEGER NOT NULL DEFAULT 0,
+                    result_summary TEXT NOT NULL DEFAULT '',
+                    result_refs_json TEXT NOT NULL DEFAULT '',
+                    created_at_ms INTEGER NOT NULL DEFAULT 0,
+                    updated_at_ms INTEGER NOT NULL DEFAULT 0,
+                    deleted INTEGER NOT NULL DEFAULT 0
+                );
+                """,
+                columns: [
+                    ColumnSpec(name: "task_id", declForAlter: "TEXT"),
+                    ColumnSpec(name: "session_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "message_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "task_kind", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "instruction", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "status", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "priority", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "result_summary", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "result_refs_json", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
+                ],
+                indexes: [
+                    "CREATE INDEX IF NOT EXISTS idx_nj_finance_research_task_session_status ON nj_finance_research_task(session_id ASC, status ASC, updated_at_ms DESC);"
+                ]
+            ),
+            TableSpec(
+                name: "nj_finance_finding",
+                createSQL: """
+                CREATE TABLE IF NOT EXISTS nj_finance_finding (
+                    finding_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL DEFAULT '',
+                    premise_id TEXT NOT NULL DEFAULT '',
+                    stance TEXT NOT NULL DEFAULT '',
+                    summary TEXT NOT NULL DEFAULT '',
+                    confidence REAL NOT NULL DEFAULT 0,
+                    source_refs_json TEXT NOT NULL DEFAULT '',
+                    created_at_ms INTEGER NOT NULL DEFAULT 0,
+                    updated_at_ms INTEGER NOT NULL DEFAULT 0,
+                    deleted INTEGER NOT NULL DEFAULT 0
+                );
+                """,
+                columns: [
+                    ColumnSpec(name: "finding_id", declForAlter: "TEXT"),
+                    ColumnSpec(name: "session_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "premise_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "stance", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "summary", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "confidence", declForAlter: "REAL NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "source_refs_json", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
+                ],
+                indexes: [
+                    "CREATE INDEX IF NOT EXISTS idx_nj_finance_finding_session ON nj_finance_finding(session_id ASC, updated_at_ms DESC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_finance_finding_premise ON nj_finance_finding(premise_id ASC, updated_at_ms DESC);"
+                ]
+            ),
+            TableSpec(
+                name: "nj_finance_journal_link",
+                createSQL: """
+                CREATE TABLE IF NOT EXISTS nj_finance_journal_link (
+                    link_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL DEFAULT '',
+                    message_id TEXT NOT NULL DEFAULT '',
+                    finding_id TEXT NOT NULL DEFAULT '',
+                    note_block_id TEXT NOT NULL DEFAULT '',
+                    excerpt TEXT NOT NULL DEFAULT '',
+                    created_at_ms INTEGER NOT NULL DEFAULT 0,
+                    updated_at_ms INTEGER NOT NULL DEFAULT 0,
+                    deleted INTEGER NOT NULL DEFAULT 0
+                );
+                """,
+                columns: [
+                    ColumnSpec(name: "link_id", declForAlter: "TEXT"),
+                    ColumnSpec(name: "session_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "message_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "finding_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "note_block_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "excerpt", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
+                ],
+                indexes: [
+                    "CREATE INDEX IF NOT EXISTS idx_nj_finance_journal_link_session ON nj_finance_journal_link(session_id ASC, updated_at_ms DESC);"
+                ]
+            ),
+            TableSpec(
+                name: "nj_finance_source_item",
+                createSQL: """
+                CREATE TABLE IF NOT EXISTS nj_finance_source_item (
+                    source_item_id TEXT PRIMARY KEY,
+                    source_id TEXT NOT NULL DEFAULT '',
+                    source_name TEXT NOT NULL DEFAULT '',
+                    source_url TEXT NOT NULL DEFAULT '',
+                    market_id TEXT NOT NULL DEFAULT '',
+                    premise_ids_json TEXT NOT NULL DEFAULT '',
+                    fetched_at_ms INTEGER NOT NULL DEFAULT 0,
+                    published_at_ms INTEGER NOT NULL DEFAULT 0,
+                    content_hash TEXT NOT NULL DEFAULT '',
+                    raw_excerpt TEXT NOT NULL DEFAULT '',
+                    raw_text_ck_asset_path TEXT NOT NULL DEFAULT '',
+                    raw_json TEXT NOT NULL DEFAULT '',
+                    deleted INTEGER NOT NULL DEFAULT 0
+                );
+                """,
+                columns: [
+                    ColumnSpec(name: "source_item_id", declForAlter: "TEXT"),
+                    ColumnSpec(name: "source_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "source_name", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "source_url", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "market_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "premise_ids_json", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "fetched_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "published_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "content_hash", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "raw_excerpt", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "raw_text_ck_asset_path", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "raw_json", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
+                ],
+                indexes: [
+                    "CREATE INDEX IF NOT EXISTS idx_nj_finance_source_item_market ON nj_finance_source_item(market_id ASC, fetched_at_ms DESC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_finance_source_item_source ON nj_finance_source_item(source_id ASC, fetched_at_ms DESC);"
                 ]
             ),
             TableSpec(

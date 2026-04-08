@@ -30,10 +30,12 @@ final class NJReconstructedNotePersistence: ObservableObject {
     @Published var blocks: [NJNoteEditorContainerPersistence.BlockState] = []
     @Published var focusedBlockID: UUID? = nil
     @Published var blockMainDomainByBlockID: [String: String] = [:]
+    @Published private(set) var hasPendingRemoteRefresh: Bool = false
 
     private var store: AppStore? = nil
     private var commitWork: [UUID: DispatchWorkItem] = [:]
     private var didConfigure = false
+    private var loadedContentWatermarkMs: Int64 = 0
 
     private var spec: NJReconstructedSpec
 
@@ -69,10 +71,68 @@ final class NJReconstructedNotePersistence: ObservableObject {
         self.didConfigure = true
     }
 
+    func addBlankBlock(
+        blockID: String? = nil,
+        initialProtonJSON: String = "",
+        makeHandle: @escaping () -> NJProtonEditorHandle
+    ) -> UUID {
+        let stableBlockID = (blockID ?? UUID().uuidString).trimmingCharacters(in: .whitespacesAndNewlines)
+        let newID = UUID(uuidString: stableBlockID) ?? NJStableUUID("\(spec.id)|\(stableBlockID)|")
+        let handle = makeHandle()
+        handle.ownerBlockUUID = newID
+
+        let nextOrder = (blocks.map(\.orderKey).max() ?? 999) + 1
+        let new = NJNoteEditorContainerPersistence.BlockState(
+            id: newID,
+            blockID: stableBlockID,
+            instanceID: "",
+            orderKey: nextOrder,
+            createdAtMs: DBNoteRepository.nowMs(),
+            domainPreview: "",
+            goalPreview: "",
+            attr: makeTypedFromPlain(""),
+            sel: NSRange(location: 0, length: 0),
+            isCollapsed: false,
+            protonHandle: handle,
+            isDirty: true,
+            loadedUpdatedAtMs: 0,
+            loadedPayloadHash: "",
+            protonJSON: initialProtonJSON,
+            tagJSON: ""
+        )
+
+        blocks.insert(new, at: 0)
+        focusedBlockID = newID
+        scheduleCommit(newID)
+        return newID
+    }
+
     func updateSpec(_ spec: NJReconstructedSpec) {
         self.spec = spec
         self.title = spec.title
         self.tab = spec.tab
+        self.hasPendingRemoteRefresh = false
+    }
+
+    func markPendingRemoteRefresh() {
+        hasPendingRemoteRefresh = true
+    }
+
+    func clearPendingRemoteRefresh() {
+        hasPendingRemoteRefresh = false
+    }
+
+    func hasActivelyEditingBlock() -> Bool {
+        blocks.contains { $0.protonHandle.isEditing }
+    }
+
+    func hasRemoteContentUpdateAvailable() -> Bool {
+        currentContentWatermarkMs() > loadedContentWatermarkMs
+    }
+
+    private func markLocalContentCommitted() {
+        loadedContentWatermarkMs = max(loadedContentWatermarkMs, currentContentWatermarkMs())
+        hasPendingRemoteRefresh = false
     }
 
     func rowBackgroundColor(blockID: String) -> Color? {
@@ -134,6 +194,43 @@ final class NJReconstructedNotePersistence: ObservableObject {
         }
     }
 
+    private func dbLoadBlockProtonJSON(_ blockID: String) -> String {
+        guard let store else { return "" }
+        let payloadJSON = store.notes.db.withDB { dbp in
+            var out = ""
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT payload_json
+            FROM nj_block
+            WHERE block_id = ? AND deleted = 0
+            LIMIT 1;
+            """
+            let rc = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
+            if rc != SQLITE_OK { return "" }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, blockID, -1, SQLITE_TRANSIENT)
+            if sqlite3_step(stmt) == SQLITE_ROW,
+               let c = sqlite3_column_text(stmt, 0) {
+                out = String(cString: c)
+            }
+            return out
+        }
+        guard !payloadJSON.isEmpty else { return "" }
+
+        if let normalized = try? NJPayloadConverterV1.convertToV1(payloadJSON),
+           let data = normalized.data(using: String.Encoding.utf8),
+           let v1 = try? JSONDecoder().decode(NJPayloadV1.self, from: data),
+           let proton = try? v1.proton1Data() {
+            return proton.proton_json
+        }
+
+        guard let data = payloadJSON.data(using: String.Encoding.utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return ""
+        }
+        return obj["proton_json"] as? String ?? ""
+    }
+
     private func dbLoadDomainPreview3FromBlockTag(_ blockID: String) -> String {
         guard let store else { return "" }
         return store.notes.db.withDB { dbp in
@@ -172,6 +269,16 @@ final class NJReconstructedNotePersistence: ObservableObject {
         let blockID: String
         let protonJSON: String
         let createdAtMs: Int64
+    }
+
+    private struct MarkerLookupKey: Hashable {
+        let tag: String
+        let content: String
+    }
+
+    private enum MarkerBucket: Hashable {
+        case year(String)
+        case month(String)
     }
     
     private func currentWeekRangeMs() -> (start: Int64, end: Int64) {
@@ -531,8 +638,192 @@ final class NJReconstructedNotePersistence: ObservableObject {
         return out
     }
 
+    private func markerValues(for createdAtMs: Int64) -> (years: [String], months: [String]) {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        calendar.firstWeekday = 1
+
+        let date = Date(timeIntervalSince1970: Double(createdAtMs) / 1000.0)
+        let startOfDay = calendar.startOfDay(for: date)
+        let weekday = calendar.component(.weekday, from: startOfDay)
+        let daysFromSunday = (weekday - calendar.firstWeekday + 7) % 7
+        let weekStart = calendar.date(byAdding: .day, value: -daysFromSunday, to: startOfDay) ?? startOfDay
+
+        var years: [String] = []
+        var yearSeen = Set<String>()
+        var months: [String] = []
+        var monthSeen = Set<String>()
+
+        for offset in 0..<7 {
+            guard let day = calendar.date(byAdding: .day, value: offset, to: weekStart) else { continue }
+            let comps = calendar.dateComponents([.year, .month], from: day)
+            if let year = comps.year {
+                let yearText = String(format: "%04d", year)
+                if yearSeen.insert(yearText).inserted {
+                    years.append(yearText)
+                }
+            }
+            if let year = comps.year, let month = comps.month {
+                let monthText = String(format: "%04d%02d", year, month)
+                if monthSeen.insert(monthText).inserted {
+                    months.append(monthText)
+                }
+            }
+        }
+
+        return (years, months)
+    }
+
+    private func dbLoadBlockIDsForExactTag(_ tag: String) -> [String] {
+        guard let store else { return [] }
+        return store.notes.db.withDB { dbp in
+            var out: [String] = []
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT DISTINCT t.block_id
+            FROM nj_block_tag t
+            LEFT JOIN nj_block b
+              ON b.block_id = t.block_id COLLATE NOCASE
+            WHERE lower(t.tag)=lower(?)
+              AND (b.deleted IS NULL OR b.deleted = 0)
+            ORDER BY b.created_at_ms DESC;
+            """
+            guard sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, tag, -1, SQLITE_TRANSIENT)
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                if let c = sqlite3_column_text(stmt, 0) {
+                    let s = String(cString: c).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !s.isEmpty { out.append(s) }
+                }
+            }
+            return out
+        }
+    }
+
+    private func markerBucket(for tag: String, createdAtMs: Int64) -> MarkerBucket? {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        let date = Date(timeIntervalSince1970: Double(createdAtMs) / 1000.0)
+        let comps = calendar.dateComponents([.year, .month], from: date)
+
+        switch tag.lowercased() {
+        case "#year":
+            guard let year = comps.year else { return nil }
+            return .year(String(format: "%04d", year))
+        case "#month":
+            guard let year = comps.year, let month = comps.month else { return nil }
+            return .month(String(format: "%04d%02d", year, month))
+        default:
+            return nil
+        }
+    }
+
+    private func markerRowsForWeekly(rows: [Row]) -> [MarkerLookupKey: Row] {
+        guard spec.isWeekly else { return [:] }
+
+        var wanted: [MarkerLookupKey] = []
+        var seenWanted = Set<MarkerLookupKey>()
+        for row in rows {
+            let values = markerValues(for: row.createdAtMs)
+            for year in values.years {
+                let key = MarkerLookupKey(tag: "#YEAR", content: year)
+                if seenWanted.insert(key).inserted {
+                    wanted.append(key)
+                }
+            }
+            for month in values.months {
+                let key = MarkerLookupKey(tag: "#MONTH", content: month)
+                if seenWanted.insert(key).inserted {
+                    wanted.append(key)
+                }
+            }
+        }
+
+        if wanted.isEmpty { return [:] }
+
+        let grouped = Dictionary(grouping: wanted, by: \.tag)
+        var resolved: [MarkerLookupKey: Row] = [:]
+
+        for (tag, keys) in grouped {
+            let candidates = dbLoadBlockIDsForExactTag(tag)
+            if candidates.isEmpty { continue }
+
+            for blockID in candidates {
+                let createdAtMs = dbLoadCreatedAtMs(blockID)
+                guard let bucket = markerBucket(for: tag, createdAtMs: createdAtMs) else { continue }
+                let match = keys.first { key in
+                    switch (bucket, key.tag.lowercased(), key.content) {
+                    case (.year(let year), "#year", let content):
+                        return year == content
+                    case (.month(let month), "#month", let content):
+                        return month == content
+                    default:
+                        return false
+                    }
+                }
+                guard let match else { continue }
+                if resolved[match] != nil { continue }
+                resolved[match] = Row(
+                    blockID: blockID,
+                    protonJSON: dbLoadProtonJSONAny(blockID),
+                    createdAtMs: createdAtMs
+                )
+            }
+        }
+
+        return resolved
+    }
+
+    private func buildBlockState(from row: Row, makeHandle: @escaping () -> NJProtonEditorHandle) -> NJNoteEditorContainerPersistence.BlockState {
+        let noteDomain = dbLoadNoteDomainForBlockID(row.blockID)
+        let mainKey = NJDomainColorConfig.normalizedSecondTierKey(noteDomain)
+        if !mainKey.isEmpty {
+            blockMainDomainByBlockID[row.blockID] = mainKey
+        }
+
+        let stableID = UUID(uuidString: row.blockID)
+            ?? NJStableUUID("\(spec.id)|\(row.blockID)|")
+        let h = makeHandle()
+        h.ownerBlockUUID = stableID
+
+        let attr: NSAttributedString = {
+            if !row.protonJSON.isEmpty {
+                let first = h.previewFirstLineFromProtonJSON(row.protonJSON)
+                return makeTypedFromPlain(first)
+            }
+            return makeTypedFromPlain("")
+        }()
+
+        let tagJSON = dbLoadBlockTagJSON(row.blockID)
+        let domainPreview = {
+            let fromIndex = dbLoadDomainPreview3FromBlockTag(row.blockID)
+            if !fromIndex.isEmpty { return fromIndex }
+            return domainPreviewFromTagJSON(tagJSON)
+        }()
+
+        return NJNoteEditorContainerPersistence.BlockState(
+            id: stableID,
+            blockID: row.blockID,
+            instanceID: "",
+            orderKey: 0,
+            createdAtMs: row.createdAtMs,
+            domainPreview: domainPreview,
+            attr: attr,
+            sel: NSRange(location: 0, length: 0),
+            isCollapsed: loadCollapsed(blockID: row.blockID),
+            protonHandle: h,
+            isDirty: false,
+            loadedUpdatedAtMs: 0,
+            loadedPayloadHash: "",
+            protonJSON: row.protonJSON,
+            tagJSON: tagJSON
+        )
+    }
+
     func reload(makeHandle: @escaping () -> NJProtonEditorHandle) {
         blockMainDomainByBlockID = [:]
+        hasPendingRemoteRefresh = false
 
         let rows = dbLoadRows()
         if rows.isEmpty {
@@ -543,76 +834,58 @@ final class NJReconstructedNotePersistence: ObservableObject {
 
         var out: [NJNoteEditorContainerPersistence.BlockState] = []
         out.reserveCapacity(rows.count)
-
-        var ok: Double = 1000
-
-        for r in rows {
-            let noteDomain = dbLoadNoteDomainForBlockID(r.blockID)
-            let mainKey = NJDomainColorConfig.normalizedSecondTierKey(noteDomain)
-            if !mainKey.isEmpty {
-                blockMainDomainByBlockID[r.blockID] = mainKey
-            }
-
-            let stableID = UUID(uuidString: r.blockID)
-                ?? NJStableUUID("\(spec.id)|\(r.blockID)|")
-            let h = makeHandle()
-            h.ownerBlockUUID = stableID
-
-            let attr: NSAttributedString = {
-                if !r.protonJSON.isEmpty {
-                    let first = h.previewFirstLineFromProtonJSON(r.protonJSON)
-                    return makeTypedFromPlain(first)
+        if spec.isWeekly {
+            let weeklyRows = rows.sorted { $0.createdAtMs < $1.createdAtMs }
+            let markerRows = markerRowsForWeekly(rows: weeklyRows)
+            var seenYears = Set<String>()
+            var seenMonths = Set<String>()
+            for row in weeklyRows {
+                let values = markerValues(for: row.createdAtMs)
+                for year in values.years where !seenYears.contains(year) {
+                    seenYears.insert(year)
+                    let key = MarkerLookupKey(tag: "#YEAR", content: year)
+                    if let marker = markerRows[key] {
+                        out.append(buildBlockState(from: marker, makeHandle: makeHandle))
+                    }
                 }
-                return makeTypedFromPlain("")
-            }()
-
-            let tagJSON = dbLoadBlockTagJSON(r.blockID)
-            let domainPreview = {
-                let fromIndex = dbLoadDomainPreview3FromBlockTag(r.blockID)
-                if !fromIndex.isEmpty { return fromIndex }
-                return domainPreviewFromTagJSON(tagJSON)
-            }()
-
-            out.append(
-                NJNoteEditorContainerPersistence.BlockState(
-                    id: stableID,
-                    blockID: r.blockID,
-                    instanceID: "",
-                    orderKey: ok,
-                    createdAtMs: r.createdAtMs,
-                    domainPreview: domainPreview,
-                    attr: attr,
-                    sel: NSRange(location: 0, length: 0),
-                    isCollapsed: loadCollapsed(blockID: r.blockID),
-                    protonHandle: h,
-                    isDirty: false,
-                    loadedUpdatedAtMs: 0,
-                    loadedPayloadHash: "",
-                    protonJSON: r.protonJSON,
-                    tagJSON: tagJSON
-                )
-            )
-
-            ok += 1
+                for month in values.months where !seenMonths.contains(month) {
+                    seenMonths.insert(month)
+                    let key = MarkerLookupKey(tag: "#MONTH", content: month)
+                    if let marker = markerRows[key] {
+                        out.append(buildBlockState(from: marker, makeHandle: makeHandle))
+                    }
+                }
+                out.append(buildBlockState(from: row, makeHandle: makeHandle))
+            }
+        } else {
+            for row in rows {
+                out.append(buildBlockState(from: row, makeHandle: makeHandle))
+            }
         }
 
-        if case .all = spec.match {
-            out.sort { spec.newestFirst ? ($0.createdAtMs > $1.createdAtMs) : ($0.createdAtMs < $1.createdAtMs) }
-        } else if case .customIDs = spec.match {
-            out.sort { spec.newestFirst ? ($0.createdAtMs > $1.createdAtMs) : ($0.createdAtMs < $1.createdAtMs) }
-        } else {
-            // Sort by first line (case-insensitive), then by created time (newest first).
-            out.sort {
-                let a = firstLineKey($0.attr).lowercased()
-                let b = firstLineKey($1.attr).lowercased()
-                if a != b { return a < b }
-                return $0.createdAtMs > $1.createdAtMs
+        if !spec.isWeekly {
+            if case .all = spec.match {
+                out.sort { spec.newestFirst ? ($0.createdAtMs > $1.createdAtMs) : ($0.createdAtMs < $1.createdAtMs) }
+            } else if case .customIDs = spec.match {
+                out.sort { spec.newestFirst ? ($0.createdAtMs > $1.createdAtMs) : ($0.createdAtMs < $1.createdAtMs) }
+            } else {
+                // Sort by first line (case-insensitive), then by created time (newest first).
+                out.sort {
+                    let a = firstLineKey($0.attr).lowercased()
+                    let b = firstLineKey($1.attr).lowercased()
+                    if a != b { return a < b }
+                    return $0.createdAtMs > $1.createdAtMs
+                }
             }
         }
 
         blocks = out
         assert(Set(blocks.map { $0.id }).count == blocks.count)
         focusedBlockID = blocks.first?.id
+        loadedContentWatermarkMs = currentContentWatermarkMs()
+        for b in blocks where !b.protonJSON.isEmpty {
+            b.protonHandle.hydrateFromProtonJSONString(b.protonJSON)
+        }
     }
 
     private func makeTypedFromPlain(_ s: String) -> NSAttributedString {
@@ -647,6 +920,25 @@ final class NJReconstructedNotePersistence: ObservableObject {
         return protonJSON.components(separatedBy: "\"kind\":\"photo\"").count - 1
     }
 
+    private func hasMeaningfulAttributedContent(_ attr: NSAttributedString) -> Bool {
+        if extractPhotoAttachments(from: attr).isEmpty == false { return true }
+        let text = attr.string
+            .replacingOccurrences(of: "\u{FFFC}", with: "")
+            .replacingOccurrences(of: "\u{200B}", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return !text.isEmpty
+    }
+
+    private func stabilizedProtonJSON(
+        exported: String,
+        fallback: String,
+        sourceAttr: NSAttributedString
+    ) -> String {
+        if !exported.isEmpty { return exported }
+        if hasMeaningfulAttributedContent(sourceAttr) { return fallback }
+        return exported
+    }
+
     func hydrateProton(_ id: UUID) {
         guard let i = blocks.firstIndex(where: { $0.id == id }) else { return }
         let json = blocks[i].protonJSON
@@ -657,6 +949,21 @@ final class NJReconstructedNotePersistence: ObservableObject {
     func markDirty(_ id: UUID) {
         guard let i = blocks.firstIndex(where: { $0.id == id }) else { return }
         if !blocks[i].isDirty { blocks[i].isDirty = true }
+    }
+
+    func updateBlockCreatedAt(_ id: UUID, createdAtMs: Int64) {
+        guard let store else { return }
+        guard let i = blocks.firstIndex(where: { $0.id == id }) else { return }
+
+        let normalized = max(1, createdAtMs)
+        let nowMs = DBNoteRepository.nowMs()
+        let blockID = blocks[i].blockID
+
+        store.notes.updateBlockCreatedAtMs(blockID: blockID, createdAtMs: normalized, nowMs: nowMs)
+
+        var arr = blocks
+        arr[i].createdAtMs = normalized
+        blocks = arr
     }
 
     func scheduleCommit(_ id: UUID, debounce: Double = 0.9) {
@@ -676,6 +983,27 @@ final class NJReconstructedNotePersistence: ObservableObject {
         commitBlockNow(id, force: true)
     }
 
+    func deleteBlock(_ id: UUID) {
+        guard let store else { return }
+        guard let i = blocks.firstIndex(where: { $0.id == id }) else { return }
+        let b = blocks[i]
+
+        let now = DBNoteRepository.nowMs()
+        store.notes.markBlockDeleted(blockID: b.blockID)
+        for att in store.notes.listAttachments(blockID: b.blockID) {
+            store.notes.markAttachmentDeleted(attachmentID: att.attachmentID, nowMs: now)
+        }
+
+        blocks.remove(at: i)
+        if focusedBlockID == id {
+            if blocks.indices.contains(i) {
+                focusedBlockID = blocks[i].id
+            } else {
+                focusedBlockID = blocks.last?.id
+            }
+        }
+    }
+
     func commitBlockNow(_ id: UUID) {
         commitBlockNow(id, force: false)
     }
@@ -691,20 +1019,29 @@ final class NJReconstructedNotePersistence: ObservableObject {
         }
 
         var b = blocks[i]
-
         guard let editor = b.protonHandle.editor else {
-            if b.protonJSON.isEmpty {
+            var protonJSONToSave = b.protonJSON
+            if protonJSONToSave.isEmpty && b.attr.length > 0 {
+                let rebuilt = b.protonHandle.exportProtonJSONString(from: b.attr)
+                if !rebuilt.isEmpty {
+                    protonJSONToSave = rebuilt
+                    b.protonJSON = rebuilt
+                    blocks[i].protonJSON = rebuilt
+                }
+            }
+            if protonJSONToSave.isEmpty {
                 b.isDirty = false
                 blocks[i] = b
                 return
             }
             store.notes.saveSingleProtonBlock(
                 blockID: b.blockID,
-                protonJSON: b.protonJSON,
+                protonJSON: protonJSONToSave,
                 tagJSON: b.tagJSON
             )
             b.loadedUpdatedAtMs = DBNoteRepository.nowMs()
             b.isDirty = false
+            markLocalContentCommitted()
             blocks[i] = b
             return
         }
@@ -749,9 +1086,23 @@ final class NJReconstructedNotePersistence: ObservableObject {
         let originalAttr = editor.attributedText
         let views = extractPhotoAttachments(from: originalAttr)
         let sourceAttrForProton = tagRes?.cleaned ?? originalAttr
-        var protonJSON = b.protonHandle.exportProtonJSONString(from: sourceAttrForProton)
+        var protonJSON = stabilizedProtonJSON(
+            exported: b.protonHandle.exportProtonJSONString(from: sourceAttrForProton),
+            fallback: b.protonJSON,
+            sourceAttr: sourceAttrForProton
+        )
         if !views.isEmpty && protonPhotoNodeCount(protonJSON) < views.count {
-            protonJSON = b.protonHandle.exportProtonJSONString(from: originalAttr)
+            protonJSON = stabilizedProtonJSON(
+                exported: b.protonHandle.exportProtonJSONString(from: originalAttr),
+                fallback: protonJSON.isEmpty ? b.protonJSON : protonJSON,
+                sourceAttr: originalAttr
+            )
+        }
+
+        guard !protonJSON.isEmpty else {
+            b.isDirty = false
+            blocks[i] = b
+            return
         }
 
         b.protonJSON = protonJSON
@@ -804,7 +1155,54 @@ final class NJReconstructedNotePersistence: ObservableObject {
 
         b.loadedUpdatedAtMs = DBNoteRepository.nowMs()
         b.isDirty = false
+        markLocalContentCommitted()
         blocks[i] = b
 
+    }
+
+    private func reloadBlockFromStore(at index: Int) {
+        guard blocks.indices.contains(index) else { return }
+
+        var b = blocks[index]
+        let protonJSON = dbLoadBlockProtonJSON(b.blockID)
+        guard !protonJSON.isEmpty else {
+            markPendingRemoteRefresh()
+            return
+        }
+
+        b.protonJSON = protonJSON
+        b.tagJSON = dbLoadBlockTagJSON(b.blockID)
+        let fromIndex = dbLoadDomainPreview3FromBlockTag(b.blockID)
+        b.domainPreview = fromIndex.isEmpty ? domainPreviewFromTagJSON(b.tagJSON) : fromIndex
+        b.attr = makeTypedFromPlain(b.protonHandle.previewFirstLineFromProtonJSON(protonJSON))
+        b.loadedUpdatedAtMs = DBNoteRepository.nowMs()
+        b.isDirty = false
+        blocks[index] = b
+        blocks[index].protonHandle.hydrateFromProtonJSONString(protonJSON)
+        markLocalContentCommitted()
+    }
+
+    private func currentContentWatermarkMs() -> Int64 {
+        guard let store else { return 0 }
+        return store.notes.db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT COALESCE(MAX(updated_at_ms), 0)
+            FROM nj_block
+            WHERE deleted = 0
+              AND block_id IN (
+                SELECT DISTINCT block_id
+                FROM nj_note_block
+                WHERE deleted = 0
+              );
+            """
+            let rc = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
+            if rc != SQLITE_OK { return 0 }
+            defer { sqlite3_finalize(stmt) }
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                return sqlite3_column_int64(stmt, 0)
+            }
+            return 0
+        }
     }
 }

@@ -37,6 +37,14 @@ struct NJReconstructedSpec: Equatable, Identifiable {
     var includeTags: [String]
     var excludeTags: [String]
 
+    var isWeekly: Bool {
+        if case .exact(let tag) = match {
+            let normalized = tag.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return normalized == "#weekly" || normalized == "weekly"
+        }
+        return false
+    }
+
     static func weekly() -> NJReconstructedSpec {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = .current
@@ -61,7 +69,7 @@ struct NJReconstructedSpec: Equatable, Identifiable {
             startMs: startMs,
             endMs: endMs,
             limit: 500,
-            newestFirst: true,
+            newestFirst: false,
             includeTags: [],
             excludeTags: []
         )

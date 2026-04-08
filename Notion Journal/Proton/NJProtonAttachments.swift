@@ -3,6 +3,36 @@ import UIKit
 import Proton
 import ObjectiveC.runtime
 
+private final class NJCollapsibleBodyTextView: UITextView {
+    override var keyCommands: [UIKeyCommand]? {
+        [
+            UIKeyCommand(input: "b", modifierFlags: .command, action: #selector(nj_sectionCmdBold)),
+            UIKeyCommand(input: "i", modifierFlags: .command, action: #selector(nj_sectionCmdItalic)),
+            UIKeyCommand(input: "u", modifierFlags: .command, action: #selector(nj_sectionCmdUnderline)),
+            UIKeyCommand(input: "x", modifierFlags: [.command, .shift], action: #selector(nj_sectionCmdStrike))
+        ].map {
+            $0.wantsPriorityOverSystemBehavior = true
+            return $0
+        }
+    }
+
+    @objc private func nj_sectionCmdBold() {
+        _ = NJCollapsibleAttachmentView.performActionOnActiveBody(.toggleBold)
+    }
+
+    @objc private func nj_sectionCmdItalic() {
+        _ = NJCollapsibleAttachmentView.performActionOnActiveBody(.toggleItalic)
+    }
+
+    @objc private func nj_sectionCmdUnderline() {
+        _ = NJCollapsibleAttachmentView.performActionOnActiveBody(.toggleUnderline)
+    }
+
+    @objc private func nj_sectionCmdStrike() {
+        _ = NJCollapsibleAttachmentView.performActionOnActiveBody(.toggleStrike)
+    }
+}
+
 extension EditorContent.Name {
     static let njPhoto = EditorContent.Name("nj_photo")
     static let njTable = EditorContent.Name("nj_table")
@@ -15,6 +45,15 @@ enum NJTableAction {
 }
 
 final class NJCollapsibleAttachmentView: UIView, AttachmentViewIdentifying, UITextViewDelegate, UITextFieldDelegate {
+    enum BodyFormatAction {
+        case increaseFont
+        case decreaseFont
+        case toggleBold
+        case toggleItalic
+        case toggleUnderline
+        case toggleStrike
+    }
+
     private static weak var activeBodyTextView: UITextView?
     private static var bodyOwnerKey: UInt8 = 0
     let attachmentID: String
@@ -23,7 +62,7 @@ final class NJCollapsibleAttachmentView: UIView, AttachmentViewIdentifying, UITe
 
     private let headerButton = UIButton(type: .system)
     private let titleField = UITextField(frame: .zero)
-    private let bodyTextView = UITextView(frame: .zero)
+    private let bodyTextView = NJCollapsibleBodyTextView(frame: .zero)
     private let stack = UIStackView(frame: .zero)
     private var isInternalUpdate: Bool = false
     private var stackTopConstraint: NSLayoutConstraint?
@@ -32,6 +71,7 @@ final class NJCollapsibleAttachmentView: UIView, AttachmentViewIdentifying, UITe
     private var bodyMinHeightConstraint: NSLayoutConstraint?
     private var preferredHeightConstraint: NSLayoutConstraint?
     private var lastMeasuredWidth: CGFloat = 0
+    weak var boundsObserver: BoundsObserving?
 
     var isCollapsed: Bool {
         didSet { applyCollapsedState() }
@@ -84,12 +124,14 @@ final class NJCollapsibleAttachmentView: UIView, AttachmentViewIdentifying, UITe
     }
 
     override func layoutSubviews() {
+        let oldBounds = bounds
         super.layoutSubviews()
         let w = bounds.width
         if abs(w - lastMeasuredWidth) > 0.5 {
             lastMeasuredWidth = w
             recalculatePreferredHeight()
         }
+        notifyBoundsChangeIfNeeded(oldBounds: oldBounds)
     }
 
     func textViewDidChange(_ textView: UITextView) {
@@ -201,9 +243,13 @@ final class NJCollapsibleAttachmentView: UIView, AttachmentViewIdentifying, UITe
         headerButton.setImage(UIImage(systemName: symbol), for: .normal)
         isInternalUpdate = false
         recalculatePreferredHeight()
+        DispatchQueue.main.async { [weak self] in
+            self?.recalculatePreferredHeight()
+        }
     }
 
     private func recalculatePreferredHeight() {
+        let oldHeight = preferredHeightConstraint?.constant ?? bounds.height
         let next: CGFloat
         if isCollapsed {
             next = 44
@@ -216,8 +262,23 @@ final class NJCollapsibleAttachmentView: UIView, AttachmentViewIdentifying, UITe
         if changed {
             preferredHeightConstraint?.constant = next
             invalidateIntrinsicContentSize()
+            setNeedsLayout()
             superview?.setNeedsLayout()
+            notifyAttachmentOfHeightChange(from: oldHeight, to: next)
         }
+    }
+
+    private func notifyAttachmentOfHeightChange(from oldHeight: CGFloat, to newHeight: CGFloat) {
+        let width = max(bounds.width, 1)
+        let oldBounds = CGRect(origin: bounds.origin, size: CGSize(width: width, height: max(oldHeight, 1)))
+        let newBounds = CGRect(origin: bounds.origin, size: CGSize(width: width, height: max(newHeight, 1)))
+        boundsObserver?.didChangeBounds(newBounds, oldBounds: oldBounds)
+    }
+
+    private func notifyBoundsChangeIfNeeded(oldBounds: CGRect) {
+        guard oldBounds != bounds else { return }
+        guard oldBounds != .zero, bounds != .zero else { return }
+        boundsObserver?.didChangeBounds(bounds, oldBounds: oldBounds)
     }
 
     static func insertImageIntoActiveBody(_ image: UIImage) -> Bool {
@@ -263,6 +324,169 @@ final class NJCollapsibleAttachmentView: UIView, AttachmentViewIdentifying, UITe
         guard let tv = activeBodyTextView else { return nil }
         guard let owner = objc_getAssociatedObject(tv, &Self.bodyOwnerKey) as? NJCollapsibleAttachmentView else { return nil }
         return owner.attachmentID
+    }
+
+    static func performActionOnActiveBody(_ action: BodyFormatAction) -> Bool {
+        guard let tv = activeBodyTextView else { return false }
+        guard let owner = objc_getAssociatedObject(tv, &Self.bodyOwnerKey) as? NJCollapsibleAttachmentView else { return false }
+
+        func baseFont(for value: Any?) -> UIFont {
+            (value as? UIFont) ?? UIFont.systemFont(ofSize: 15, weight: .regular)
+        }
+
+        func bodySnapshot() {
+            owner.recalculatePreferredHeight()
+            owner.onContentChange?()
+            owner.onContentCommit?()
+        }
+
+        func adjustFontSize(delta: CGFloat) {
+            let r = tv.selectedRange
+            if r.length == 0 {
+                let old = baseFont(for: tv.typingAttributes[.font])
+                let newSize = max(8, min(48, old.pointSize + delta))
+                tv.typingAttributes[.font] = UIFont(descriptor: old.fontDescriptor, size: newSize)
+                return
+            }
+
+            tv.textStorage.beginEditing()
+            tv.textStorage.enumerateAttribute(.font, in: r, options: []) { value, range, _ in
+                let old = baseFont(for: value)
+                let newSize = max(8, min(48, old.pointSize + delta))
+                let newFont = UIFont(descriptor: old.fontDescriptor, size: newSize)
+                tv.textStorage.addAttribute(.font, value: newFont, range: range)
+            }
+            tv.textStorage.endEditing()
+            bodySnapshot()
+        }
+
+        func toggleBold() {
+            func applyBold(_ on: Bool, _ font: UIFont) -> UIFont {
+                let size = font.pointSize
+                let fd = font.fontDescriptor
+                let hadItalic = fd.symbolicTraits.contains(.traitItalic)
+                let base = UIFont.systemFont(ofSize: size, weight: .regular)
+                var traits = base.fontDescriptor.symbolicTraits
+                if on { traits.insert(.traitBold) }
+                if hadItalic { traits.insert(.traitItalic) }
+                if let nfd = base.fontDescriptor.withSymbolicTraits(traits) {
+                    return UIFont(descriptor: nfd, size: size)
+                }
+                return base
+            }
+
+            let r = tv.selectedRange
+            if r.length == 0 {
+                let old = baseFont(for: tv.typingAttributes[.font])
+                let isBoldNow = old.fontDescriptor.symbolicTraits.contains(.traitBold)
+                tv.typingAttributes[.font] = applyBold(!isBoldNow, old)
+                return
+            }
+
+            let storage = tv.textStorage
+            let isBoldNow: Bool = {
+                let old = baseFont(for: storage.attribute(.font, at: r.location, effectiveRange: nil))
+                return old.fontDescriptor.symbolicTraits.contains(.traitBold)
+            }()
+
+            storage.beginEditing()
+            storage.enumerateAttribute(.font, in: r, options: []) { value, range, _ in
+                let old = baseFont(for: value)
+                storage.addAttribute(.font, value: applyBold(!isBoldNow, old), range: range)
+            }
+            storage.endEditing()
+            bodySnapshot()
+        }
+
+        func toggleFontTrait(_ trait: UIFontDescriptor.SymbolicTraits) {
+            let r = tv.selectedRange
+            if r.length == 0 {
+                let old = baseFont(for: tv.typingAttributes[.font])
+                let fd = old.fontDescriptor
+                let has = fd.symbolicTraits.contains(trait)
+                var traits = fd.symbolicTraits
+                if has { traits.remove(trait) } else { traits.insert(trait) }
+                if let nfd = fd.withSymbolicTraits(traits) {
+                    tv.typingAttributes[.font] = UIFont(descriptor: nfd, size: old.pointSize)
+                }
+                return
+            }
+
+            tv.textStorage.beginEditing()
+            tv.textStorage.enumerateAttribute(.font, in: r, options: []) { value, range, _ in
+                let old = baseFont(for: value)
+                let fd = old.fontDescriptor
+                let has = fd.symbolicTraits.contains(trait)
+                var traits = fd.symbolicTraits
+                if has { traits.remove(trait) } else { traits.insert(trait) }
+                if let nfd = fd.withSymbolicTraits(traits) {
+                    tv.textStorage.addAttribute(.font, value: UIFont(descriptor: nfd, size: old.pointSize), range: range)
+                }
+            }
+            tv.textStorage.endEditing()
+            bodySnapshot()
+        }
+
+        func toggleUnderline() {
+            let r = tv.selectedRange
+            if r.length == 0 {
+                let v = (tv.typingAttributes[.underlineStyle] as? Int) ?? 0
+                tv.typingAttributes[.underlineStyle] = (v == 0) ? NSUnderlineStyle.single.rawValue : 0
+                return
+            }
+
+            let s = tv.textStorage
+            let has = ((s.attribute(.underlineStyle, at: r.location, effectiveRange: nil) as? Int) ?? 0) != 0
+            s.beginEditing()
+            if has {
+                s.removeAttribute(.underlineStyle, range: r)
+            } else {
+                s.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: r)
+            }
+            s.endEditing()
+            bodySnapshot()
+        }
+
+        func toggleStrike() {
+            let r = tv.selectedRange
+            if r.length == 0 {
+                let v = (tv.typingAttributes[.strikethroughStyle] as? Int) ?? 0
+                if v == 0 {
+                    tv.typingAttributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+                } else {
+                    tv.typingAttributes.removeValue(forKey: .strikethroughStyle)
+                }
+                return
+            }
+
+            let s = tv.textStorage
+            let has = ((s.attribute(.strikethroughStyle, at: r.location, effectiveRange: nil) as? Int) ?? 0) != 0
+            s.beginEditing()
+            if has {
+                s.removeAttribute(.strikethroughStyle, range: r)
+            } else {
+                s.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: r)
+            }
+            s.endEditing()
+            bodySnapshot()
+        }
+
+        switch action {
+        case .increaseFont:
+            adjustFontSize(delta: 1)
+        case .decreaseFont:
+            adjustFontSize(delta: -1)
+        case .toggleBold:
+            toggleBold()
+        case .toggleItalic:
+            toggleFontTrait(.traitItalic)
+        case .toggleUnderline:
+            toggleUnderline()
+        case .toggleStrike:
+            toggleStrike()
+        }
+
+        return true
     }
 
     static func flushActiveBodyEditing() {

@@ -45,7 +45,8 @@ struct RootView: View {
                             NJGoalDetailWorkspaceView(goalID: gid)
                                 .environmentObject(store)
                         } else {
-                            ContentUnavailableView("Select a goal", systemImage: "target")
+                            NJGoalJournalDashboardView()
+                                .environmentObject(store)
                         }
                     case .outline:
                         if let id = store.selectedOutlineID {
@@ -67,9 +68,11 @@ struct RootView: View {
                     store.runAudioIngestIfNeeded()
                     store.runAudioTranscribeIfNeeded()
                     store.runTimeModuleInboxIngestIfNeeded()
+                    store.syncTimeSlotOverrunNotifications()
                     NJLocalBLRunner(db: store.db).run(.deriveBlockTagIndexAndDomainV1)
                     NJHealthLogger.shared.configure(db: store.db)
                     NJHealthLogger.shared.appDidBecomeActive()
+                    NJGPSLogger.shared.refreshAuthorityUI()
                 }
                 .onChange(of: scenePhase) { ph in
                     if ph == .active {
@@ -77,9 +80,11 @@ struct RootView: View {
                         store.runAudioIngestIfNeeded()
                         store.runAudioTranscribeIfNeeded()
                         store.runTimeModuleInboxIngestIfNeeded()
+                        store.syncTimeSlotOverrunNotifications()
                         NJLocalBLRunner(db: store.db).run(.deriveBlockTagIndexAndDomainV1)
                         NJHealthLogger.shared.configure(db: store.db)
                         NJHealthLogger.shared.appDidBecomeActive()
+                        NJGPSLogger.shared.refreshAuthorityUI()
                     }
                 }
                 .onChange(of: store.selectedNotebookID) { _ in

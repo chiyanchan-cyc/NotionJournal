@@ -53,6 +53,10 @@ extension DBNoteRepository {
         blockTable.updateBlockTagJSON(blockID: blockID, tagJSON: tagJSON, updatedAtMs: nowMs)
     }
 
+    func updateBlockCreatedAtMs(blockID: String, createdAtMs: Int64, nowMs: Int64) {
+        blockTable.updateBlockCreatedAtMs(blockID: blockID, createdAtMs: createdAtMs, updatedAtMs: nowMs)
+    }
+
     func markNoteBlockDeleted(instanceID: String, nowMs: Int64) {
         noteBlockTable.markNoteBlockDeleted(instanceID: instanceID, nowMs: nowMs)
     }

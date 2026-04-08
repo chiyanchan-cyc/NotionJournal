@@ -24,6 +24,13 @@ final class NJOutlineStore: ObservableObject {
         return created
     }
 
+    func updateOutlineTitle(outlineID: String, title: String) {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        repo.updateOutlineTitle(outlineID: outlineID, title: trimmed)
+        outlines = repo.listOutlines(category: nil)
+    }
+
     func loadNodes(outlineID: String) {
         nodes = repo.listOutlineNodes(outlineID: outlineID)
     }
@@ -86,6 +93,33 @@ final class NJOutlineStore: ObservableObject {
             repo.moveOutlineNode(nodeID: sib.nodeID, parentNodeID: sib.parentNodeID, ord: idx)
         }
         loadNodes(outlineID: moving.outlineID)
+    }
+
+    func moveNodeFromMindmap(nodeID: String, toParentNodeID: String?, toIndex: Int) {
+        guard let n = node(nodeID) else { return }
+
+        let oldParent = n.parentNodeID
+        let targetSiblings = nodes
+            .filter { $0.outlineID == n.outlineID && $0.parentNodeID == toParentNodeID && $0.nodeID != nodeID }
+            .sorted { $0.ord < $1.ord }
+
+        let insertAt = max(0, min(toIndex, targetSiblings.count))
+        var orderedIDs = targetSiblings.map(\.nodeID)
+        orderedIDs.insert(nodeID, at: insertAt)
+
+        for (idx, id) in orderedIDs.enumerated() {
+            let parent = id == nodeID ? toParentNodeID : targetSiblings.first(where: { $0.nodeID == id })?.parentNodeID
+            repo.moveOutlineNode(nodeID: id, parentNodeID: parent, ord: idx)
+        }
+
+        let oldSiblings = nodes
+            .filter { $0.outlineID == n.outlineID && $0.parentNodeID == oldParent && $0.nodeID != nodeID }
+            .sorted { $0.ord < $1.ord }
+        for (idx, sib) in oldSiblings.enumerated() {
+            repo.moveOutlineNode(nodeID: sib.nodeID, parentNodeID: sib.parentNodeID, ord: idx)
+        }
+
+        loadNodes(outlineID: n.outlineID)
     }
 
     func updateNodeTitle(nodeID: String, title: String) {
@@ -211,6 +245,16 @@ final class NJOutlineStore: ObservableObject {
             endMs: endMs,
             limit: limit
         )
+    }
+
+    func blockRefs(nodeID: String) -> [NJOutlineBlockRef] {
+        repo.loadOutlineNodeBlockRefs(nodeID: nodeID)
+    }
+
+    func setBlockRefs(nodeID: String, refs: [NJOutlineBlockRef]) {
+        guard let n = node(nodeID) else { return }
+        repo.setOutlineNodeBlockRefs(nodeID: nodeID, refs: refs)
+        loadNodes(outlineID: n.outlineID)
     }
 
     func node(_ nodeID: String) -> NJOutlineNodeRecord? {

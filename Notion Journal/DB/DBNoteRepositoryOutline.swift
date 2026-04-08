@@ -561,6 +561,152 @@ extension DBNoteRepository {
         }
     }
 
+    func loadOutlineNodeBlockRefs(nodeID: String) -> [NJOutlineBlockRef] {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT COALESCE(block_refs_json, '[]')
+            FROM nj_outline_node
+            WHERE node_id=? AND deleted=0
+            LIMIT 1;
+            """
+            let rc0 = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
+            if rc0 != SQLITE_OK { db.dbgErr(dbp, "loadOutlineNodeBlockRefs.prepare", rc0); return [] }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, nodeID, -1, SQLITE_TRANSIENT)
+            guard sqlite3_step(stmt) == SQLITE_ROW else { return [] }
+            let raw = sqlite3_column_text(stmt, 0).flatMap { String(cString: $0) } ?? "[]"
+            guard let data = raw.data(using: .utf8),
+                  let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+                return []
+            }
+            return arr.compactMap { obj in
+                let blockID = ((obj["block_id"] as? String) ?? (obj["blockID"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !blockID.isEmpty else { return nil }
+                let extraDomain = ((obj["extra_domain"] as? String) ?? (obj["extraDomain"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                return NJOutlineBlockRef(blockID: blockID, extraDomain: extraDomain)
+            }
+        }
+    }
+
+    func listOutlineAttachedBlockIDs() -> Set<String> {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT COALESCE(block_refs_json, '[]')
+            FROM nj_outline_node
+            WHERE deleted=0
+              AND COALESCE(block_refs_json, '[]') <> '[]';
+            """
+            let rc0 = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
+            if rc0 != SQLITE_OK { db.dbgErr(dbp, "listOutlineAttachedBlockIDs.prepare", rc0); return [] }
+            defer { sqlite3_finalize(stmt) }
+
+            var out = Set<String>()
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let raw = sqlite3_column_text(stmt, 0).flatMap { String(cString: $0) } ?? "[]"
+                guard let data = raw.data(using: .utf8),
+                      let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+                    continue
+                }
+                for obj in arr {
+                    let blockID = ((obj["block_id"] as? String) ?? (obj["blockID"] as? String) ?? "")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !blockID.isEmpty {
+                        out.insert(blockID)
+                    }
+                }
+            }
+            return out
+        }
+    }
+
+    func repairOutlineAttachedBlockRefs() -> Int {
+        struct NodeRefs {
+            let nodeID: String
+            let refsJSON: String
+        }
+
+        let rows: [NodeRefs] = db.withDB { dbp in
+            var out: [NodeRefs] = []
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT node_id, COALESCE(block_refs_json, '[]')
+            FROM nj_outline_node
+            WHERE deleted=0
+              AND COALESCE(block_refs_json, '[]') <> '[]';
+            """
+            let rc0 = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
+            if rc0 != SQLITE_OK { db.dbgErr(dbp, "repairOutlineAttachedBlockRefs.prepare", rc0); return out }
+            defer { sqlite3_finalize(stmt) }
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let nodeID = sqlite3_column_text(stmt, 0).flatMap { String(cString: $0) } ?? ""
+                let refsJSON = sqlite3_column_text(stmt, 1).flatMap { String(cString: $0) } ?? "[]"
+                if !nodeID.isEmpty { out.append(NodeRefs(nodeID: nodeID, refsJSON: refsJSON)) }
+            }
+            return out
+        }
+
+        var changed = 0
+        for row in rows {
+            guard let data = row.refsJSON.data(using: .utf8),
+                  let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+                continue
+            }
+            let normalizedRefs: [NJOutlineBlockRef] = arr.compactMap { obj in
+                let rawBlockID = ((obj["block_id"] as? String) ?? (obj["blockID"] as? String) ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !rawBlockID.isEmpty else { return nil }
+                let candidates = Array(Set([rawBlockID, rawBlockID.lowercased(), rawBlockID.uppercased()]))
+                guard let liveID = candidates.first(where: { hasBlock(blockID: $0) }) else { return nil }
+                let extraDomain = ((obj["extra_domain"] as? String) ?? (obj["extraDomain"] as? String) ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return NJOutlineBlockRef(blockID: liveID, extraDomain: extraDomain)
+            }
+
+            let existing = loadOutlineNodeBlockRefs(nodeID: row.nodeID)
+            if existing != normalizedRefs {
+                setOutlineNodeBlockRefs(nodeID: row.nodeID, refs: normalizedRefs)
+                changed += 1
+            }
+        }
+
+        print("NJ_OUTLINE_ATTACH_REF_REPAIR changed=\(changed)")
+        return changed
+    }
+
+    func setOutlineNodeBlockRefs(nodeID: String, refs: [NJOutlineBlockRef]) {
+        let now = Self.nowMs()
+        let normalized = refs.reduce(into: [String: NJOutlineBlockRef]()) { partial, ref in
+            let blockID = ref.blockID.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !blockID.isEmpty else { return }
+            partial[blockID] = NJOutlineBlockRef(blockID: blockID, extraDomain: ref.extraDomain.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        let payload = normalized.values
+            .sorted { $0.blockID < $1.blockID }
+            .map { ["block_id": $0.blockID, "extra_domain": $0.extraDomain] }
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let json = String(data: data, encoding: .utf8) else { return }
+
+        var didWrite = false
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = "UPDATE nj_outline_node SET block_refs_json=?, updated_at_ms=? WHERE node_id=?;"
+            let rc0 = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
+            if rc0 != SQLITE_OK { db.dbgErr(dbp, "setOutlineNodeBlockRefs.prepare", rc0); return }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, json, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int64(stmt, 2, now)
+            sqlite3_bind_text(stmt, 3, nodeID, -1, SQLITE_TRANSIENT)
+            let rc1 = sqlite3_step(stmt)
+            if rc1 != SQLITE_DONE { db.dbgErr(dbp, "setOutlineNodeBlockRefs.step", rc1) }
+            else { didWrite = true }
+        }
+        if didWrite {
+            enqueueDirty(entity: "outline_node", entityID: nodeID, op: "upsert", updatedAtMs: now)
+        }
+    }
+
     private func jsonArrayIsEmpty(_ raw: String) -> Bool {
         guard let data = raw.data(using: .utf8),
               let arr = try? JSONSerialization.jsonObject(with: data) as? [Any] else {
@@ -634,7 +780,7 @@ extension DBNoteRepository {
         db.withDB { dbp in
             var stmt: OpaquePointer?
             let sql = """
-            SELECT node_id, outline_id, parent_node_id, ord, title, comment, domain_tag, is_checklist, is_checked, is_collapsed, filter_json, created_at_ms, updated_at_ms, deleted
+            SELECT node_id, outline_id, parent_node_id, ord, title, comment, domain_tag, is_checklist, is_checked, is_collapsed, filter_json, goal_refs_json, block_refs_json, created_at_ms, updated_at_ms, deleted
             FROM nj_outline_node
             WHERE node_id=?;
             """
@@ -656,9 +802,11 @@ extension DBNoteRepository {
                 "is_checked": sqlite3_column_int64(stmt, 8),
                 "is_collapsed": sqlite3_column_int64(stmt, 9),
                 "filter_json": String(cString: sqlite3_column_text(stmt, 10)),
-                "created_at_ms": sqlite3_column_int64(stmt, 11),
-                "updated_at_ms": sqlite3_column_int64(stmt, 12),
-                "deleted": sqlite3_column_int64(stmt, 13)
+                "goal_refs_json": String(cString: sqlite3_column_text(stmt, 11)),
+                "block_refs_json": String(cString: sqlite3_column_text(stmt, 12)),
+                "created_at_ms": sqlite3_column_int64(stmt, 13),
+                "updated_at_ms": sqlite3_column_int64(stmt, 14),
+                "deleted": sqlite3_column_int64(stmt, 15)
             ]
         }
     }
@@ -734,6 +882,8 @@ extension DBNoteRepository {
         let isChecked: Int64 = (int64Any(f["is_checked"]) ?? 0) > 0 ? 1 : 0
         let isCollapsed: Int64 = (int64Any(f["is_collapsed"]) ?? 0) > 0 ? 1 : 0
         let filterJSON = (f["filter_json"] as? String) ?? "{}"
+        let goalRefsJSON = (f["goal_refs_json"] as? String) ?? "[]"
+        let blockRefsJSON = (f["block_refs_json"] as? String) ?? "[]"
         let now = Self.nowMs()
         let createdAtMs = max(1, int64Any(f["created_at_ms"]) ?? now)
         let updatedAtMs = max(1, int64Any(f["updated_at_ms"]) ?? createdAtMs)
@@ -759,7 +909,7 @@ extension DBNoteRepository {
             INSERT INTO nj_outline_node(
                 node_id, outline_id, parent_node_id, ord, title, comment, domain_tag,
                 is_checklist, is_checked, is_collapsed, filter_json, goal_refs_json, block_refs_json, created_at_ms, updated_at_ms, deleted
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', '[]', ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(node_id) DO UPDATE SET
               outline_id=excluded.outline_id,
               parent_node_id=excluded.parent_node_id,
@@ -771,6 +921,8 @@ extension DBNoteRepository {
               is_checked=excluded.is_checked,
               is_collapsed=excluded.is_collapsed,
               filter_json=excluded.filter_json,
+              goal_refs_json=excluded.goal_refs_json,
+              block_refs_json=excluded.block_refs_json,
               created_at_ms=excluded.created_at_ms,
               updated_at_ms=excluded.updated_at_ms,
               deleted=excluded.deleted;
@@ -794,9 +946,11 @@ extension DBNoteRepository {
             sqlite3_bind_int64(stmt, 9, isChecked)
             sqlite3_bind_int64(stmt, 10, isCollapsed)
             sqlite3_bind_text(stmt, 11, filterJSON, -1, SQLITE_TRANSIENT)
-            sqlite3_bind_int64(stmt, 12, createdAtMs)
-            sqlite3_bind_int64(stmt, 13, updatedAtMs)
-            sqlite3_bind_int64(stmt, 14, deleted)
+            sqlite3_bind_text(stmt, 12, goalRefsJSON, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 13, blockRefsJSON, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int64(stmt, 14, createdAtMs)
+            sqlite3_bind_int64(stmt, 15, updatedAtMs)
+            sqlite3_bind_int64(stmt, 16, deleted)
             let rc1 = sqlite3_step(stmt)
             if rc1 != SQLITE_DONE { db.dbgErr(dbp, "applyOutlineNodeFields.step", rc1) }
         }
@@ -804,49 +958,56 @@ extension DBNoteRepository {
 
     @discardableResult
     func enqueueOutlineDirtyBackfillIfNeeded() -> Int {
-        struct RowID { let id: String; let updatedAtMs: Int64 }
-        let (outlineRows, nodeRows): ([RowID], [RowID]) = db.withDB { dbp in
-            func load(_ sql: String, label: String) -> [RowID] {
-                var out: [RowID] = []
+        let changed = db.withDB { dbp in
+            var totalChanged = 0
+
+            func backfill(entity: String, sourceTable: String, idColumn: String, label: String) {
                 var stmt: OpaquePointer?
+                let sql = """
+                INSERT INTO nj_dirty(entity, entity_id, op, updated_at_ms, attempts, last_error, ignore)
+                SELECT ?, s.id, 'upsert', s.updated_at_ms, 0, '', 0
+                FROM (
+                  SELECT \(idColumn) AS id, updated_at_ms
+                  FROM \(sourceTable)
+                  WHERE \(idColumn) <> ''
+                ) s
+                LEFT JOIN nj_dirty d
+                  ON d.entity = ?
+                 AND d.entity_id = s.id COLLATE NOCASE
+                WHERE d.entity_id IS NULL
+                   OR d.ignore = 1
+                ON CONFLICT(entity, entity_id) DO UPDATE SET
+                  op='upsert',
+                  updated_at_ms=excluded.updated_at_ms,
+                  attempts=0,
+                  last_error='',
+                  ignore=0;
+                """
                 let rc0 = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
                 if rc0 != SQLITE_OK {
                     db.dbgErr(dbp, "enqueueOutlineDirtyBackfillIfNeeded.\(label).prepare", rc0)
-                    return out
+                    return
                 }
                 defer { sqlite3_finalize(stmt) }
-                while sqlite3_step(stmt) == SQLITE_ROW {
-                    guard let c = sqlite3_column_text(stmt, 0) else { continue }
-                    let id = String(cString: c).trimmingCharacters(in: .whitespacesAndNewlines)
-                    if id.isEmpty { continue }
-                    out.append(RowID(id: id, updatedAtMs: sqlite3_column_int64(stmt, 1)))
+
+                sqlite3_bind_text(stmt, 1, entity, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(stmt, 2, entity, -1, SQLITE_TRANSIENT)
+
+                if sqlite3_step(stmt) == SQLITE_DONE {
+                    totalChanged += Int(sqlite3_changes(dbp))
                 }
-                return out
             }
 
-            let outlines = load(
-                "SELECT outline_id, updated_at_ms FROM nj_outline;",
-                label: "outline.select"
-            )
-            let nodes = load(
-                "SELECT node_id, updated_at_ms FROM nj_outline_node;",
-                label: "node.select"
-            )
-            return (outlines, nodes)
+            backfill(entity: "outline", sourceTable: "nj_outline", idColumn: "outline_id", label: "outline")
+            backfill(entity: "outline_node", sourceTable: "nj_outline_node", idColumn: "node_id", label: "node")
+            return totalChanged
         }
 
-        let now = Self.nowMs()
-        for r in outlineRows {
-            enqueueDirty(entity: "outline", entityID: r.id, op: "upsert", updatedAtMs: max(r.updatedAtMs, now))
-        }
-        for r in nodeRows {
-            enqueueDirty(entity: "outline_node", entityID: r.id, op: "upsert", updatedAtMs: max(r.updatedAtMs, now))
-        }
-
-        let dirtyOutlineCount = db.withDB { scalarCount(dbp: $0, sql: "SELECT COUNT(1) FROM nj_dirty WHERE entity='outline';") }
-        let dirtyNodeCount = db.withDB { scalarCount(dbp: $0, sql: "SELECT COUNT(1) FROM nj_dirty WHERE entity='outline_node';") }
-        let changed = dirtyOutlineCount + dirtyNodeCount
-        print("NJ_OUTLINE_BACKFILL outlines=\(outlineRows.count) nodes=\(nodeRows.count) dirty_outline=\(dirtyOutlineCount) dirty_node=\(dirtyNodeCount) changed=\(changed)")
+        let outlineRows = db.withDB { scalarCount(dbp: $0, sql: "SELECT COUNT(1) FROM nj_outline;") }
+        let nodeRows = db.withDB { scalarCount(dbp: $0, sql: "SELECT COUNT(1) FROM nj_outline_node;") }
+        let dirtyOutlineCount = db.withDB { scalarCount(dbp: $0, sql: "SELECT COUNT(1) FROM nj_dirty WHERE entity='outline' AND ignore=0;") }
+        let dirtyNodeCount = db.withDB { scalarCount(dbp: $0, sql: "SELECT COUNT(1) FROM nj_dirty WHERE entity='outline_node' AND ignore=0;") }
+        print("NJ_OUTLINE_BACKFILL outlines=\(outlineRows) nodes=\(nodeRows) dirty_outline=\(dirtyOutlineCount) dirty_node=\(dirtyNodeCount) changed=\(changed)")
         return changed
     }
 

@@ -19,6 +19,14 @@ final class DBNoteRepository {
     let calendarTable: DBCalendarTable
     let plannedExerciseTable: DBPlannedExerciseTable
     let planningNoteTable: DBPlanningNoteTable
+    let financeMacroEventTable: DBFinanceMacroEventTable
+    let financeDailyBriefTable: DBFinanceDailyBriefTable
+    let financeResearchSessionTable: DBFinanceResearchSessionTable
+    let financeResearchMessageTable: DBFinanceResearchMessageTable
+    let financeResearchTaskTable: DBFinanceResearchTaskTable
+    let financeFindingTable: DBFinanceFindingTable
+    let financeJournalLinkTable: DBFinanceJournalLinkTable
+    let financeSourceItemTable: DBFinanceSourceItemTable
     let timeSlotTable: DBTimeSlotTable
     let personalGoalTable: DBPersonalGoalTable
     private let cloudBridge: DBCloudBridge
@@ -58,6 +66,38 @@ final class DBNoteRepository {
             db: db,
             enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
         )
+        self.financeMacroEventTable = DBFinanceMacroEventTable(
+            db: db,
+            enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
+        )
+        self.financeDailyBriefTable = DBFinanceDailyBriefTable(
+            db: db,
+            enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
+        )
+        self.financeResearchSessionTable = DBFinanceResearchSessionTable(
+            db: db,
+            enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
+        )
+        self.financeResearchMessageTable = DBFinanceResearchMessageTable(
+            db: db,
+            enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
+        )
+        self.financeResearchTaskTable = DBFinanceResearchTaskTable(
+            db: db,
+            enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
+        )
+        self.financeFindingTable = DBFinanceFindingTable(
+            db: db,
+            enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
+        )
+        self.financeJournalLinkTable = DBFinanceJournalLinkTable(
+            db: db,
+            enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
+        )
+        self.financeSourceItemTable = DBFinanceSourceItemTable(
+            db: db,
+            enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
+        )
         self.timeSlotTable = DBTimeSlotTable(
             db: db,
             enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
@@ -75,6 +115,14 @@ final class DBNoteRepository {
             calendarTable: self.calendarTable,
             plannedExerciseTable: self.plannedExerciseTable,
             planningNoteTable: self.planningNoteTable,
+            financeMacroEventTable: self.financeMacroEventTable,
+            financeDailyBriefTable: self.financeDailyBriefTable,
+            financeResearchSessionTable: self.financeResearchSessionTable,
+            financeResearchMessageTable: self.financeResearchMessageTable,
+            financeResearchTaskTable: self.financeResearchTaskTable,
+            financeFindingTable: self.financeFindingTable,
+            financeJournalLinkTable: self.financeJournalLinkTable,
+            financeSourceItemTable: self.financeSourceItemTable,
             timeSlotTable: self.timeSlotTable,
             personalGoalTable: self.personalGoalTable
         )
@@ -152,6 +200,59 @@ final class DBNoteRepository {
         goalTable.listGoalSummaries(includeDeleted: includeDeleted)
     }
 
+    func listJournalEntryDateKeysByGoalTag(
+        tags: [String],
+        startMs: Int64,
+        endMs: Int64
+    ) -> [String: Set<String>] {
+        let cleanedTags = Array(
+            Set(
+                tags
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+            )
+        ).sorted()
+        guard !cleanedTags.isEmpty, endMs > startMs else { return [:] }
+
+        return db.withDB { dbp in
+            var out: [String: Set<String>] = [:]
+            var stmt: OpaquePointer?
+            let placeholders = Array(repeating: "?", count: cleanedTags.count).joined(separator: ",")
+            let sql = """
+            SELECT t.tag, b.created_at_ms
+            FROM nj_block_tag t
+            JOIN nj_block b
+              ON b.block_id = t.block_id
+            WHERE t.tag IN (\(placeholders))
+              AND b.deleted = 0
+              AND b.created_at_ms >= ?
+              AND b.created_at_ms < ?;
+            """
+            let rc0 = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
+            if rc0 != SQLITE_OK { return out }
+            defer { sqlite3_finalize(stmt) }
+
+            var bindIndex: Int32 = 1
+            for tag in cleanedTags {
+                sqlite3_bind_text(stmt, bindIndex, tag, -1, SQLITE_TRANSIENT)
+                bindIndex += 1
+            }
+            sqlite3_bind_int64(stmt, bindIndex, startMs)
+            sqlite3_bind_int64(stmt, bindIndex + 1, endMs)
+
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                guard let tagC = sqlite3_column_text(stmt, 0) else { continue }
+                let tag = String(cString: tagC).trimmingCharacters(in: .whitespacesAndNewlines)
+                if tag.isEmpty { continue }
+                let createdAtMs = sqlite3_column_int64(stmt, 1)
+                let date = Date(timeIntervalSince1970: TimeInterval(createdAtMs) / 1000.0)
+                let key = Self.dateKey(date)
+                out[tag, default: []].insert(key)
+            }
+            return out
+        }
+    }
+
     func markBlockDeleted(blockID: String) {
         blockTable.markBlockDeleted(blockID: blockID)
     }
@@ -162,6 +263,10 @@ final class DBNoteRepository {
 
     func updateBlockTagJSON(blockID: String, tagJSON: String, nowMs: Int64) {
         blockTable.updateBlockTagJSON(blockID: blockID, tagJSON: tagJSON, updatedAtMs: nowMs)
+    }
+
+    func updateBlockCreatedAtMs(blockID: String, createdAtMs: Int64, nowMs: Int64) {
+        blockTable.updateBlockCreatedAtMs(blockID: blockID, createdAtMs: createdAtMs, updatedAtMs: nowMs)
     }
 
     func markNoteBlockDeleted(instanceID: String, nowMs: Int64) {
@@ -275,6 +380,22 @@ final class DBNoteRepository {
             for (_, f) in rows { applyRemoteUpsert(entity: "planned_exercise", fields: f) }
         case "planning_note":
             for (_, f) in rows { applyRemoteUpsert(entity: "planning_note", fields: f) }
+        case "finance_macro_event":
+            for (_, f) in rows { applyRemoteUpsert(entity: "finance_macro_event", fields: f) }
+        case "finance_daily_brief":
+            for (_, f) in rows { applyRemoteUpsert(entity: "finance_daily_brief", fields: f) }
+        case "finance_research_session":
+            for (_, f) in rows { applyRemoteUpsert(entity: "finance_research_session", fields: f) }
+        case "finance_research_message":
+            for (_, f) in rows { applyRemoteUpsert(entity: "finance_research_message", fields: f) }
+        case "finance_research_task":
+            for (_, f) in rows { applyRemoteUpsert(entity: "finance_research_task", fields: f) }
+        case "finance_finding":
+            for (_, f) in rows { applyRemoteUpsert(entity: "finance_finding", fields: f) }
+        case "finance_journal_link":
+            for (_, f) in rows { applyRemoteUpsert(entity: "finance_journal_link", fields: f) }
+        case "finance_source_item":
+            for (_, f) in rows { applyRemoteUpsert(entity: "finance_source_item", fields: f) }
         case "time_slot":
             for (_, f) in rows { applyRemoteUpsert(entity: "time_slot", fields: f) }
         case "personal_goal":
@@ -324,18 +445,74 @@ final class DBNoteRepository {
     }
 
     func cleanupCalendarItemsOlderThan3Months() {
-        let cal = Calendar.current
-        guard let cutoff = cal.date(byAdding: .month, value: -3, to: Date()) else { return }
-        let cutoffKey = Self.dateKey(cutoff)
-        let items = calendarTable.listItemsBefore(dateKey: cutoffKey)
-        if items.isEmpty { return }
-        let now = Self.nowMs()
-        for item in items {
-            calendarTable.markDeleted(dateKey: item.dateKey, nowMs: now)
-            if !item.photoAttachmentID.isEmpty {
-                markAttachmentDeleted(attachmentID: item.photoAttachmentID, nowMs: now)
+        // Memory photos should persist indefinitely. Keep this method as a no-op so
+        // older callers remain safe while we preserve historical calendar data.
+    }
+
+    func restoreDeletedCalendarPhotoItems() -> Int {
+        let items: [NJCalendarItem] = db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT date_key, title, photo_attachment_id, photo_local_id, photo_cloud_id, photo_thumb_path,
+                   created_at_ms, updated_at_ms, deleted
+            FROM nj_calendar_item
+            WHERE deleted = 1
+              AND (
+                trim(photo_attachment_id) <> ''
+                OR trim(photo_local_id) <> ''
+                OR trim(photo_cloud_id) <> ''
+                OR trim(photo_thumb_path) <> ''
+              )
+            ORDER BY date_key ASC;
+            """
+            let rc0 = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
+            if rc0 != SQLITE_OK { return [] }
+            defer { sqlite3_finalize(stmt) }
+
+            var out: [NJCalendarItem] = []
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let key = sqlite3_column_text(stmt, 0).flatMap { String(cString: $0) } ?? ""
+                let title = sqlite3_column_text(stmt, 1).flatMap { String(cString: $0) } ?? ""
+                let photoAttachmentID = sqlite3_column_text(stmt, 2).flatMap { String(cString: $0) } ?? ""
+                let photoLocalID = sqlite3_column_text(stmt, 3).flatMap { String(cString: $0) } ?? ""
+                let photoCloudID = sqlite3_column_text(stmt, 4).flatMap { String(cString: $0) } ?? ""
+                let photoThumbPath = sqlite3_column_text(stmt, 5).flatMap { String(cString: $0) } ?? ""
+                let createdAtMs = sqlite3_column_int64(stmt, 6)
+                let updatedAtMs = sqlite3_column_int64(stmt, 7)
+                let deleted = Int(sqlite3_column_int64(stmt, 8))
+                out.append(
+                    NJCalendarItem(
+                        dateKey: key,
+                        title: title,
+                        photoAttachmentID: photoAttachmentID,
+                        photoLocalID: photoLocalID,
+                        photoCloudID: photoCloudID,
+                        photoThumbPath: photoThumbPath,
+                        createdAtMs: createdAtMs,
+                        updatedAtMs: updatedAtMs,
+                        deleted: deleted
+                    )
+                )
             }
+            return out
         }
+
+        guard !items.isEmpty else { return 0 }
+
+        let now = Self.nowMs()
+        var restored = 0
+        for var item in items {
+            item.deleted = 0
+            item.updatedAtMs = now
+            calendarTable.upsertItem(item)
+            if !item.photoAttachmentID.isEmpty, var att = attachmentByID(item.photoAttachmentID) {
+                att.deleted = 0
+                att.updatedAtMs = now
+                attachmentTable.upsertAttachment(att, nowMs: now)
+            }
+            restored += 1
+        }
+        return restored
     }
     
     func localCount(entity: String) -> Int {
@@ -349,6 +526,14 @@ final class DBNoteRepository {
         case "calendar_item": table = "nj_calendar_item"
         case "planned_exercise": table = "nj_planned_exercise"
         case "planning_note": table = "nj_planning_note"
+        case "finance_macro_event": table = "nj_finance_macro_event"
+        case "finance_daily_brief": table = "nj_finance_daily_brief"
+        case "finance_research_session": table = "nj_finance_research_session"
+        case "finance_research_message": table = "nj_finance_research_message"
+        case "finance_research_task": table = "nj_finance_research_task"
+        case "finance_finding": table = "nj_finance_finding"
+        case "finance_journal_link": table = "nj_finance_journal_link"
+        case "finance_source_item": table = "nj_finance_source_item"
         case "time_slot": table = "nj_time_slot"
         case "personal_goal": table = "nj_personal_goal"
         case "outline": table = "nj_outline"
@@ -600,6 +785,10 @@ final class DBNoteRepository {
         calendarTable.upsertItem(item)
     }
 
+    func backfillCalendarThumbPath(attachmentID: String, thumbPath: String) {
+        calendarTable.backfillThumbPath(attachmentID: attachmentID, thumbPath: thumbPath)
+    }
+
     func deleteCalendarItem(dateKey: String, nowMs: Int64) {
         calendarTable.markDeleted(dateKey: dateKey, nowMs: nowMs)
     }
@@ -614,6 +803,91 @@ final class DBNoteRepository {
 
     func deletePlannedExercise(planID: String, nowMs: Int64) {
         plannedExerciseTable.markDeleted(planID: planID, nowMs: nowMs)
+    }
+
+    func listFinanceMacroEvents(startKey: String, endKey: String) -> [NJFinanceMacroEvent] {
+        financeMacroEventTable.list(startKey: startKey, endKey: endKey)
+    }
+
+    func listFinanceMacroEvents(dateKey: String) -> [NJFinanceMacroEvent] {
+        financeMacroEventTable.list(dateKey: dateKey)
+    }
+
+    func financeDailyBrief(dateKey: String) -> NJFinanceDailyBrief? {
+        financeDailyBriefTable.load(dateKey: dateKey)
+    }
+
+    func upsertFinanceMacroEvent(_ row: NJFinanceMacroEvent) {
+        financeMacroEventTable.upsert(row)
+    }
+
+    func listFinanceDailyBriefs(startKey: String, endKey: String) -> [NJFinanceDailyBrief] {
+        financeDailyBriefTable.list(startKey: startKey, endKey: endKey)
+    }
+
+    func listFinanceResearchSessions() -> [NJFinanceResearchSession] {
+        financeResearchSessionTable.list()
+    }
+
+    func financeResearchSession(sessionID: String) -> NJFinanceResearchSession? {
+        financeResearchSessionTable.load(sessionID: sessionID)
+    }
+
+    func upsertFinanceResearchSession(_ row: NJFinanceResearchSession) {
+        financeResearchSessionTable.upsert(row)
+    }
+
+    func listFinanceResearchMessages(sessionID: String) -> [NJFinanceResearchMessage] {
+        financeResearchMessageTable.list(sessionID: sessionID)
+    }
+
+    func upsertFinanceResearchMessage(_ row: NJFinanceResearchMessage) {
+        financeResearchMessageTable.upsert(row)
+    }
+
+    func listFinanceResearchTasks(sessionID: String) -> [NJFinanceResearchTask] {
+        financeResearchTaskTable.list(sessionID: sessionID)
+    }
+
+    func upsertFinanceResearchTask(_ row: NJFinanceResearchTask) {
+        financeResearchTaskTable.upsert(row)
+    }
+
+    func listFinanceFindings(sessionID: String, premiseID: String = "") -> [NJFinanceFinding] {
+        financeFindingTable.list(sessionID: sessionID, premiseID: premiseID)
+    }
+
+    func upsertFinanceFinding(_ row: NJFinanceFinding) {
+        financeFindingTable.upsert(row)
+    }
+
+    func upsertFinanceJournalLink(_ row: NJFinanceJournalLink) {
+        financeJournalLinkTable.upsert(row)
+    }
+
+    func listFinanceSourceItems(premiseID: String, limit: Int = 40) -> [NJFinanceSourceItem] {
+        financeSourceItemTable.listForPremise(premiseID, limit: limit)
+    }
+
+    func upsertFinanceSourceItem(_ row: NJFinanceSourceItem) {
+        financeSourceItemTable.upsert(row)
+    }
+
+    func saveFinanceDay(dateKey: String, events: [NJFinanceMacroEvent], brief: NJFinanceDailyBrief?, nowMs: Int64) {
+        let existing = financeMacroEventTable.list(dateKey: dateKey)
+        let incomingIDs = Set(events.map(\.eventID))
+        for row in existing where !incomingIDs.contains(row.eventID) {
+            financeMacroEventTable.markDeleted(eventID: row.eventID, nowMs: nowMs)
+        }
+        for row in events {
+            financeMacroEventTable.upsert(row)
+        }
+
+        if let brief {
+            financeDailyBriefTable.upsert(brief)
+        } else if financeDailyBriefTable.loadIncludingDeleted(dateKey: dateKey) != nil {
+            financeDailyBriefTable.markDeleted(dateKey: dateKey, nowMs: nowMs)
+        }
     }
 
     func planningNote(kind: String, targetKey: String) -> NJPlanningNote? {

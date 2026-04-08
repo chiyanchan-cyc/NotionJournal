@@ -8,6 +8,7 @@ struct NJLoadedTextBlock {
     let blockID: String
     let instanceID: String
     let orderKey: Double
+    let payloadJSON: String
     let protonJSON: String
     let rtfData: Data
 }
@@ -353,6 +354,7 @@ extension DBNoteRepository {
                         blockID: blockID,
                         instanceID: instanceID,
                         orderKey: orderKey,
+                        payloadJSON: payload,
                         protonJSON: protonJSON,
                         rtfData: rtfData
                     )
