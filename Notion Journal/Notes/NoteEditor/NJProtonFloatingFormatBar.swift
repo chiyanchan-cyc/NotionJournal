@@ -36,6 +36,7 @@ struct NJProtonFloatingFormatBar: View {
             return
         }
         withHandle {
+            $0.isEditing = true
             handleAction($0)
             $0.snapshot()
         }
@@ -56,13 +57,14 @@ struct NJProtonFloatingFormatBar: View {
 
                 Divider().frame(height: 18)
 
-                Button { withHandle { $0.toggleNumber(); $0.snapshot() } } label: { Image(systemName: "list.number") }
-                Button { withHandle { $0.toggleBullet(); $0.snapshot() } } label: { Image(systemName: "list.bullet") }
+                Button { withHandle { $0.isEditing = true; $0.toggleNumber(); $0.snapshot() } } label: { Image(systemName: "list.number") }
+                Button { withHandle { $0.isEditing = true; $0.toggleBullet(); $0.snapshot() } } label: { Image(systemName: "list.bullet") }
 
                 Divider().frame(height: 18)
                 
                 Button {
                     withHandle {
+                        $0.isEditing = true
                         $0.insertTagLine()
                         $0.snapshot()
                     }
@@ -86,6 +88,7 @@ struct NJProtonFloatingFormatBar: View {
 
                 Button {
                     withHandle {
+                        $0.isEditing = true
                         $0.insertTableAttachment()
                         $0.snapshot()
                     }
@@ -109,8 +112,8 @@ struct NJProtonFloatingFormatBar: View {
                     Image(systemName: "minus.square")
                 }
 
-                Button { withHandle { $0.outdent(); $0.snapshot() } } label: { Image(systemName: "decrease.indent") }
-                Button { withHandle { $0.indent(); $0.snapshot() } } label: { Image(systemName: "increase.indent") }
+                Button { withHandle { $0.isEditing = true; $0.outdent(); $0.snapshot() } } label: { Image(systemName: "decrease.indent") }
+                Button { withHandle { $0.isEditing = true; $0.indent(); $0.snapshot() } } label: { Image(systemName: "increase.indent") }
             }
             .padding(.horizontal, 8)
         }
@@ -135,6 +138,7 @@ struct NJProtonFloatingFormatBar: View {
                         let h = photoTargetHandle ?? resolvedHandle()
                         guard let h else { return }
                         print("NJ_PHOTO_PICKER_HANDLE owner=\(String(describing: h.ownerBlockUUID))")
+                        h.isEditing = true
                         h.insertPhotoAttachment(img, fullPhotoRef: fullRef)
                         h.snapshot()
                     }

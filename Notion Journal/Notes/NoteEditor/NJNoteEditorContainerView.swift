@@ -510,13 +510,16 @@ struct NJNoteEditorContainerView: View {
                         persistence.focusedBlockID = persistence.blocks[i].id
                     }
                     if !persistence.blocks[i].attr.isEqual(to: v) {
+                        let shouldPersistAsDirty = persistence.blocks[i].protonHandle.isEditing
                         persistence.blocks[i].attr = v
                         persistence.blocks[i].sel = clampSelectionRange(
                             persistence.blocks[i].sel,
                             textLength: v.length
                         )
-                        persistence.markDirty(id)
-                        persistence.scheduleCommit(id)
+                        if shouldPersistAsDirty {
+                            persistence.markDirty(id)
+                            persistence.scheduleCommit(id)
+                        }
                     }
                 }
             }
@@ -622,6 +625,7 @@ private struct NJContainerKeyCommands: UIViewControllerRepresentable {
 
         private func withHandle(_ f: (NJProtonEditorHandle) -> Void) {
             guard let h = getHandle?() else { return }
+            h.isEditing = true
             f(h)
             h.snapshot()
         }
@@ -718,6 +722,7 @@ private struct NJHiddenShortcuts: View {
         }
 
         NJShortcutLog.info("SHORTCUT: has handle owner=\(String(describing: h.ownerBlockUUID)) editor_nil=\(h.editor == nil) tv_nil=\(h.textView == nil)")
+        h.isEditing = true
         f(h)
         h.snapshot()
     }

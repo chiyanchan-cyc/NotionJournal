@@ -12,9 +12,13 @@ import Proton
 import os
 import PhotosUI
 import CoreLocation
-import WeatherKit
 
 private let NJShortcutLog = Logger(subsystem: "NotionJournal", category: "Shortcuts")
+
+private enum NJWeeklyWeatherServiceConfig {
+    static let host = "n32vhft6q7.re.qweatherapi.com"
+    static let apiKey = "3d507a30a2364b3f8befc5b9448233db"
+}
 
 private struct NJWeeklyWeatherDay {
     let symbolName: String
@@ -47,8 +51,12 @@ private final class NJWeeklyWeatherForecastProvider: NSObject, ObservableObject,
 
     func startIfNeeded() {
         authorizationStatus = manager.authorizationStatus
-        if loadForecastFromLastLoggedLocationIfAvailable() {
-            statusText = "Using last logged location"
+        let hasLoggedLocation = loadForecastFromLastLoggedLocationIfAvailable()
+        if hasLoggedLocation {
+            statusText = Self.shouldPreferLoggedMobileLocation ? "Using iPhone location" : "Using last logged location"
+        }
+        if Self.shouldPreferLoggedMobileLocation, hasLoggedLocation {
+            return
         }
         switch authorizationStatus {
         case .authorizedAlways, .authorizedWhenInUse:
@@ -65,8 +73,12 @@ private final class NJWeeklyWeatherForecastProvider: NSObject, ObservableObject,
     }
 
     func refresh() {
-        if loadForecastFromLastLoggedLocationIfAvailable() {
-            statusText = "Refreshing weather..."
+        let hasLoggedLocation = loadForecastFromLastLoggedLocationIfAvailable()
+        if hasLoggedLocation {
+            statusText = Self.shouldPreferLoggedMobileLocation ? "Using iPhone location" : "Refreshing weather..."
+        }
+        if Self.shouldPreferLoggedMobileLocation, hasLoggedLocation {
+            return
         } else {
             statusText = "Loading weather..."
         }
@@ -142,16 +154,15 @@ private final class NJWeeklyWeatherForecastProvider: NSObject, ObservableObject,
     }
 
     private func fetchForecast(for coordinate: CLLocationCoordinate2D) async {
-        let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
         for attempt in 1...3 {
             do {
-                let next = try await fetchWeatherKitForecast(for: location)
+                let next = try await fetchQWeatherForecast(for: coordinate)
                 forecastByDayKey = next
                 statusText = next.isEmpty ? "Weather unavailable" : "Weather updated"
                 return
             } catch {
                 let formatted = Self.formatWeatherError(error)
-                print("NJ_WEEKLY_WEATHER weatherkit_failed attempt=\(attempt) \(formatted)")
+                print("NJ_WEEKLY_WEATHER qweather_failed attempt=\(attempt) \(formatted)")
                 if attempt < 3 {
                     try? await Task.sleep(nanoseconds: UInt64(attempt) * 500_000_000)
                 }
@@ -162,15 +173,30 @@ private final class NJWeeklyWeatherForecastProvider: NSObject, ObservableObject,
         }
     }
 
-    private func fetchWeatherKitForecast(for location: CLLocation) async throws -> [String: NJWeeklyWeatherDay] {
-        let weather = try await WeatherService.shared.weather(for: location)
+    private func fetchQWeatherForecast(for coordinate: CLLocationCoordinate2D) async throws -> [String: NJWeeklyWeatherDay] {
+        var comps = URLComponents()
+        comps.scheme = "https"
+        comps.host = NJWeeklyWeatherServiceConfig.host
+        comps.path = "/v7/weather/3d"
+        comps.queryItems = [
+            URLQueryItem(name: "location", value: Self.qweatherLocationString(for: coordinate)),
+            URLQueryItem(name: "lang", value: "en"),
+            URLQueryItem(name: "unit", value: "m")
+        ]
+        guard let url = comps.url else { throw URLError(.badURL) }
+
+        var request = URLRequest(url: url)
+        request.setValue(NJWeeklyWeatherServiceConfig.apiKey, forHTTPHeaderField: "X-QW-Api-Key")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try Self.validateHTTP(response)
+
+        let payload = try JSONDecoder().decode(QWeatherDailyPayload.self, from: data)
         var next: [String: NJWeeklyWeatherDay] = [:]
-        for day in weather.dailyForecast {
-            let key = Self.dayKey(for: day.date, calendar: Calendar.current)
-            next[key] = NJWeeklyWeatherDay(
-                symbolName: day.symbolName,
-                minC: day.lowTemperature.converted(to: .celsius).value,
-                maxC: day.highTemperature.converted(to: .celsius).value
+        for day in payload.daily {
+            next[day.fxDate] = NJWeeklyWeatherDay(
+                symbolName: Self.symbolName(forQWeatherIcon: day.iconDay, textDay: day.textDay),
+                minC: Double(day.tempMin) ?? 0,
+                maxC: Double(day.tempMax) ?? 0
             )
         }
         return next
@@ -260,6 +286,72 @@ private final class NJWeeklyWeatherForecastProvider: NSObject, ObservableObject,
             return "\(nsError.domain) \(nsError.code)"
         }
         return "\(nsError.domain) \(nsError.code): \(desc)"
+    }
+
+    private static func qweatherLocationString(for coordinate: CLLocationCoordinate2D) -> String {
+        let lon = String(format: "%.2f", coordinate.longitude)
+        let lat = String(format: "%.2f", coordinate.latitude)
+        return "\(lon),\(lat)"
+    }
+
+    private static func validateHTTP(_ response: URLResponse) throws {
+        guard let http = response as? HTTPURLResponse else { return }
+        guard (200..<300).contains(http.statusCode) else {
+            throw NSError(
+                domain: "NJWeatherHTTP",
+                code: http.statusCode,
+                userInfo: [NSLocalizedDescriptionKey: HTTPURLResponse.localizedString(forStatusCode: http.statusCode)]
+            )
+        }
+    }
+
+    private static var shouldPreferLoggedMobileLocation: Bool {
+        #if targetEnvironment(macCatalyst)
+        return true
+        #else
+        if #available(iOS 14.0, *) {
+            return ProcessInfo.processInfo.isiOSAppOnMac
+        }
+        return false
+        #endif
+    }
+
+    private static func symbolName(forQWeatherIcon icon: String, textDay: String) -> String {
+        switch icon {
+        case "100", "150":
+            return "sun.max.fill"
+        case "101", "102", "103", "151", "152", "153":
+            return "cloud.sun.fill"
+        case "104", "154":
+            return "cloud.fill"
+        case "300", "301", "305", "306", "307", "308", "309", "310", "311", "312", "313", "314", "315", "316", "317", "318", "350", "351", "399":
+            return "cloud.rain.fill"
+        case "400", "401", "402", "403", "404", "405", "406", "407", "408", "409", "410", "456", "457", "499":
+            return "cloud.snow.fill"
+        case "500", "501", "502", "503", "504", "507", "508", "509", "510", "511", "512", "513", "514", "515":
+            return "cloud.fog.fill"
+        case "302", "303", "304":
+            return "cloud.bolt.rain.fill"
+        default:
+            let lowered = textDay.lowercased()
+            if lowered.contains("rain") { return "cloud.rain.fill" }
+            if lowered.contains("snow") { return "cloud.snow.fill" }
+            if lowered.contains("thunder") { return "cloud.bolt.rain.fill" }
+            if lowered.contains("sun") || lowered.contains("clear") { return "sun.max.fill" }
+            return "cloud.fill"
+        }
+    }
+
+    private struct QWeatherDailyPayload: Decodable {
+        struct Day: Decodable {
+            let fxDate: String
+            let tempMax: String
+            let tempMin: String
+            let iconDay: String
+            let textDay: String
+        }
+
+        let daily: [Day]
     }
 
 }
@@ -531,10 +623,15 @@ struct NJReconstructedNoteView: View {
                     if persistence.focusedBlockID != arr[i].id {
                         persistence.focusedBlockID = arr[i].id
                     }
-                    arr[i].attr = v
-                    persistence.blocks = arr
-                    persistence.markDirty(id)
-                    persistence.scheduleCommit(id)
+                    if !arr[i].attr.isEqual(to: v) {
+                        let shouldPersistAsDirty = arr[i].protonHandle.isEditing
+                        arr[i].attr = v
+                        persistence.blocks = arr
+                        if shouldPersistAsDirty {
+                            persistence.markDirty(id)
+                            persistence.scheduleCommit(id)
+                        }
+                    }
                 }
             }
         )
@@ -611,6 +708,7 @@ private struct NJHiddenShortcuts: View {
         }
 
         NJShortcutLog.info("SHORTCUT: has handle owner=\(String(describing: h.ownerBlockUUID)) editor_nil=\(h.editor == nil) tv_nil=\(h.textView == nil)")
+        h.isEditing = true
         f(h)
         h.snapshot()
     }

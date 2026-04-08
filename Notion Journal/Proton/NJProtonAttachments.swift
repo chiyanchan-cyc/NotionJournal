@@ -334,6 +334,16 @@ final class NJCollapsibleAttachmentView: UIView, AttachmentViewIdentifying, UITe
             (value as? UIFont) ?? UIFont.systemFont(ofSize: 15, weight: .regular)
         }
 
+        func canonicalBodyFont(size: CGFloat, bold: Bool = false, italic: Bool = false) -> UIFont {
+            let weight: UIFont.Weight = bold ? .semibold : .regular
+            let base = UIFont.systemFont(ofSize: size, weight: weight)
+            guard italic else { return base }
+            if let nfd = base.fontDescriptor.withSymbolicTraits(base.fontDescriptor.symbolicTraits.union(.traitItalic)) {
+                return UIFont(descriptor: nfd, size: size)
+            }
+            return base
+        }
+
         func bodySnapshot() {
             owner.recalculatePreferredHeight()
             owner.onContentChange?()
@@ -365,14 +375,7 @@ final class NJCollapsibleAttachmentView: UIView, AttachmentViewIdentifying, UITe
                 let size = font.pointSize
                 let fd = font.fontDescriptor
                 let hadItalic = fd.symbolicTraits.contains(.traitItalic)
-                let base = UIFont.systemFont(ofSize: size, weight: .regular)
-                var traits = base.fontDescriptor.symbolicTraits
-                if on { traits.insert(.traitBold) }
-                if hadItalic { traits.insert(.traitItalic) }
-                if let nfd = base.fontDescriptor.withSymbolicTraits(traits) {
-                    return UIFont(descriptor: nfd, size: size)
-                }
-                return base
+                return canonicalBodyFont(size: size, bold: on, italic: hadItalic)
             }
 
             let r = tv.selectedRange
@@ -402,26 +405,24 @@ final class NJCollapsibleAttachmentView: UIView, AttachmentViewIdentifying, UITe
             let r = tv.selectedRange
             if r.length == 0 {
                 let old = baseFont(for: tv.typingAttributes[.font])
-                let fd = old.fontDescriptor
-                let has = fd.symbolicTraits.contains(trait)
-                var traits = fd.symbolicTraits
-                if has { traits.remove(trait) } else { traits.insert(trait) }
-                if let nfd = fd.withSymbolicTraits(traits) {
-                    tv.typingAttributes[.font] = UIFont(descriptor: nfd, size: old.pointSize)
-                }
+                let hasItalic = old.fontDescriptor.symbolicTraits.contains(.traitItalic)
+                let hasBold = old.fontDescriptor.symbolicTraits.contains(.traitBold)
+                let nextItalic = trait == .traitItalic ? !hasItalic : hasItalic
+                tv.typingAttributes[.font] = canonicalBodyFont(size: old.pointSize, bold: hasBold, italic: nextItalic)
                 return
             }
 
             tv.textStorage.beginEditing()
             tv.textStorage.enumerateAttribute(.font, in: r, options: []) { value, range, _ in
                 let old = baseFont(for: value)
-                let fd = old.fontDescriptor
-                let has = fd.symbolicTraits.contains(trait)
-                var traits = fd.symbolicTraits
-                if has { traits.remove(trait) } else { traits.insert(trait) }
-                if let nfd = fd.withSymbolicTraits(traits) {
-                    tv.textStorage.addAttribute(.font, value: UIFont(descriptor: nfd, size: old.pointSize), range: range)
-                }
+                let hasItalic = old.fontDescriptor.symbolicTraits.contains(.traitItalic)
+                let hasBold = old.fontDescriptor.symbolicTraits.contains(.traitBold)
+                let nextItalic = trait == .traitItalic ? !hasItalic : hasItalic
+                tv.textStorage.addAttribute(
+                    .font,
+                    value: canonicalBodyFont(size: old.pointSize, bold: hasBold, italic: nextItalic),
+                    range: range
+                )
             }
             tv.textStorage.endEditing()
             bodySnapshot()
