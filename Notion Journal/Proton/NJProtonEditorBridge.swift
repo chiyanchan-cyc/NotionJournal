@@ -10,6 +10,7 @@ enum NJListKind: String {
     case number
 }
 private var NJTextViewHandleKey: UInt8 = 0
+private var NJTextViewTableOwnerKey: UInt8 = 0
 private var NJKeyCommandsOriginalIMP: IMP?
 
 private var NJEditorViewHandleKey: UInt8 = 0
@@ -19,20 +20,14 @@ private func NJCanonicalBodyFont(
     bold: Bool = false,
     italic: Bool = false
 ) -> UIFont {
-    let weight: UIFont.Weight = bold ? .semibold : .regular
-    let base = UIFont.systemFont(ofSize: size, weight: weight)
-    guard italic else { return base }
-    if let nfd = base.fontDescriptor.withSymbolicTraits(base.fontDescriptor.symbolicTraits.union(.traitItalic)) {
-        return UIFont(descriptor: nfd, size: size)
-    }
-    return base
+    NJEditorCanonicalBodyFont(size: size, bold: bold, italic: italic)
 }
 
 private func NJHasExplicitBoldTrait(_ font: UIFont) -> Bool {
-    font.fontDescriptor.symbolicTraits.contains(.traitBold)
+    NJEditorHasExplicitBoldTrait(font)
 }
 
-private extension EditorView {
+extension EditorView {
     var njProtonHandle: NJProtonEditorHandle? {
         get { objc_getAssociatedObject(self, &NJEditorViewHandleKey) as? NJProtonEditorHandle }
         set { objc_setAssociatedObject(self, &NJEditorViewHandleKey, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC) }
@@ -40,36 +35,35 @@ private extension EditorView {
 }
 
 private func NJStandardizeFontFamily(_ font: UIFont) -> UIFont {
-    let fd = font.fontDescriptor
-    if fd.symbolicTraits.contains(.traitMonoSpace) { return font }
-
-    let size = font.pointSize
-    let hadBoldTrait = NJHasExplicitBoldTrait(font)
-    let hadItalic = fd.symbolicTraits.contains(.traitItalic)
-    return NJCanonicalBodyFont(size: size, bold: hadBoldTrait, italic: hadItalic)
+    NJEditorStandardizeFontFamily(font)
 }
 
 private func NJStandardizeFontFamily(_ s: NSAttributedString) -> NSAttributedString {
-    if s.length == 0 { return s }
-    let m = NSMutableAttributedString(attributedString: s)
-    let full = NSRange(location: 0, length: m.length)
-    m.beginEditing()
-    m.enumerateAttribute(.font, in: full, options: []) { value, range, _ in
-        guard let old = value as? UIFont else { return }
-        let nf = NJStandardizeFontFamily(old)
-        if nf.fontName != old.fontName || nf.pointSize != old.pointSize {
-            m.addAttribute(.font, value: nf, range: range)
-        }
-    }
-    m.endEditing()
-    return m
+    NJEditorStandardizeFontFamily(s)
 }
 
 private extension NSAttributedString {
     var fullRange: NSRange { NSRange(location: 0, length: length) }
 }
 
-private extension UITextView {
+private final class NJWeakTableAttachmentBox: NSObject {
+    weak var owner: NJTableAttachmentView?
+
+    init(owner: NJTableAttachmentView?) {
+        self.owner = owner
+    }
+}
+
+func NJSetTextViewTableOwner(_ tv: UITextView, owner: NJTableAttachmentView?) {
+    objc_setAssociatedObject(
+        tv,
+        &NJTextViewTableOwnerKey,
+        NJWeakTableAttachmentBox(owner: owner),
+        .OBJC_ASSOCIATION_RETAIN_NONATOMIC
+    )
+}
+
+extension UITextView {
     var njProtonHandle: NJProtonEditorHandle? {
         get { objc_getAssociatedObject(self, &NJTextViewHandleKey) as? NJProtonEditorHandle }
         set { objc_setAssociatedObject(self, &NJTextViewHandleKey, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC) }
@@ -86,12 +80,37 @@ private extension UITextView {
         guard let h = self.njProtonHandle else { return }
         h.isEditing = true
         f(h)
-        h.snapshot()
+        h.snapshot(markUserEdit: true)
+        NJCollapsibleAttachmentView.handleKeyCommandMutation(in: self)
         if !self.isFirstResponder { self.becomeFirstResponder() }
     }
 
-    @objc func nj_tabIndent() { nj_fire("TAB INDENT") { $0.indent() } }
-    @objc func nj_tabOutdent() { nj_fire("TAB OUTDENT") { $0.outdent() } }
+    private var njTableOwner: NJTableAttachmentView? {
+        (objc_getAssociatedObject(self, &NJTextViewTableOwnerKey) as? NJWeakTableAttachmentBox)?.owner
+    }
+
+    @objc func nj_tabIndent() {
+        if let owner = njTableOwner {
+            owner.focusNextCell()
+            return
+        }
+        nj_fire("TAB INDENT") { $0.indent() }
+    }
+
+    @objc func nj_tabOutdent() {
+        if let owner = njTableOwner {
+            owner.focusPreviousCell()
+            return
+        }
+        nj_fire("TAB OUTDENT") { $0.outdent() }
+    }
+
+    @objc func nj_tableReturn() {
+        if let owner = njTableOwner {
+            owner.handleReturnKey()
+            return
+        }
+    }
 
     @objc func nj_cmdBold() { nj_fire("CMD+B") { $0.toggleBold() } }
     @objc func nj_cmdItalic() { nj_fire("CMD+I") { $0.toggleItalic() } }
@@ -101,8 +120,8 @@ private extension UITextView {
     @objc func nj_cmdIndent() { nj_fire("CMD+]") { $0.indent() } }
     @objc func nj_cmdOutdent() { nj_fire("CMD+[") { $0.outdent() } }
 
-    @objc func nj_cmdBullet() { nj_fire("CMD+7") { $0.toggleBullet() } }
-    @objc func nj_cmdNumber() { nj_fire("CMD+8") { $0.toggleNumber() } }
+    @objc func nj_cmdBullet() { }
+    @objc func nj_cmdNumber() { }
     
 }
 
@@ -149,7 +168,125 @@ private func NJClipboardImage() -> UIImage? {
     return nil
 }
 
-private func NJInstallTextViewKeyCommandHook(_ tv: UITextView) {
+private func NJNormalizedURL(from value: Any?) -> URL? {
+    if let url = value as? URL, let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" {
+        return url
+    }
+    if let s = value as? String {
+        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let url = URL(string: trimmed),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else { return nil }
+        return url
+    }
+    return nil
+}
+
+private func NJClipboardWebLink() -> (url: URL, title: String?)? {
+    let pb = UIPasteboard.general
+
+    if let url = NJNormalizedURL(from: pb.url) {
+        let rawTitle = pb.string?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = (rawTitle?.isEmpty == false && rawTitle != url.absoluteString) ? rawTitle : nil
+        return (url, title)
+    }
+
+    for item in pb.items {
+        if let url = NJNormalizedURL(from: item["public.url"]) {
+            let rawTitle = (item["public.utf8-plain-text"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let title = (rawTitle?.isEmpty == false && rawTitle != url.absoluteString) ? rawTitle : nil
+            return (url, title)
+        }
+    }
+
+    if let s = pb.string, let url = NJNormalizedURL(from: s) {
+        return (url, s)
+    }
+
+    return nil
+}
+
+private let NJTablePasteboardType = "com.notionjournal.table-json"
+private let NJPhotoPasteboardType = "com.notionjournal.photo-json"
+
+private func NJEncodeJSONObjectString(_ value: Any) -> String? {
+    guard JSONSerialization.isValidJSONObject(value),
+          let data = try? JSONSerialization.data(withJSONObject: value, options: []) else { return nil }
+    return String(data: data, encoding: .utf8)
+}
+
+private func NJDecodeJSONObject(_ string: String) -> [String: Any]? {
+    guard let data = string.data(using: .utf8),
+          let value = try? JSONSerialization.jsonObject(with: data, options: []),
+          let dict = value as? [String: Any] else { return nil }
+    return dict
+}
+
+private func NJClipboardTablePayload() -> [String: Any]? {
+    let pb = UIPasteboard.general
+
+    for item in pb.items {
+        if let data = item[NJTablePasteboardType] as? Data,
+           let string = String(data: data, encoding: .utf8),
+           let payload = NJDecodeJSONObject(string) {
+            return payload
+        }
+        if let string = item[NJTablePasteboardType] as? String,
+           let payload = NJDecodeJSONObject(string) {
+            return payload
+        }
+    }
+
+    return nil
+}
+
+private func NJSetClipboardTablePayload(_ payload: [String: Any], plainText: String) {
+    guard let json = NJEncodeJSONObjectString(payload),
+          let data = json.data(using: .utf8) else { return }
+    UIPasteboard.general.setItems([[
+        NJTablePasteboardType: data,
+        "public.utf8-plain-text": plainText
+    ]], options: [:])
+}
+
+private func NJClipboardPhotoPayload() -> [String: Any]? {
+    let pb = UIPasteboard.general
+
+    for item in pb.items {
+        if let data = item[NJPhotoPasteboardType] as? Data,
+           let string = String(data: data, encoding: .utf8),
+           let payload = NJDecodeJSONObject(string) {
+            return payload
+        }
+        if let string = item[NJPhotoPasteboardType] as? String,
+           let payload = NJDecodeJSONObject(string) {
+            return payload
+        }
+    }
+
+    return nil
+}
+
+private func NJSetClipboardPhotoPayload(_ payload: [String: Any], image: UIImage) {
+    guard let json = NJEncodeJSONObjectString(payload),
+          let data = json.data(using: .utf8) else { return }
+
+    if let png = image.pngData() {
+        UIPasteboard.general.setItems([[
+            NJPhotoPasteboardType: data,
+            "public.png": png
+        ]], options: [:])
+        return
+    }
+
+    UIPasteboard.general.setItems([[
+        NJPhotoPasteboardType: data,
+        "com.apple.uikit.image": image
+    ]], options: [:])
+}
+
+func NJInstallTextViewKeyCommandHook(_ tv: UITextView) {
     let cls: AnyClass = object_getClass(tv) ?? UITextView.self
     let key = ObjectIdentifier(cls)
     if NJKeyCommandsOriginalIMPByClass[key] != nil { return }
@@ -168,7 +305,8 @@ private func NJInstallTextViewKeyCommandHook(_ tv: UITextView) {
             existing = f(t, sel) ?? []
         }
 
-        guard t.njProtonHandle != nil else { return existing }
+        let tableOwner = (objc_getAssociatedObject(t, &NJTextViewTableOwnerKey) as? NJWeakTableAttachmentBox)?.owner
+        guard t.njProtonHandle != nil || tableOwner != nil else { return existing }
 
         let mk: (String, UIKeyModifierFlags, Selector) -> UIKeyCommand = { input, flags, action in
             let c = UIKeyCommand(input: input, modifierFlags: flags, action: action)
@@ -176,18 +314,25 @@ private func NJInstallTextViewKeyCommandHook(_ tv: UITextView) {
             return c
         }
 
-        return existing + [
+        var commands: [UIKeyCommand] = [
             mk("\t", [], #selector(UITextView.nj_tabIndent)),
-            mk("\t", [.shift], #selector(UITextView.nj_tabOutdent)),
-            mk("b", .command, #selector(UITextView.nj_cmdBold)),
-            mk("i", .command, #selector(UITextView.nj_cmdItalic)),
-            mk("u", .command, #selector(UITextView.nj_cmdUnderline)),
-            mk("x", [.command, .shift], #selector(UITextView.nj_cmdStrike)),
-            mk("]", .command, #selector(UITextView.nj_cmdIndent)),
-            mk("[", .command, #selector(UITextView.nj_cmdOutdent)),
-            mk("7", .command, #selector(UITextView.nj_cmdBullet)),
-            mk("8", .command, #selector(UITextView.nj_cmdNumber))
+            mk("\t", [.shift], #selector(UITextView.nj_tabOutdent))
         ]
+        if tableOwner != nil {
+            commands.append(mk("\r", [], #selector(UITextView.nj_tableReturn)))
+        }
+        if t.njProtonHandle != nil {
+            commands.append(contentsOf: [
+                mk("b", .command, #selector(UITextView.nj_cmdBold)),
+                mk("i", .command, #selector(UITextView.nj_cmdItalic)),
+                mk("u", .command, #selector(UITextView.nj_cmdUnderline)),
+                mk("x", [.command, .shift], #selector(UITextView.nj_cmdStrike)),
+                mk("]", .command, #selector(UITextView.nj_cmdIndent)),
+                mk("[", .command, #selector(UITextView.nj_cmdOutdent))
+            ])
+        }
+
+        return existing + commands
 
     }
 
@@ -195,7 +340,7 @@ private func NJInstallTextViewKeyCommandHook(_ tv: UITextView) {
     method_setImplementation(method, newIMP)
 }
 
-private func NJInstallTextViewPasteHook(_ tv: UITextView) {
+func NJInstallTextViewPasteHook(_ tv: UITextView) {
     let cls: AnyClass = object_getClass(tv) ?? UITextView.self
     let key = ObjectIdentifier(cls)
     if NJPasteOriginalIMPByClass[key] != nil { return }
@@ -209,14 +354,41 @@ private func NJInstallTextViewPasteHook(_ tv: UITextView) {
     typealias OrigFn = @convention(c) (AnyObject, Selector, Any?) -> Void
     let newBlock: @convention(block) (UITextView, Any?) -> Void = { t, sender in
         if let h = t.njProtonHandle {
+            if let table = NJClipboardTablePayload() {
+                let rows = (table["rows"] as? Int) ?? 2
+                let cols = (table["cols"] as? Int) ?? 2
+                let cells = (table["cells"] as? [Any])?.compactMap { $0 as? [String: Any] }
+                let tableShortID = table["table_short_id"] as? String
+                let tableName = table["table_name"] as? String
+                h.insertTableAttachment(
+                    rows: rows,
+                    cols: cols,
+                    cellsJSON: cells,
+                    tableShortID: tableShortID,
+                    tableName: tableName
+                )
+                h.snapshot(markUserEdit: true)
+                if !t.isFirstResponder { _ = t.becomeFirstResponder() }
+                return
+            }
+
             if let img = NJClipboardImage() {
+                let photoPayload = NJClipboardPhotoPayload()
                 let fullRef = NJPhotoLibraryPresenter.saveFullPhotoToICloud(image: img) ?? ""
                 if !fullRef.isEmpty {
-                    h.insertPhotoAttachment(img, displayWidth: 400, fullPhotoRef: fullRef)
-                    h.snapshot()
+                    let displayWidth = CGFloat((photoPayload?["display_w"] as? Int) ?? 400)
+                    h.insertPhotoAttachment(img, displayWidth: displayWidth, fullPhotoRef: fullRef)
+                    h.snapshot(markUserEdit: true)
                     if !t.isFirstResponder { _ = t.becomeFirstResponder() }
                     return
                 }
+            }
+
+            if let link = NJClipboardWebLink() {
+                h.insertLink(link.url, title: link.title)
+                h.snapshot(markUserEdit: true)
+                if !t.isFirstResponder { _ = t.becomeFirstResponder() }
+                return
             }
         }
 
@@ -229,7 +401,7 @@ private func NJInstallTextViewPasteHook(_ tv: UITextView) {
     method_setImplementation(method, newIMP)
 }
 
-private func NJInstallTextViewCanPerformActionHook(_ tv: UITextView) {
+func NJInstallTextViewCanPerformActionHook(_ tv: UITextView) {
     let cls: AnyClass = object_getClass(tv) ?? UITextView.self
     let key = ObjectIdentifier(cls)
     if NJCanPerformActionOriginalIMPByClass[key] != nil { return }
@@ -248,10 +420,15 @@ private func NJInstallTextViewCanPerformActionHook(_ tv: UITextView) {
             allowed = f(t, sel, action, sender)
         }
 
+        if let owner = (objc_getAssociatedObject(t, &NJTextViewTableOwnerKey) as? NJWeakTableAttachmentBox)?.owner,
+           owner.shouldSuppressSystemEditMenu(for: t) {
+            return false
+        }
+
         if action == #selector(UIResponderStandardEditActions.paste(_:)),
            !allowed,
            t.njProtonHandle != nil,
-           NJClipboardImage() != nil {
+           (NJClipboardImage() != nil || NJClipboardTablePayload() != nil) {
             return true
         }
 
@@ -734,6 +911,8 @@ final class NJProtonEditorHandle {
     var debugName: String = ""
     var ownerBlockUUID: UUID? = nil
     var isEditing: Bool = false
+    var isRunningProgrammaticUpdate: Bool = false
+    var userEditSourceHint: String = "unknown"
     var withProgrammatic: (((() -> Void)) -> Void)? = nil
     var attachmentResolver: ((String) -> NJAttachmentRecord?)? = nil
     var attachmentThumbPathCleaner: ((String) -> Void)? = nil
@@ -744,8 +923,37 @@ final class NJProtonEditorHandle {
     var onSnapshot: ((NSAttributedString, NSRange) -> Void)?
     var onUserTyped: ((NSAttributedString, NSRange) -> Void)?
     var onEndEditing: ((NSAttributedString, NSRange) -> Void)?
+    var onHydratedSnapshot: ((NSAttributedString, NSRange) -> Void)?
+    var onRequestRemeasure: (() -> Void)?
     
     private var pendingHydrateProtonJSON: String? = nil
+
+    private var isActivelyEditingText: Bool {
+        if isEditing || (textView?.isFirstResponder ?? false) {
+            return true
+        }
+        if let ownerBlockUUID,
+           let responder = NJProtonEditorHandle.firstResponderHandle(),
+           responder !== self,
+           responder.ownerBlockUUID == ownerBlockUUID,
+           (responder.isEditing || (responder.textView?.isFirstResponder ?? false)) {
+            return true
+        }
+        if let ownerBlockUUID,
+           let active = NJProtonEditorHandle.activeHandle(),
+           active !== self,
+           active.ownerBlockUUID == ownerBlockUUID,
+           (active.isEditing || (active.textView?.isFirstResponder ?? false)) {
+            return true
+        }
+        return false
+    }
+
+    func discardPendingHydration() {
+        pendingHydrateProtonJSON = nil
+        pendingJSON = nil
+        hydrationScheduled = false
+    }
 
     func indent() { adjustIndent(delta: 24) }
     func outdent() { adjustIndent(delta: -24) }
@@ -756,37 +964,16 @@ final class NJProtonEditorHandle {
     }
 
     func exportProtonJSONString(from text: NSAttributedString) -> String {
-        if NJProtonDocCodecV2.containsBlockAttachments(text) {
-            return NJProtonDocCodecV2.encodeDocument(from: text)
-        }
-        return NJProtonDocCodecV1.encodeDocument(from: text)
+        let exportText = NJEditorCanonicalizeRichText(
+            NJProtonListNormalizer.apply(
+                synchronizedAttachmentTextForExport(text)
+            )
+        )
+        return NJProtonDocCodecV2.encodeDocument(from: exportText)
     }
     
     func previewFirstLineFromProtonJSON(_ json: String) -> String {
-        let decoded: NSAttributedString = {
-                if let doc = NJProtonDocCodecV2.decodeIfPresent(json: json) {
-                    return NJProtonDocCodecV2.buildAttributedString(
-                        doc: doc,
-                        resolveAttachment: nil,
-                        onMissingThumb: nil,
-                        onOpenFullPhoto: nil,
-                        onTableAction: nil,
-                        onDeletePhoto: nil,
-                        onCollapsibleContentChange: nil,
-                        onCollapsibleToggle: nil
-                    )
-                }
-            if let doc = NJProtonDocCodecV1.decodeIfPresent(json: json) {
-                return NJProtonDocCodecV1.buildAttributedString(doc: doc)
-            }
-            if let nodes = NJProtonNodeCodecV1.decodeNodesIfPresent(json: json) {
-                return NJProtonNodeCodecV1.buildAttributedString(nodes: nodes)
-            }
-            let mode = njDefaultContentMode()
-            let maxSize = CGSize(width: 4096, height: 4096)
-            let a = (try? NJProtonAuditCodec.decoder.decodeDocument(mode: mode, maxSize: maxSize, json: json)) ?? NSAttributedString(string: "")
-            return NJProtonListFixups.apply(a)
-        }()
+        let decoded = decodeAttributedStringFromProtonJSONString(json, interactive: false)
 
         let s = decoded.string
             .replacingOccurrences(of: "\u{2028}", with: "\n")
@@ -795,7 +982,7 @@ final class NJProtonEditorHandle {
         return s.split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) ?? ""
     }
 
-    private struct NJProtonDocCodecV1 {
+    private struct NJLegacyProtonDocCodec {
 
         private static let schema = "nj_proton_doc_v1"
         private static let indentUnit: CGFloat = 24
@@ -1036,6 +1223,13 @@ final class NJProtonEditorHandle {
 
         private static func decodeRTFBase64(_ b64: String) -> NSAttributedString? {
             guard let data = Data(base64Encoded: b64) else { return nil }
+            if let rtfd = try? NSAttributedString(
+                data: data,
+                options: [.documentType: NSAttributedString.DocumentType.rtfd],
+                documentAttributes: nil
+            ) {
+                return rtfd
+            }
             return try? NSAttributedString(
                 data: data,
                 options: [.documentType: NSAttributedString.DocumentType.rtf],
@@ -1085,8 +1279,11 @@ final class NJProtonEditorHandle {
             onOpenFullPhoto: ((String) -> Void)?,
             onTableAction: ((String, NJTableAction) -> Void)?,
             onDeletePhoto: ((String) -> Void)?,
+            onResizePhoto: ((String, CGSize) -> Void)?,
             onCollapsibleContentChange: (() -> Void)?,
-            onCollapsibleToggle: ((String) -> Void)?
+            onCollapsibleContentCommit: (() -> Void)?,
+            onCollapsibleToggle: ((String) -> Void)?,
+            onAttachmentLayoutChange: (() -> Void)?
         ) -> NSAttributedString {
             let out = NSMutableAttributedString()
 
@@ -1117,8 +1314,11 @@ final class NJProtonEditorHandle {
                         onOpenFullPhoto: onOpenFullPhoto,
                         onTableAction: onTableAction,
                         onDeletePhoto: onDeletePhoto,
+                        onResizePhoto: onResizePhoto,
                         onCollapsibleContentChange: onCollapsibleContentChange,
-                        onCollapsibleToggle: onCollapsibleToggle
+                        onCollapsibleContentCommit: onCollapsibleContentCommit,
+                        onCollapsibleToggle: onCollapsibleToggle,
+                        onAttachmentLayoutChange: onAttachmentLayoutChange
                     ) {
                         out.append(att)
                     }
@@ -1192,11 +1392,117 @@ final class NJProtonEditorHandle {
         }
 
         private static func textDocSegments(from text: NSAttributedString) -> [[String: Any]] {
-            let json = NJProtonDocCodecV1.encodeDocument(from: text)
-            if let doc = NJProtonDocCodecV1.decodeIfPresent(json: json) {
-                return doc
+            let fullLen = text.length
+            if fullLen == 0 {
+                return [["type": "rich", "rtf_base64": encodeRTFBase64(text) ?? ""]]
             }
-            return [["type": "rich", "rtf_base64": encodeRTFBase64(text) ?? ""]]
+
+            let parsed = ListParser.parse(attributedString: text, indent: 24)
+            if parsed.isEmpty {
+                return [["type": "rich", "rtf_base64": encodeRTFBase64(text) ?? ""]]
+            }
+
+            struct CapturedItem {
+                let paraRange: NSRange
+                let listItem: ListItem
+            }
+
+            struct ListBlock {
+                let start: Int
+                let end: Int
+                let items: [ListItem]
+            }
+
+            func normalizeKind(_ v: Any) -> String {
+                if let tl = v as? NSTextList { return (tl.markerFormat == .decimal) ? "number" : "bullet" }
+                if let tls = v as? [NSTextList], let tl = tls.first { return (tl.markerFormat == .decimal) ? "number" : "bullet" }
+                if let s = v as? String { return (s == "number") ? "number" : "bullet" }
+                return "bullet"
+            }
+
+            func normalizeListItem(_ li: ListItem) -> ListItem {
+                ListItem(text: li.text, level: li.level, attributeValue: normalizeKind(li.attributeValue))
+            }
+
+            let s = text.string as NSString
+
+            var captured: [CapturedItem] = []
+            captured.reserveCapacity(parsed.count)
+
+            for p in parsed {
+                let paraRange = s.paragraphRange(for: NSRange(location: p.range.location, length: 0))
+                captured.append(CapturedItem(paraRange: paraRange, listItem: normalizeListItem(p.listItem)))
+            }
+
+            captured.sort { $0.paraRange.location < $1.paraRange.location }
+
+            var blocks: [ListBlock] = []
+            blocks.reserveCapacity(captured.count)
+
+            var curItems: [ListItem] = []
+            var curStart = 0
+            var curEnd = 0
+
+            for it in captured {
+                if curItems.isEmpty {
+                    curItems = [it.listItem]
+                    curStart = it.paraRange.location
+                    curEnd = it.paraRange.location + it.paraRange.length
+                    continue
+                }
+
+                if it.paraRange.location > curEnd {
+                    blocks.append(ListBlock(start: curStart, end: curEnd, items: curItems))
+                    curItems = [it.listItem]
+                    curStart = it.paraRange.location
+                    curEnd = it.paraRange.location + it.paraRange.length
+                    continue
+                }
+
+                curItems.append(it.listItem)
+                curEnd = max(curEnd, it.paraRange.location + it.paraRange.length)
+            }
+
+            if !curItems.isEmpty {
+                blocks.append(ListBlock(start: curStart, end: curEnd, items: curItems))
+            }
+
+            blocks.sort { $0.start < $1.start }
+
+            var doc: [[String: Any]] = []
+            var pos = 0
+
+            for b in blocks {
+                if b.start > pos {
+                    let sub = text.attributedSubstring(from: NSRange(location: pos, length: b.start - pos))
+                    doc.append(["type": "rich", "rtf_base64": encodeRTFBase64(sub) ?? ""])
+                }
+
+                var itemsJSON: [[String: Any]] = []
+                itemsJSON.reserveCapacity(b.items.count)
+
+                for li in b.items {
+                    itemsJSON.append([
+                        "level": li.level,
+                        "kind": normalizeKind(li.attributeValue),
+                        "rtf_base64": encodeRTFBase64(li.text) ?? ""
+                    ])
+                }
+
+                doc.append(["type": "list", "items": itemsJSON])
+                pos = b.end
+            }
+
+            if pos < fullLen {
+                let sub = text.attributedSubstring(from: NSRange(location: pos, length: fullLen - pos))
+                doc.append(["type": "rich", "rtf_base64": encodeRTFBase64(sub) ?? ""])
+            }
+
+            if doc.isEmpty {
+                doc.append(["type": "rich", "rtf_base64": encodeRTFBase64(text) ?? ""])
+            }
+
+            return doc
         }
 
         private static func encodeAttachment(_ view: UIView) -> [String: Any]? {
@@ -1215,46 +1521,39 @@ final class NJProtonEditorHandle {
                     "kind": "table",
                     "attachment_id": v.attachmentID
                 ]
-                node["table"] = encodeTable(v.gridView)
+                node["table"] = encodeTable(v)
                 return node
             }
             if let v = view as? NJCollapsibleAttachmentView {
+                let bodyForExport = v.currentBodyAttributedTextForExport()
                 return [
                     "type": "attachment",
                     "kind": "collapsible",
                     "attachment_id": v.attachmentID,
                     "collapsed": v.isCollapsed,
                     "title_rtf_base64": encodeRTFBase64(v.titleAttributedText) ?? "",
-                    "body_rtf_base64": encodeRTFBase64(v.bodyAttributedText) ?? ""
+                    "body_rtf_base64": encodeRTFBase64(bodyForExport) ?? "",
+                    "body_proton_json": v.bodyProtonJSONString
                 ]
             }
             return nil
         }
 
-        private static func encodeTable(_ grid: GridView) -> [String: Any] {
-            let rows = grid.numberOfRows
-            let cols = grid.numberOfColumns
-            var cellsJSON: [[String: Any]] = []
-            cellsJSON.reserveCapacity(grid.cells.count)
-
-            for cell in grid.cells {
-                let row = cell.rowSpan.min() ?? 0
-                let col = cell.columnSpan.min() ?? 0
-                let rtf = encodeRTFBase64(cell.editor.attributedText) ?? ""
-                cellsJSON.append([
-                    "row": row,
-                    "col": col,
-                    "row_span": cell.rowSpan,
-                    "col_span": cell.columnSpan,
-                    "rtf_base64": rtf
-                ])
-            }
-
-            return [
+        private static func encodeTable(_ view: NJTableAttachmentView) -> [String: Any] {
+            let cellsJSON = view.tableCellsForExport()
+            let rows = cellsJSON.compactMap { $0["row"] as? Int }.max().map { $0 + 1 } ?? 1
+            let cols = cellsJSON.compactMap { $0["col"] as? Int }.max().map { $0 + 1 } ?? 1
+            var renderPayload: [String: Any] = [
+                "table_id": view.attachmentID,
                 "rows": rows,
                 "cols": cols,
-                "cells": cellsJSON
+                "table_short_id": view.tableShortIDForExport()
             ]
+            if let tableName = view.tableNameForExport(),
+               !tableName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                renderPayload["table_name"] = tableName
+            }
+            return renderPayload
         }
 
         private static func decodeAttachment(
@@ -1264,8 +1563,11 @@ final class NJProtonEditorHandle {
             onOpenFullPhoto: ((String) -> Void)?,
             onTableAction: ((String, NJTableAction) -> Void)?,
             onDeletePhoto: ((String) -> Void)?,
+            onResizePhoto: ((String, CGSize) -> Void)?,
             onCollapsibleContentChange: (() -> Void)?,
-            onCollapsibleToggle: ((String) -> Void)?
+            onCollapsibleContentCommit: (() -> Void)?,
+            onCollapsibleToggle: ((String) -> Void)?,
+            onAttachmentLayoutChange: (() -> Void)?
         ) -> NSAttributedString? {
             let kind = (node["kind"] as? String) ?? ""
             let attachmentID = (node["attachment_id"] as? String) ?? UUID().uuidString
@@ -1297,6 +1599,35 @@ final class NJProtonEditorHandle {
                     view.onOpenFull = onOpenFullPhoto
                 }
                 view.onDelete = { onDeletePhoto?(attachmentID) }
+                view.onCopy = { [weak view] in
+                    guard let view else { return }
+                    let payload: [String: Any] = [
+                        "attachment_id": attachmentID,
+                        "display_w": Int(view.displaySize.width),
+                        "display_h": Int(view.displaySize.height)
+                    ]
+                    if let image = view.image {
+                        NJSetClipboardPhotoPayload(payload, image: image)
+                    }
+                }
+                view.onCut = { [weak view] in
+                    guard let view else { return }
+                    let payload: [String: Any] = [
+                        "attachment_id": attachmentID,
+                        "display_w": Int(view.displaySize.width),
+                        "display_h": Int(view.displaySize.height)
+                    ]
+                    if let image = view.image {
+                        NJSetClipboardPhotoPayload(payload, image: image)
+                    }
+                    onDeletePhoto?(attachmentID)
+                }
+                view.onResize = { [weak view] in
+                    guard let view else { return }
+                    onResizePhoto?(attachmentID, view.displaySize)
+                    onAttachmentLayoutChange?()
+                    onCollapsibleContentChange?()
+                }
                 if image == nil {
                     view.backgroundColor = UIColor.secondarySystemFill
                     NJAttachmentCloudFetcher.fetchThumbIfNeeded(attachmentID: attachmentID) { img in
@@ -1306,21 +1637,65 @@ final class NJProtonEditorHandle {
                     }
                 }
                 let att = Attachment(view, size: .matchContent)
+                view.boundsObserver = att
                 att.selectOnTap = false
                 att.selectBeforeDelete = false
                 return att.string
             }
 
             if kind == "table" {
-                guard let table = node["table"] as? [String: Any] else { return nil }
+                guard let embeddedTable = node["table"] as? [String: Any] else { return nil }
+                let rawTableID = ((embeddedTable["table_id"] as? String) ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let tableID = rawTableID.isEmpty ? attachmentID : rawTableID
+                let loadedCanonical = NJTableStore.shared.loadCanonicalPayload(tableID: tableID)
+                let table = loadedCanonical ?? embeddedTable
+                if loadedCanonical == nil {
+                    var migrated = table
+                    migrated["table_id"] = tableID
+                    NJTableStore.shared.cacheCanonicalPayload(tableID: tableID, payload: migrated)
+                }
                 let rows = (table["rows"] as? Int) ?? 2
                 let cols = (table["cols"] as? Int) ?? 2
                 let cellsAny = (table["cells"] as? [Any]) ?? []
                 let cellsJSON = cellsAny.compactMap { $0 as? [String: Any] }
+                let widthValues = ((table["column_widths"] as? [Any]) ?? []).compactMap {
+                    if let n = $0 as? NSNumber { return CGFloat(truncating: n) }
+                    if let d = $0 as? Double { return CGFloat(d) }
+                    if let i = $0 as? Int { return CGFloat(i) }
+                    return nil
+                }
+                let alignmentValues = ((table["column_alignments"] as? [Any]) ?? []).compactMap {
+                    ($0 as? String)
+                }
+                let columnTypeValues = ((table["column_types"] as? [Any]) ?? []).compactMap {
+                    ($0 as? String)
+                }
+                let columnFormulaValues = ((table["column_formulas"] as? [Any]) ?? []).compactMap {
+                    ($0 as? String)
+                }
+                let totalFormulaValues = ((table["total_formulas"] as? [Any]) ?? []).compactMap {
+                    ($0 as? String)
+                }
+                let totalsEnabled = (table["totals_enabled"] as? Bool) ?? false
+                let columnFilterValues = ((table["column_filters"] as? [Any]) ?? []).compactMap {
+                    ($0 as? String)
+                }
+                let hideCheckedRows = (table["hide_checked_rows"] as? Bool) ?? false
+                let sortColumn = table["sort_column"] as? Int
+                let sortDirection = table["sort_direction"] as? String
+                let tableShortID = table["table_short_id"] as? String
+                let tableName = table["table_name"] as? String
 
-                let colWidth: CGFloat = cols > 0 ? 1.0 / CGFloat(cols) : 1.0
-                let columns = (0..<max(1, cols)).map { _ in GridColumnConfiguration(width: .fractional(colWidth)) }
-                let rowsCfg = (0..<max(1, rows)).map { _ in GridRowConfiguration(initialHeight: 40) }
+                let columns: [GridColumnConfiguration] = {
+                    let safeCols = max(1, cols)
+                    if widthValues.count == safeCols {
+                        return widthValues.map { GridColumnConfiguration(width: .fixed(max(1, $0))) }
+                    }
+                    let colWidth: CGFloat = safeCols > 0 ? 1.0 / CGFloat(safeCols) : 1.0
+                    return (0..<safeCols).map { _ in GridColumnConfiguration(width: .fractional(colWidth)) }
+                }()
+                let rowsCfg = (0..<max(1, rows)).map { _ in GridRowConfiguration(initialHeight: NJTableDefaultRowHeight) }
 
                 let config = GridConfiguration(
                     columnsConfiguration: columns,
@@ -1337,7 +1712,7 @@ final class NJProtonEditorHandle {
 
                 for r in 0..<max(1, rows) {
                     for c in 0..<max(1, cols) {
-                        let cell = GridCell(rowSpan: [r], columnSpan: [c], initialHeight: 40, ignoresOptimizedInit: true)
+                        let cell = GridCell(rowSpan: [r], columnSpan: [c], initialHeight: NJTableDefaultRowHeight, ignoresOptimizedInit: true)
                         cell.editor.forceApplyAttributedText = true
                         cells.append(cell)
                     }
@@ -1360,7 +1735,22 @@ final class NJProtonEditorHandle {
                     attachmentID: attachmentID,
                     config: config,
                     cells: cells,
-                    onTableAction: onTableAction
+                    columnWidths: widthValues.count == max(1, cols) ? widthValues : nil,
+                    columnAlignments: alignmentValues.count == max(1, cols) ? alignmentValues : nil,
+                    columnTypes: columnTypeValues.count == max(1, cols) ? columnTypeValues : nil,
+                    columnFormulas: columnFormulaValues.count == max(1, cols) ? columnFormulaValues : nil,
+                    totalsEnabled: totalsEnabled,
+                    totalFormulas: totalFormulaValues.count == max(1, cols) ? totalFormulaValues : nil,
+                    hideCheckedRows: hideCheckedRows,
+                    columnFilters: columnFilterValues.count == max(1, cols) ? columnFilterValues : nil,
+                    sortColumn: sortColumn,
+                    sortDirection: sortDirection,
+                    tableShortID: tableShortID,
+                    tableName: tableName,
+                    onTableAction: onTableAction,
+                    onResizeTable: { _ in
+                        onAttachmentLayoutChange?()
+                    }
                 )
                 return tableAttachment.string
             }
@@ -1370,16 +1760,19 @@ final class NJProtonEditorHandle {
                 let titleB64 = (node["title_rtf_base64"] as? String) ?? ""
                 let bodyB64 = (node["body_rtf_base64"] as? String) ?? ""
                 let title = decodeRTFBase64(titleB64) ?? NSAttributedString(string: "Section")
+                let bodyJSON = (node["body_proton_json"] as? String) ?? ""
                 let body = decodeRTFBase64(bodyB64) ?? NSAttributedString(string: "")
                 let view = NJCollapsibleAttachmentView(
                     attachmentID: attachmentID,
                     title: title,
                     body: body,
+                    bodyProtonJSON: bodyJSON,
                     isCollapsed: collapsed
                 )
                 view.onContentChange = onCollapsibleContentChange
-                view.onContentCommit = onCollapsibleContentChange
+                view.onContentCommit = onCollapsibleContentCommit
                 view.onCollapseToggle = { onCollapsibleToggle?(attachmentID) }
+                view.onLayoutChange = onAttachmentLayoutChange
                 let att = Attachment(view, size: .fullWidth)
                 view.boundsObserver = att
                 att.selectOnTap = false
@@ -1453,6 +1846,13 @@ final class NJProtonEditorHandle {
 
         private static func decodeRTFBase64(_ b64: String) -> NSAttributedString? {
             guard let data = Data(base64Encoded: b64) else { return nil }
+            if let rtfd = try? NSAttributedString(
+                data: data,
+                options: [.documentType: NSAttributedString.DocumentType.rtfd],
+                documentAttributes: nil
+            ) {
+                return rtfd
+            }
             return try? NSAttributedString(
                 data: data,
                 options: [.documentType: NSAttributedString.DocumentType.rtf],
@@ -1659,13 +2059,67 @@ final class NJProtonEditorHandle {
     }
 
     func attributedStringFromProtonJSONString(_ json: String) -> NSAttributedString {
+        decodeAttributedStringFromProtonJSONString(json, interactive: true)
+    }
+
+    private func decodeAttributedStringFromProtonJSONString(_ json: String, interactive: Bool) -> NSAttributedString {
+        if let doc = NJProtonDocCodecV2.decodeIfPresent(json: json) {
+            let decoded = NJProtonDocCodecV2.buildAttributedString(
+                doc: doc,
+                resolveAttachment: interactive ? { [weak self] id in self?.attachmentResolver?(id) } : nil,
+                onMissingThumb: interactive ? { [weak self] id in self?.attachmentThumbPathCleaner?(id) } : nil,
+                onOpenFullPhoto: interactive ? { [weak self] id in self?.onOpenFullPhoto?(id) } : nil,
+                onTableAction: interactive ? { [weak self] id, action in
+                    self?.handleTableAction(attachmentID: id, action: action)
+                } : nil,
+                onDeletePhoto: interactive ? { [weak self] id in
+                    self?.deletePhotoAttachment(attachmentID: id)
+                } : nil,
+                onResizePhoto: interactive ? { [weak self] id, size in
+                    self?.replacePhotoAttachment(attachmentID: id, size: size)
+                } : nil,
+                onCollapsibleContentChange: interactive ? { [weak self] in
+                    self?.handleCollapsibleContentChanged()
+                } : nil,
+                onCollapsibleContentCommit: interactive ? { [weak self] in
+                    self?.handleCollapsibleContentCommitted()
+                } : nil,
+                onCollapsibleToggle: interactive ? { [weak self] id in
+                    self?.replaceCollapsibleAttachment(attachmentID: id, shouldSnapshot: false)
+                } : nil,
+                onAttachmentLayoutChange: interactive ? { [weak self] in
+                    self?.onRequestRemeasure?()
+                } : nil
+            )
+            return NJEditorCanonicalizeRichText(NJProtonListNormalizer.apply(decoded))
+        }
+
+        if let doc = NJLegacyProtonDocCodec.decodeIfPresent(json: json) {
+            return NJEditorCanonicalizeRichText(
+                NJProtonListNormalizer.apply(
+                    NJLegacyProtonDocCodec.buildAttributedString(doc: doc)
+                )
+            )
+        }
+
+        if let nodes = NJProtonNodeCodecV1.decodeNodesIfPresent(json: json) {
+            return NJEditorCanonicalizeRichText(
+                NJProtonListNormalizer.apply(
+                    NJProtonNodeCodecV1.buildAttributedString(nodes: nodes)
+                )
+            )
+        }
+
         let out = NSMutableAttributedString()
 
         guard
             let data = json.data(using: .utf8),
             let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
         else {
-            return out
+            let mode = njDefaultContentMode()
+            let maxSize = CGSize(width: 4096, height: 4096)
+            let decoded = (try? NJProtonAuditCodec.decoder.decodeDocument(mode: mode, maxSize: maxSize, json: json)) ?? NSAttributedString(string: "")
+            return NJEditorCanonicalizeRichText(NJProtonListNormalizer.apply(decoded))
         }
 
         for node in arr {
@@ -1687,7 +2141,7 @@ final class NJProtonEditorHandle {
             }
         }
 
-        return out
+        return NJEditorCanonicalizeRichText(out)
     }
 
     private func applyAttributes(_ attrs: [String: Any], to s: NSMutableAttributedString) {
@@ -1747,19 +2201,11 @@ final class NJProtonEditorHandle {
     }
 
     func toggleBullet() {
-        guard let editor else { return }
-        isEditing = true
-        let tl = NSTextList(markerFormat: .disc, options: 0)
-        ListCommand().execute(on: editor, attributeValue: tl)
-        snapshot()
+        toggleList(.bullet)
     }
 
     func toggleNumber() {
-        guard let editor else { return }
-        isEditing = true
-        let tl = NSTextList(markerFormat: .decimal, options: 0)
-        ListCommand().execute(on: editor, attributeValue: tl)
-        snapshot()
+        toggleList(.number)
     }
     
     func toggleUnderline() { toggleUnderlineStyle() }
@@ -1795,6 +2241,99 @@ final class NJProtonEditorHandle {
         s.endEditing()
 
         snapshot()
+    }
+
+    private func toggleList(_ kind: NJListKind) {
+        guard let editor else { return }
+        guard let tv = findTextView(in: editor) else { return }
+
+        isEditing = true
+        normalizeListAttributesInTextStorage(tv)
+
+        if selectionIsEntirelyList(kind: kind, in: tv) {
+            clearListFormatting(in: tv)
+        } else {
+            let tl = NSTextList(
+                markerFormat: kind == .number ? .decimal : .disc,
+                options: 0
+            )
+            ListCommand().execute(on: editor, attributeValue: tl)
+            normalizeListAttributesInTextStorage(tv)
+        }
+
+        snapshot()
+    }
+
+    private func selectionIsEntirelyList(kind: NJListKind, in tv: UITextView) -> Bool {
+        let paragraphRanges = paragraphRangesCovered(by: tv.selectedRange, in: tv.attributedText)
+        guard !paragraphRanges.isEmpty else { return false }
+
+        return paragraphRanges.allSatisfy { range in
+            NJProtonListNormalizer.paragraphListKind(in: tv.attributedText, paragraphRange: range) == kind
+        }
+    }
+
+    private func clearListFormatting(in tv: UITextView) {
+        let storage = tv.textStorage
+        let paragraphRanges = paragraphRangesCovered(by: tv.selectedRange, in: storage)
+        guard !paragraphRanges.isEmpty else { return }
+
+        storage.beginEditing()
+        for range in paragraphRanges.reversed() {
+            storage.removeAttribute(.listItem, range: range)
+            storage.removeAttribute(.skipNextListMarker, range: range)
+
+            let currentStyle = (storage.attribute(.paragraphStyle, at: range.location, effectiveRange: nil) as? NSParagraphStyle)?
+                .mutableCopy() as? NSMutableParagraphStyle ?? NSMutableParagraphStyle()
+            currentStyle.textLists = []
+            currentStyle.headIndent = 0
+            currentStyle.firstLineHeadIndent = 0
+            storage.addAttribute(.paragraphStyle, value: currentStyle, range: range)
+        }
+        storage.endEditing()
+
+        if let style = tv.typingAttributes[.paragraphStyle] as? NSParagraphStyle {
+            let mutable = style.mutableCopy() as! NSMutableParagraphStyle
+            mutable.textLists = []
+            mutable.headIndent = 0
+            mutable.firstLineHeadIndent = 0
+            tv.typingAttributes[.paragraphStyle] = mutable
+        }
+    }
+
+    private func paragraphRangesCovered(by selectedRange: NSRange, in text: NSAttributedString) -> [NSRange] {
+        let ns = text.string as NSString
+        guard ns.length > 0 else { return [] }
+
+        let start = min(max(0, selectedRange.location), ns.length - 1)
+        let end = min(
+            max(start, selectedRange.location + max(0, selectedRange.length) - 1),
+            ns.length - 1
+        )
+
+        let covered = ns.paragraphRange(for: NSRange(location: start, length: max(0, end - start)))
+        var out: [NSRange] = []
+        var cursor = covered.location
+
+        while cursor < NSMaxRange(covered) {
+            let para = ns.paragraphRange(for: NSRange(location: cursor, length: 0))
+            out.append(para)
+            cursor = NSMaxRange(para)
+        }
+
+        if out.isEmpty {
+            out.append(ns.paragraphRange(for: NSRange(location: start, length: 0)))
+        }
+        return out
+    }
+
+    private func normalizeListAttributesInTextStorage(_ tv: UITextView) {
+        let storage = tv.textStorage
+        guard storage.length > 0 else { return }
+
+        storage.beginEditing()
+        _ = NJProtonListNormalizer.normalizeTextStorage(storage)
+        storage.endEditing()
     }
 
     var onEndEditingSimple: (() -> Void)?
@@ -1859,21 +2398,12 @@ final class NJProtonEditorHandle {
         }()
 
         let thumbImage = saved.flatMap { UIImage(contentsOfFile: $0.url.path) } ?? image
-        let view = NJPhotoAttachmentView(
+        let att = buildPhotoAttachment(
             attachmentID: attachmentID,
             size: size,
             image: thumbImage,
             fullPhotoRef: fullPhotoRef
         )
-        if let onOpenFullPhoto {
-            view.onOpenFull = onOpenFullPhoto
-        }
-        view.onDelete = { [weak self] in
-            self?.deletePhotoAttachment(attachmentID: attachmentID)
-        }
-        let att = Attachment(view, size: .matchContent)
-        att.selectOnTap = false
-        att.selectBeforeDelete = false
 
         let tv = activeTextView()
         let sourceText = tv?.attributedText ?? editor.attributedText
@@ -1902,7 +2432,13 @@ final class NJProtonEditorHandle {
         snapshot()
     }
 
-    func insertTableAttachment(rows: Int = 2, cols: Int = 2) {
+    func insertTableAttachment(
+        rows: Int = 2,
+        cols: Int = 2,
+        cellsJSON: [[String: Any]]? = nil,
+        tableShortID: String? = nil,
+        tableName: String? = nil
+    ) {
         guard let editor else { return }
         isEditing = true
         let rCount = max(1, rows)
@@ -1913,8 +2449,13 @@ final class NJProtonEditorHandle {
             attachmentID: attachmentID,
             rows: rCount,
             cols: cCount,
-            cellsJSON: nil
+            cellsJSON: cellsJSON,
+            tableShortID: tableShortID,
+            tableName: tableName
         )
+        if let tableView = attachment.contentView as? NJTableAttachmentView {
+            saveTableCanonicalPayload(from: tableView)
+        }
         let tv = activeTextView()
         let sourceText = tv?.attributedText ?? editor.attributedText
         let s = NSMutableAttributedString(attributedString: sourceText ?? NSAttributedString(string: ""))
@@ -1948,7 +2489,8 @@ final class NJProtonEditorHandle {
         let sourceText = tv?.attributedText ?? editor.attributedText
         let s = NSMutableAttributedString(attributedString: sourceText ?? NSAttributedString(string: ""))
         let rawRange = tv?.selectedRange ?? editor.selectedRange
-        var r = clampedSelection(rawRange, maxLength: s.length)
+        let cleanedRange = removeOrphanObjectPlaceholders(in: s, preserving: rawRange)
+        var r = clampedSelection(cleanedRange, maxLength: s.length)
 
         if r.length == 0 {
             if s.length == 0 { return }
@@ -1989,6 +2531,31 @@ final class NJProtonEditorHandle {
         snapshot()
     }
 
+    private func removeOrphanObjectPlaceholders(
+        in text: NSMutableAttributedString,
+        preserving selection: NSRange
+    ) -> NSRange {
+        guard text.length > 0 else { return selection }
+        var adjustedLocation = selection.location
+        var adjustedLength = selection.length
+
+        for idx in stride(from: text.length - 1, through: 0, by: -1) {
+            let ch = (text.string as NSString).character(at: idx)
+            guard ch == 0xFFFC else { continue }
+            let attachment = text.attribute(.attachment, at: idx, effectiveRange: nil) as? Attachment
+            if attachment?.isBlockType == true { continue }
+
+            text.deleteCharacters(in: NSRange(location: idx, length: 1))
+            if idx < adjustedLocation {
+                adjustedLocation -= 1
+            } else if idx < adjustedLocation + adjustedLength {
+                adjustedLength = max(0, adjustedLength - 1)
+            }
+        }
+
+        return NSRange(location: max(0, adjustedLocation), length: adjustedLength)
+    }
+
     private func refreshEditorAfterCollapsibleMutation() {
         guard let editor else { return }
         let sel = editor.selectedRange
@@ -2005,19 +2572,22 @@ final class NJProtonEditorHandle {
         attachmentID: String,
         title: NSAttributedString,
         body: NSAttributedString,
+        bodyProtonJSON: String? = nil,
         isCollapsed: Bool
     ) -> Attachment {
         let view = NJCollapsibleAttachmentView(
             attachmentID: attachmentID,
             title: title,
             body: body,
+            bodyProtonJSON: bodyProtonJSON,
             isCollapsed: isCollapsed
         )
-        view.onContentChange = { [weak self] in self?.snapshot() }
-        view.onContentCommit = { [weak self] in self?.snapshot() }
+        view.onContentChange = { [weak self] in self?.handleCollapsibleContentChanged() }
+        view.onContentCommit = { [weak self] in self?.handleCollapsibleContentCommitted() }
         view.onCollapseToggle = { [weak self] in
-            self?.replaceCollapsibleAttachment(attachmentID: attachmentID)
+            self?.replaceCollapsibleAttachment(attachmentID: attachmentID, shouldSnapshot: false)
         }
+        view.onLayoutChange = { [weak self] in self?.onRequestRemeasure?() }
         let att = Attachment(view, size: .fullWidth)
         view.boundsObserver = att
         att.selectOnTap = false
@@ -2062,7 +2632,7 @@ final class NJProtonEditorHandle {
         guard let (range, view) = findCollapsibleAttachment(attachmentID: attachmentID, in: editor.attributedText) else { return false }
 
         let title = view.titleAttributedText.string.trimmingCharacters(in: .whitespacesAndNewlines)
-        let body = view.bodyAttributedText
+        let body = view.currentBodyAttributedTextForExport()
         let replacement = NSMutableAttributedString()
         if !title.isEmpty {
             replacement.append(NSAttributedString(string: title + "\n"))
@@ -2106,8 +2676,7 @@ final class NJProtonEditorHandle {
     }
 
     private func makeCollapsibleBody(from selected: NSAttributedString, title: String) -> NSAttributedString {
-        let normalized = normalizeAttachmentsForCollapsibleBody(selected)
-        let withNewlines = normalizeLineSeparatorsForCollapsibleBody(normalized)
+        let withNewlines = normalizeLineSeparatorsForCollapsibleBody(selected)
         let trimmed = trimLeadingAndTrailingNewlines(from: withNewlines)
         if trimmed.length == 0 { return trimmed }
         let ns = trimmed.string as NSString
@@ -2138,51 +2707,6 @@ final class NJProtonEditorHandle {
             out.replaceCharacters(in: r, with: "\n")
         }
         return out
-    }
-
-    private func normalizeAttachmentsForCollapsibleBody(_ selected: NSAttributedString) -> NSAttributedString {
-        guard selected.length > 0 else { return selected }
-        let out = NSMutableAttributedString(attributedString: selected)
-        let full = NSRange(location: 0, length: out.length)
-        var replacements: [(NSRange, NSAttributedString)] = []
-
-        out.enumerateAttribute(.attachment, in: full, options: []) { value, range, _ in
-            guard let att = value as? Attachment else { return }
-            guard let view = att.contentView else { return }
-            guard let image = snapshotImage(for: view) else { return }
-            let text = imageAttachmentText(image, preferredSize: view.bounds.size)
-            replacements.append((range, text))
-        }
-
-        if replacements.isEmpty { return out }
-        for (range, replacement) in replacements.reversed() {
-            out.replaceCharacters(in: range, with: replacement)
-        }
-        return out
-    }
-
-    private func snapshotImage(for view: UIView) -> UIImage? {
-        if let p = view as? NJPhotoAttachmentView, let image = p.image {
-            return image
-        }
-        let size = view.bounds.size
-        let w = max(1, size.width)
-        let h = max(1, size.height)
-        guard w > 0, h > 0 else { return nil }
-        let renderer = UIGraphicsImageRenderer(size: CGSize(width: w, height: h))
-        return renderer.image { _ in
-            view.drawHierarchy(in: CGRect(x: 0, y: 0, width: w, height: h), afterScreenUpdates: true)
-        }
-    }
-
-    private func imageAttachmentText(_ image: UIImage, preferredSize: CGSize) -> NSAttributedString {
-        let targetW = max(120, preferredSize.width > 1 ? preferredSize.width : min(360, image.size.width))
-        let ratio = image.size.height / max(1, image.size.width)
-        let targetH = max(1, targetW * ratio)
-        let ta = NSTextAttachment()
-        ta.image = image
-        ta.bounds = CGRect(x: 0, y: 0, width: targetW, height: targetH)
-        return NSAttributedString(attachment: ta)
     }
 
     private func trimLeadingAndTrailingNewlines(from selected: NSAttributedString) -> NSAttributedString {
@@ -2267,30 +2791,461 @@ final class NJProtonEditorHandle {
         guard let (range, view) = findTableAttachment(attachmentID: attachmentID, in: editor.attributedText) else { return }
 
         let grid = view.gridView
-        var rows = max(1, grid.numberOfRows)
-        var cols = max(1, grid.numberOfColumns)
+        let currentCells = view.tableCellsForExport()
+        var rows = (currentCells.compactMap { $0["row"] as? Int }.max().map { $0 + 1 }) ?? 1
+        var cols = (currentCells.compactMap { $0["col"] as? Int }.max().map { $0 + 1 }) ?? 1
+        let selected = view.selectedCellCoordinates()
+        let currentAlignments = view.columnAlignmentsForExport()
+        let currentTypes = view.columnTypesForExport()
+        let currentFormulas = view.columnFormulasForExport()
+        let currentTotalFormulas = view.totalFormulasForExport()
+        let totalsEnabled = view.totalsEnabledForExport()
+        let currentFilters = view.columnFiltersForExport()
+        let hideCheckedRows = view.hideCheckedRowsForExport()
+        let currentSortColumn = view.sortColumnForExport()
+        let currentSortDirection = view.sortDirectionForExport()
 
         switch action {
+        case .copyTable:
+            copyTableAttachment(view)
+            return
+        case .cutTable:
+            copyTableAttachment(view)
+            deleteTableAttachment(attachmentID: attachmentID)
+            return
+        case .deleteTable:
+            deleteTableAttachment(attachmentID: attachmentID)
+            return
         case .addRow:
-            rows += 1
+            view.appendRow()
+            saveTableCanonicalPayload(from: view)
+            return
         case .addColumn:
             cols += 1
+            var nextWidths = view.columnWidthsForExport()
+            var nextAlignments = currentAlignments
+            let insertedWidth = nextWidths.last ?? Double(max(1, grid.bounds.width / CGFloat(max(1, cols))))
+            nextWidths.append(insertedWidth)
+            nextAlignments.append(nextAlignments.last ?? NJTableColumnAlignment.left.rawValue)
+            replaceTableAttachment(
+                attachmentID: attachmentID,
+                range: range,
+                rows: rows,
+                cols: cols,
+                cellsJSON: currentCells,
+                columnWidths: nextWidths,
+                columnAlignments: nextAlignments,
+                columnTypes: currentTypes,
+                columnFormulas: currentFormulas + [""],
+                totalsEnabled: totalsEnabled,
+                totalFormulas: currentTotalFormulas + [NJTableTotalFormula.none.rawValue],
+                hideCheckedRows: hideCheckedRows,
+                columnFilters: currentFilters,
+                sortColumn: currentSortColumn,
+                sortDirection: currentSortDirection
+            )
+            return
+        case .moveRow(let row, let direction):
+            let target = row + direction
+            guard row > 0, row < rows, target > 0, target < rows else { return }
+            let nextCells = moveTableRow(from: row, to: target, in: currentCells)
+            replaceTableAttachment(
+                attachmentID: attachmentID,
+                range: range,
+                rows: rows,
+                cols: cols,
+                cellsJSON: nextCells,
+                columnWidths: view.columnWidthsForExport(),
+                columnAlignments: currentAlignments,
+                columnTypes: currentTypes,
+                columnFormulas: currentFormulas,
+                totalsEnabled: totalsEnabled,
+                totalFormulas: currentTotalFormulas,
+                hideCheckedRows: hideCheckedRows,
+                columnFilters: currentFilters,
+                sortColumn: currentSortColumn,
+                sortDirection: currentSortDirection
+            )
+            return
+        case .moveColumn(let column, let direction):
+            let target = column + direction
+            guard column >= 0, column < cols, target >= 0, target < cols else { return }
+            let nextCells = moveTableColumn(from: column, to: target, in: currentCells)
+            var nextWidths = view.columnWidthsForExport()
+            var nextAlignments = currentAlignments
+            var nextTypes = currentTypes
+            var nextFormulas = currentFormulas
+            var nextFilters = currentFilters
+            var nextTotalFormulas = currentTotalFormulas
+            if column < nextWidths.count, target < nextWidths.count {
+                nextWidths.swapAt(column, target)
+            }
+            if column < nextAlignments.count, target < nextAlignments.count {
+                nextAlignments.swapAt(column, target)
+            }
+            if column < nextTypes.count, target < nextTypes.count {
+                nextTypes.swapAt(column, target)
+            }
+            if column < nextFormulas.count, target < nextFormulas.count {
+                nextFormulas.swapAt(column, target)
+            }
+            if column < nextFilters.count, target < nextFilters.count {
+                nextFilters.swapAt(column, target)
+            }
+            if column < nextTotalFormulas.count, target < nextTotalFormulas.count {
+                nextTotalFormulas.swapAt(column, target)
+            }
+            let nextSortColumn = remapMovedColumnIndex(currentSortColumn, from: column, to: target)
+            replaceTableAttachment(
+                attachmentID: attachmentID,
+                range: range,
+                rows: rows,
+                cols: cols,
+                cellsJSON: nextCells,
+                columnWidths: nextWidths,
+                columnAlignments: nextAlignments,
+                columnTypes: nextTypes,
+                columnFormulas: nextFormulas,
+                totalsEnabled: totalsEnabled,
+                totalFormulas: nextTotalFormulas,
+                hideCheckedRows: hideCheckedRows,
+                columnFilters: nextFilters,
+                sortColumn: nextSortColumn,
+                sortDirection: currentSortDirection
+            )
+            return
+        case .setColumnType(let column, let type):
+            var nextTypes = currentTypes
+            var nextFormulas = currentFormulas
+            guard column >= 0, column < nextTypes.count else { return }
+            nextTypes[column] = type
+            if type != NJTableColumnType.formula.rawValue, column < nextFormulas.count {
+                nextFormulas[column] = ""
+            }
+            let nextCells = convertTableColumnType(column: column, to: type, in: currentCells)
+            replaceTableAttachment(
+                attachmentID: attachmentID,
+                range: range,
+                rows: rows,
+                cols: cols,
+                cellsJSON: nextCells,
+                columnWidths: view.columnWidthsForExport(),
+                columnAlignments: currentAlignments,
+                columnTypes: nextTypes,
+                columnFormulas: nextFormulas,
+                totalsEnabled: totalsEnabled,
+                totalFormulas: currentTotalFormulas,
+                hideCheckedRows: hideCheckedRows,
+                columnFilters: currentFilters,
+                sortColumn: currentSortColumn,
+                sortDirection: currentSortDirection
+            )
+            return
+        case .setColumnFormula(let column, let formula):
+            var nextTypes = currentTypes
+            var nextFormulas = currentFormulas
+            guard column >= 0, column < cols else { return }
+            while nextTypes.count < cols { nextTypes.append(NJTableColumnType.text.rawValue) }
+            while nextFormulas.count < cols { nextFormulas.append("") }
+            nextTypes[column] = NJTableColumnType.formula.rawValue
+            nextFormulas[column] = formula?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            replaceTableAttachment(
+                attachmentID: attachmentID,
+                range: range,
+                rows: rows,
+                cols: cols,
+                cellsJSON: currentCells,
+                columnWidths: view.columnWidthsForExport(),
+                columnAlignments: currentAlignments,
+                columnTypes: nextTypes,
+                columnFormulas: nextFormulas,
+                totalsEnabled: totalsEnabled,
+                totalFormulas: currentTotalFormulas,
+                hideCheckedRows: hideCheckedRows,
+                columnFilters: currentFilters,
+                sortColumn: currentSortColumn,
+                sortDirection: currentSortDirection
+            )
+            return
+        case .setTotalsEnabled(let shouldEnable):
+            replaceTableAttachment(
+                attachmentID: attachmentID,
+                range: range,
+                rows: rows,
+                cols: cols,
+                cellsJSON: currentCells,
+                columnWidths: view.columnWidthsForExport(),
+                columnAlignments: currentAlignments,
+                columnTypes: currentTypes,
+                columnFormulas: currentFormulas,
+                totalsEnabled: shouldEnable,
+                totalFormulas: currentTotalFormulas,
+                hideCheckedRows: hideCheckedRows,
+                columnFilters: currentFilters,
+                sortColumn: currentSortColumn,
+                sortDirection: currentSortDirection
+            )
+            return
+        case .setTotalFormula(let column, let formula):
+            var nextTotalFormulas = currentTotalFormulas
+            guard column >= 0, column < nextTotalFormulas.count else { return }
+            nextTotalFormulas[column] = formula ?? NJTableTotalFormula.none.rawValue
+            replaceTableAttachment(
+                attachmentID: attachmentID,
+                range: range,
+                rows: rows,
+                cols: cols,
+                cellsJSON: currentCells,
+                columnWidths: view.columnWidthsForExport(),
+                columnAlignments: currentAlignments,
+                columnTypes: currentTypes,
+                columnFormulas: currentFormulas,
+                totalsEnabled: true,
+                totalFormulas: nextTotalFormulas,
+                hideCheckedRows: hideCheckedRows,
+                columnFilters: currentFilters,
+                sortColumn: currentSortColumn,
+                sortDirection: currentSortDirection
+            )
+            return
+        case .setHideChecked(let shouldHide):
+            replaceTableAttachment(
+                attachmentID: attachmentID,
+                range: range,
+                rows: rows,
+                cols: cols,
+                cellsJSON: currentCells,
+                columnWidths: view.columnWidthsForExport(),
+                columnAlignments: currentAlignments,
+                columnTypes: currentTypes,
+                columnFormulas: currentFormulas,
+                totalsEnabled: totalsEnabled,
+                totalFormulas: currentTotalFormulas,
+                hideCheckedRows: shouldHide,
+                columnFilters: currentFilters,
+                sortColumn: currentSortColumn,
+                sortDirection: currentSortDirection
+            )
+            return
+        case .setColumnFilter(let column, let filter):
+            guard column >= 0, column < currentFilters.count else { return }
+            var nextFilters = currentFilters
+            nextFilters[column] = filter
+            replaceTableAttachment(
+                attachmentID: attachmentID,
+                range: range,
+                rows: rows,
+                cols: cols,
+                cellsJSON: currentCells,
+                columnWidths: view.columnWidthsForExport(),
+                columnAlignments: currentAlignments,
+                columnTypes: currentTypes,
+                columnFormulas: currentFormulas,
+                totalsEnabled: totalsEnabled,
+                totalFormulas: currentTotalFormulas,
+                hideCheckedRows: hideCheckedRows,
+                columnFilters: nextFilters,
+                sortColumn: currentSortColumn,
+                sortDirection: currentSortDirection
+            )
+            return
+        case .setSort(let column, let direction):
+            replaceTableAttachment(
+                attachmentID: attachmentID,
+                range: range,
+                rows: rows,
+                cols: cols,
+                cellsJSON: currentCells,
+                columnWidths: view.columnWidthsForExport(),
+                columnAlignments: currentAlignments,
+                columnTypes: currentTypes,
+                columnFormulas: currentFormulas,
+                totalsEnabled: totalsEnabled,
+                totalFormulas: currentTotalFormulas,
+                hideCheckedRows: hideCheckedRows,
+                columnFilters: currentFilters,
+                sortColumn: column,
+                sortDirection: direction
+            )
+            return
+        case .deleteRow:
+            guard selected.row >= 0, selected.row < rows else { return }
+            if rows <= 1 {
+                deleteTableAttachment(attachmentID: attachmentID)
+                return
+            }
+            let nextCells = removeTableRow(selected.row, from: currentCells)
+            replaceTableAttachment(
+                attachmentID: attachmentID,
+                range: range,
+                rows: rows - 1,
+                cols: cols,
+                cellsJSON: nextCells,
+                columnWidths: view.columnWidthsForExport(),
+                columnAlignments: currentAlignments,
+                columnTypes: currentTypes,
+                columnFormulas: currentFormulas,
+                totalsEnabled: totalsEnabled,
+                totalFormulas: currentTotalFormulas,
+                hideCheckedRows: hideCheckedRows,
+                columnFilters: currentFilters,
+                sortColumn: currentSortColumn,
+                sortDirection: currentSortDirection
+            )
+            return
+        case .deleteColumn:
+            if cols <= 1 {
+                deleteTableAttachment(attachmentID: attachmentID)
+                return
+            }
+            let nextCells = removeTableColumn(selected.col, from: currentCells)
+            var nextWidths = view.columnWidthsForExport()
+            var nextAlignments = currentAlignments
+            var nextTypes = currentTypes
+            var nextFormulas = currentFormulas
+            var nextFilters = currentFilters
+            var nextTotalFormulas = currentTotalFormulas
+            if selected.col >= 0 && selected.col < nextWidths.count {
+                nextWidths.remove(at: selected.col)
+            }
+            if selected.col >= 0 && selected.col < nextAlignments.count {
+                nextAlignments.remove(at: selected.col)
+            }
+            if selected.col >= 0 && selected.col < nextTypes.count {
+                nextTypes.remove(at: selected.col)
+            }
+            if selected.col >= 0 && selected.col < nextFormulas.count {
+                nextFormulas.remove(at: selected.col)
+            }
+            if selected.col >= 0 && selected.col < nextFilters.count {
+                nextFilters.remove(at: selected.col)
+            }
+            if selected.col >= 0 && selected.col < nextTotalFormulas.count {
+                nextTotalFormulas.remove(at: selected.col)
+            }
+            let nextSortColumn = selected.col == currentSortColumn ? nil : remapRemovedColumnIndex(currentSortColumn, removed: selected.col)
+            replaceTableAttachment(
+                attachmentID: attachmentID,
+                range: range,
+                rows: rows,
+                cols: cols - 1,
+                cellsJSON: nextCells,
+                columnWidths: nextWidths,
+                columnAlignments: nextAlignments,
+                columnTypes: nextTypes,
+                columnFormulas: nextFormulas,
+                totalsEnabled: totalsEnabled,
+                totalFormulas: nextTotalFormulas,
+                hideCheckedRows: hideCheckedRows,
+                columnFilters: nextFilters,
+                sortColumn: nextSortColumn,
+                sortDirection: currentSortDirection
+            )
+            return
+        case .setColumnAlignment(let column, let alignment):
+            var nextAlignments = currentAlignments
+            guard column >= 0, column < nextAlignments.count else { return }
+            nextAlignments[column] = alignment
+            replaceTableAttachment(
+                attachmentID: attachmentID,
+                range: range,
+                rows: rows,
+                cols: cols,
+                cellsJSON: currentCells,
+                columnWidths: view.columnWidthsForExport(),
+                columnAlignments: nextAlignments,
+                columnTypes: currentTypes,
+                columnFormulas: currentFormulas,
+                totalsEnabled: totalsEnabled,
+                totalFormulas: currentTotalFormulas,
+                hideCheckedRows: hideCheckedRows,
+                columnFilters: currentFilters,
+                sortColumn: currentSortColumn,
+                sortDirection: currentSortDirection
+            )
+            return
+        }
+    }
+
+    private func handleCollapsibleContentChanged() {
+        isEditing = true
+        collapsibleTypingIdleWork?.cancel()
+        let wi = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.isEditing = false
+            self.snapshot(markUserEdit: true)
+        }
+        collapsibleTypingIdleWork = wi
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(collapsibleTypingIdleMs), execute: wi)
+        if let editor {
+            discardPendingHydration()
+            onUserTyped?(editor.attributedText, editor.selectedRange)
+        }
+        snapshot()
+    }
+
+    private func handleCollapsibleContentCommitted() {
+        collapsibleTypingIdleWork?.cancel()
+        collapsibleTypingIdleWork = nil
+        isEditing = false
+        synchronizeLiveCollapsibleAttachmentsIntoEditor()
+        if let editor {
+            onSnapshot?(editor.attributedText, editor.selectedRange)
+            onEndEditing?(editor.attributedText, editor.selectedRange)
+            onEndEditingSimple?()
+        }
+    }
+
+    private func synchronizedAttachmentTextForExport(_ text: NSAttributedString) -> NSAttributedString {
+        guard text.length > 0 else { return text }
+
+        let full = NSRange(location: 0, length: text.length)
+        var collapsibles: [(range: NSRange, view: NJCollapsibleAttachmentView)] = []
+        text.enumerateAttribute(.attachment, in: full, options: []) { value, range, _ in
+            guard let att = value as? Attachment,
+                  att.isBlockType,
+                  let view = att.contentView as? NJCollapsibleAttachmentView else { return }
+            collapsibles.append((range, view))
         }
 
-        let cellsJSON = tableCellsJSON(from: grid)
-        let newAttachment = buildTableAttachment(
-            attachmentID: attachmentID,
-            rows: rows,
-            cols: cols,
-            cellsJSON: cellsJSON
-        )
+        guard !collapsibles.isEmpty else { return text }
 
-        let s = NSMutableAttributedString(attributedString: editor.attributedText)
-        s.replaceCharacters(in: range, with: newAttachment.string)
-        editor.attributedText = s
-        editor.selectedRange = NSRange(location: min(range.location + 1, s.length), length: 0)
+        let out = NSMutableAttributedString(attributedString: text)
+        for item in collapsibles.sorted(by: { $0.range.location > $1.range.location }) {
+            let replacement = buildCollapsibleAttachment(
+                attachmentID: item.view.attachmentID,
+                title: item.view.titleAttributedText,
+                body: item.view.currentBodyAttributedTextForExport(),
+                bodyProtonJSON: item.view.bodyProtonJSONString,
+                isCollapsed: item.view.isCollapsed
+            )
+            out.replaceCharacters(in: item.range, with: replacement.string)
+        }
+        return out
+    }
 
-        snapshot()
+    private func synchronizeLiveCollapsibleAttachmentsIntoEditor() {
+        guard let editor else { return }
+        let current = editor.attributedText
+        let synced = synchronizedAttachmentTextForExport(current)
+        guard !synced.isEqual(to: current) else { return }
+
+        let apply = { [weak self] in
+            guard let self else { return }
+            let selection = self.clampedSelection(editor.selectedRange, maxLength: synced.length)
+            editor.attributedText = synced
+            editor.selectedRange = selection
+            if let tv = self.activeTextView() {
+                tv.selectedRange = selection
+            }
+        }
+
+        if let withProgrammatic {
+            withProgrammatic(apply)
+        } else {
+            apply()
+        }
+        onRequestRemeasure?()
     }
 
     private func findTableAttachment(
@@ -2327,58 +3282,491 @@ final class NJProtonEditorHandle {
         return found
     }
 
-    private func replaceCollapsibleAttachment(attachmentID: String) {
+    private func replaceCollapsibleAttachment(attachmentID: String, shouldSnapshot: Bool = true) {
         guard let editor else { return }
         guard let (range, view) = findCollapsibleAttachment(attachmentID: attachmentID, in: editor.attributedText) else { return }
         let replacement = buildCollapsibleAttachment(
             attachmentID: attachmentID,
             title: view.titleAttributedText,
-            body: view.bodyAttributedText,
+            body: view.currentBodyAttributedTextForExport(),
+            bodyProtonJSON: view.bodyProtonJSONString,
             isCollapsed: view.isCollapsed
         )
+        let applyReplacement = { [weak self] in
+            guard let self else { return }
+            let s = NSMutableAttributedString(attributedString: editor.attributedText)
+            let sel = editor.selectedRange
+            s.replaceCharacters(in: range, with: replacement.string)
+            editor.attributedText = s
+            let fullRange = NSRange(location: 0, length: s.length)
+            if range.length > 0 {
+                editor.invalidateLayout(for: range)
+            }
+            if fullRange.length > 0 {
+                editor.invalidateLayout(for: fullRange)
+            }
+            editor.setNeedsLayout()
+            editor.layoutIfNeeded()
+            let clamped = self.clampedSelection(sel, maxLength: s.length)
+            editor.selectedRange = clamped
+            if let tv = self.activeTextView() {
+                tv.textContainer.size = CGSize(width: tv.bounds.width, height: .greatestFiniteMagnitude)
+                tv.layoutManager.invalidateLayout(forCharacterRange: fullRange, actualCharacterRange: nil)
+                tv.layoutManager.ensureLayout(for: tv.textContainer)
+                tv.setNeedsLayout()
+                tv.layoutIfNeeded()
+                tv.selectedRange = clamped
+            }
+        }
+        if let withProgrammatic {
+            withProgrammatic(applyReplacement)
+        } else {
+            applyReplacement()
+        }
+        onRequestRemeasure?()
+        if shouldSnapshot {
+            snapshot()
+        }
+    }
+
+    private func replaceTableAttachment(attachmentID: String, shouldSnapshot: Bool = true) {
+        guard let editor else { return }
+        guard let (range, view) = findTableAttachment(attachmentID: attachmentID, in: editor.attributedText) else { return }
+        let payload = tablePayload(from: view)
+        let rows = max(1, (payload["rows"] as? Int) ?? 1)
+        let cols = max(1, (payload["cols"] as? Int) ?? 1)
+        let cells = (payload["cells"] as? [[String: Any]]) ?? []
+        let columnWidths = payload["column_widths"] as? [Double]
+        let columnAlignments = payload["column_alignments"] as? [String]
+        let columnTypes = payload["column_types"] as? [String]
+        let columnFormulas = payload["column_formulas"] as? [String]
+        let totalsEnabled = (payload["totals_enabled"] as? Bool) ?? false
+        let totalFormulas = payload["total_formulas"] as? [String]
+        let hideCheckedRows = (payload["hide_checked_rows"] as? Bool) ?? false
+        let columnFilters = payload["column_filters"] as? [String]
+        let sortColumn = payload["sort_column"] as? Int
+        let sortDirection = payload["sort_direction"] as? String
+        let tableShortID = payload["table_short_id"] as? String
+        let tableName = payload["table_name"] as? String
+
+        let replacement = buildTableAttachment(
+            attachmentID: attachmentID,
+            rows: rows,
+            cols: cols,
+            cellsJSON: cells,
+            columnWidths: columnWidths,
+            columnAlignments: columnAlignments,
+            columnTypes: columnTypes,
+            columnFormulas: columnFormulas,
+            totalsEnabled: totalsEnabled,
+            totalFormulas: totalFormulas,
+            hideCheckedRows: hideCheckedRows,
+            columnFilters: columnFilters,
+            sortColumn: sortColumn,
+            sortDirection: sortDirection,
+            tableShortID: tableShortID,
+            tableName: tableName
+        )
+
+        let applyReplacement = { [weak self] in
+            guard let self else { return }
+            let s = NSMutableAttributedString(attributedString: editor.attributedText)
+            let sel = editor.selectedRange
+            s.replaceCharacters(in: range, with: replacement.string)
+            editor.attributedText = s
+            let fullRange = NSRange(location: 0, length: s.length)
+            if range.length > 0 {
+                editor.invalidateLayout(for: range)
+            }
+            if fullRange.length > 0 {
+                editor.invalidateLayout(for: fullRange)
+            }
+            editor.setNeedsLayout()
+            editor.layoutIfNeeded()
+            let clamped = self.clampedSelection(sel, maxLength: s.length)
+            editor.selectedRange = clamped
+            if let tv = self.activeTextView() {
+                tv.textContainer.size = CGSize(width: tv.bounds.width, height: .greatestFiniteMagnitude)
+                tv.layoutManager.invalidateLayout(forCharacterRange: fullRange, actualCharacterRange: nil)
+                tv.layoutManager.ensureLayout(for: tv.textContainer)
+                tv.setNeedsLayout()
+                tv.layoutIfNeeded()
+                tv.selectedRange = clamped
+            }
+        }
+
+        if let withProgrammatic {
+            withProgrammatic(applyReplacement)
+        } else {
+            applyReplacement()
+        }
+        onRequestRemeasure?()
+        if shouldSnapshot {
+            snapshot()
+        }
+    }
+
+    private func tableCellsJSON(from view: NJTableAttachmentView) -> [[String: Any]] {
+        view.tableCellsForExport()
+    }
+
+    private func tablePayload(from view: NJTableAttachmentView) -> [String: Any] {
+        let cells = tableCellsJSON(from: view)
+        let rows = cells.compactMap { $0["row"] as? Int }.max().map { $0 + 1 } ?? 1
+        let cols = cells.compactMap { $0["col"] as? Int }.max().map { $0 + 1 } ?? 1
+        var payload: [String: Any] = [
+            "table_id": view.attachmentID,
+            "rows": rows,
+            "cols": cols,
+            "table_short_id": view.tableShortIDForExport(),
+            "column_widths": view.columnWidthsForExport(),
+            "column_alignments": view.columnAlignmentsForExport(),
+            "column_types": view.columnTypesForExport(),
+            "column_formulas": view.columnFormulasForExport(),
+            "totals_enabled": view.totalsEnabledForExport(),
+            "total_formulas": view.totalFormulasForExport(),
+            "column_filters": view.columnFiltersForExport(),
+            "hide_checked_rows": view.hideCheckedRowsForExport(),
+            "cells": cells
+        ]
+        if let tableName = view.tableNameForExport(),
+           !tableName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            payload["table_name"] = tableName
+        }
+        if let sortColumn = view.sortColumnForExport() {
+            payload["sort_column"] = sortColumn
+        }
+        if let sortDirection = view.sortDirectionForExport() {
+            payload["sort_direction"] = sortDirection
+        }
+        return payload
+    }
+
+    private func saveTableCanonicalPayload(from view: NJTableAttachmentView) {
+        NJTableStore.shared.upsertCanonicalPayload(tableID: view.attachmentID, payload: tablePayload(from: view))
+    }
+
+    private func photoPayload(from view: NJPhotoAttachmentView) -> [String: Any] {
+        [
+            "attachment_id": view.attachmentID,
+            "display_w": Int(view.displaySize.width),
+            "display_h": Int(view.displaySize.height)
+        ]
+    }
+
+    private func buildPhotoAttachment(
+        attachmentID: String,
+        size: CGSize,
+        image: UIImage?,
+        fullPhotoRef: String
+    ) -> Attachment {
+        let view = NJPhotoAttachmentView(
+            attachmentID: attachmentID,
+            size: CGSize(width: max(1, size.width), height: max(1, size.height)),
+            image: image,
+            fullPhotoRef: fullPhotoRef
+        )
+        if let onOpenFullPhoto {
+            view.onOpenFull = onOpenFullPhoto
+        }
+        view.onDelete = { [weak self] in
+            self?.deletePhotoAttachment(attachmentID: attachmentID)
+        }
+        view.onCopy = { [weak self, weak view] in
+            guard let self, let view else { return }
+            self.copyPhotoAttachment(view)
+        }
+        view.onCut = { [weak self, weak view] in
+            guard let self, let view else { return }
+            self.copyPhotoAttachment(view)
+            self.deletePhotoAttachment(attachmentID: attachmentID)
+        }
+        view.onResize = { [weak self, weak view] in
+            guard let self, let view else { return }
+            self.replacePhotoAttachment(attachmentID: attachmentID, size: view.displaySize)
+        }
+        let att = Attachment(view, size: .matchContent)
+        view.boundsObserver = att
+        att.selectOnTap = false
+        att.selectBeforeDelete = false
+        return att
+    }
+
+    private func copyPhotoAttachment(_ view: NJPhotoAttachmentView) {
+        guard let image = view.image else { return }
+        NJSetClipboardPhotoPayload(photoPayload(from: view), image: image)
+    }
+
+    private func copyTableAttachment(_ view: NJTableAttachmentView) {
+        let payload = tablePayload(from: view)
+        NJSetClipboardTablePayload(payload, plainText: plainTextTable(from: payload))
+    }
+
+    private func plainTextTable(from payload: [String: Any]) -> String {
+        let rows = max(1, (payload["rows"] as? Int) ?? 1)
+        let cols = max(1, (payload["cols"] as? Int) ?? 1)
+        let cells = ((payload["cells"] as? [Any]) ?? []).compactMap { $0 as? [String: Any] }
+        var grid = Array(
+            repeating: Array(repeating: "", count: cols),
+            count: rows
+        )
+
+        for cell in cells {
+            let row = (cell["row"] as? Int) ?? 0
+            let col = (cell["col"] as? Int) ?? 0
+            guard row >= 0, row < rows, col >= 0, col < cols else { continue }
+            let rtf = (cell["rtf_base64"] as? String) ?? ""
+            let text = decodeRTFBase64(rtf)?.string
+                .replacingOccurrences(of: "\t", with: " ")
+                .replacingOccurrences(of: "\n", with: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            grid[row][col] = text
+        }
+
+        return grid.map { $0.joined(separator: "\t") }.joined(separator: "\n")
+    }
+
+    private func replaceTableAttachment(
+        attachmentID: String,
+        range: NSRange,
+        rows: Int,
+        cols: Int,
+        cellsJSON: [[String: Any]],
+        columnWidths: [Double]? = nil,
+        columnAlignments: [String]? = nil,
+        columnTypes: [String]? = nil,
+        columnFormulas: [String]? = nil,
+        totalsEnabled: Bool = false,
+        totalFormulas: [String]? = nil,
+        hideCheckedRows: Bool = false,
+        columnFilters: [String]? = nil,
+        sortColumn: Int? = nil,
+        sortDirection: String? = nil,
+        tableShortID: String? = nil,
+        tableName: String? = nil
+    ) {
+        guard let editor else { return }
+        let newAttachment = buildTableAttachment(
+            attachmentID: attachmentID,
+            rows: rows,
+            cols: cols,
+            cellsJSON: cellsJSON,
+            columnWidths: columnWidths,
+            columnAlignments: columnAlignments,
+            columnTypes: columnTypes,
+            columnFormulas: columnFormulas,
+            totalsEnabled: totalsEnabled,
+            totalFormulas: totalFormulas,
+            hideCheckedRows: hideCheckedRows,
+            columnFilters: columnFilters,
+            sortColumn: sortColumn,
+            sortDirection: sortDirection,
+            tableShortID: tableShortID,
+            tableName: tableName
+        )
+        if let tableView = newAttachment.contentView as? NJTableAttachmentView {
+            saveTableCanonicalPayload(from: tableView)
+        }
+
+        let s = NSMutableAttributedString(attributedString: editor.attributedText)
+        s.replaceCharacters(in: range, with: newAttachment.string)
+        let fullRange = NSRange(location: 0, length: s.length)
+        editor.attributedText = s
+        if range.length > 0 {
+            editor.invalidateLayout(for: range)
+        }
+        if fullRange.length > 0 {
+            editor.invalidateLayout(for: fullRange)
+        }
+        editor.setNeedsLayout()
+        editor.layoutIfNeeded()
+        editor.selectedRange = NSRange(location: min(range.location + 1, s.length), length: 0)
+        onRequestRemeasure?()
+        snapshot()
+    }
+
+    private func findPhotoAttachment(
+        attachmentID: String,
+        in text: NSAttributedString
+    ) -> (NSRange, NJPhotoAttachmentView)? {
+        let full = NSRange(location: 0, length: text.length)
+        var found: (NSRange, NJPhotoAttachmentView)?
+        text.enumerateAttribute(.attachment, in: full, options: []) { value, range, stop in
+            guard let att = value as? Attachment else { return }
+            guard att.isBlockType else { return }
+            guard let view = att.contentView as? NJPhotoAttachmentView else { return }
+            guard view.attachmentID == attachmentID else { return }
+            found = (range, view)
+            stop.pointee = true
+        }
+        return found
+    }
+
+    private func replacePhotoAttachment(attachmentID: String, size: CGSize) {
+        guard let editor else { return }
+        guard let (range, view) = findPhotoAttachment(attachmentID: attachmentID, in: editor.attributedText) else { return }
+        let replacement = buildPhotoAttachment(
+            attachmentID: attachmentID,
+            size: size,
+            image: view.image,
+            fullPhotoRef: view.fullPhotoRef
+        )
+
         let s = NSMutableAttributedString(attributedString: editor.attributedText)
         let sel = editor.selectedRange
         s.replaceCharacters(in: range, with: replacement.string)
         editor.attributedText = s
+        let fullRange = NSRange(location: 0, length: s.length)
+        if range.length > 0 {
+            editor.invalidateLayout(for: range)
+        }
+        if fullRange.length > 0 {
+            editor.invalidateLayout(for: fullRange)
+        }
+        editor.setNeedsLayout()
+        editor.layoutIfNeeded()
         let clamped = clampedSelection(sel, maxLength: s.length)
         editor.selectedRange = clamped
-        if let tv = activeTextView() {
-            tv.selectedRange = clamped
-        }
+        onRequestRemeasure?()
         snapshot()
     }
 
-    private func tableCellsJSON(from grid: GridView) -> [[String: Any]] {
-        var cellsJSON: [[String: Any]] = []
-        cellsJSON.reserveCapacity(grid.cells.count)
-
-        for cell in grid.cells {
-            let row = cell.rowSpan.min() ?? 0
-            let col = cell.columnSpan.min() ?? 0
-            let rtf = encodeRTFBase64(cell.editor.attributedText) ?? ""
-            cellsJSON.append([
-                "row": row,
-                "col": col,
-                "row_span": cell.rowSpan,
-                "col_span": cell.columnSpan,
-                "rtf_base64": rtf
-            ])
+    private func removeTableRow(_ rowToRemove: Int, from cellsJSON: [[String: Any]]) -> [[String: Any]] {
+        cellsJSON.compactMap { cell in
+            let row = (cell["row"] as? Int) ?? 0
+            if row == rowToRemove {
+                return nil
+            }
+            var updated = cell
+            if row > rowToRemove {
+                updated["row"] = row - 1
+                updated["row_span"] = [(row - 1)]
+            }
+            return updated
         }
+    }
 
-        return cellsJSON
+    private func removeTableColumn(_ columnToRemove: Int, from cellsJSON: [[String: Any]]) -> [[String: Any]] {
+        cellsJSON.compactMap { cell in
+            let col = (cell["col"] as? Int) ?? 0
+            if col == columnToRemove {
+                return nil
+            }
+            var updated = cell
+            if col > columnToRemove {
+                updated["col"] = col - 1
+                updated["col_span"] = [(col - 1)]
+            }
+            return updated
+        }
+    }
+
+    private func moveTableColumn(from source: Int, to destination: Int, in cellsJSON: [[String: Any]]) -> [[String: Any]] {
+        cellsJSON.map { cell in
+            let col = (cell["col"] as? Int) ?? 0
+            var updated = cell
+            if col == source {
+                updated["col"] = destination
+                updated["col_span"] = [destination]
+            } else if source < destination, col > source, col <= destination {
+                updated["col"] = col - 1
+                updated["col_span"] = [col - 1]
+            } else if source > destination, col >= destination, col < source {
+                updated["col"] = col + 1
+                updated["col_span"] = [col + 1]
+            }
+            return updated
+        }
+    }
+
+    private func remapMovedColumnIndex(_ index: Int?, from source: Int, to destination: Int) -> Int? {
+        guard let index else { return nil }
+        if index == source { return destination }
+        if source < destination, index > source, index <= destination {
+            return index - 1
+        }
+        if source > destination, index >= destination, index < source {
+            return index + 1
+        }
+        return index
+    }
+
+    private func remapRemovedColumnIndex(_ index: Int?, removed column: Int) -> Int? {
+        guard let index else { return nil }
+        if index == column { return nil }
+        if index > column { return index - 1 }
+        return index
+    }
+
+    private func moveTableRow(from source: Int, to destination: Int, in cellsJSON: [[String: Any]]) -> [[String: Any]] {
+        cellsJSON.map { cell in
+            let row = (cell["row"] as? Int) ?? 0
+            var updated = cell
+            if row == source {
+                updated["row"] = destination
+                updated["row_span"] = [destination]
+            } else if source < destination, row > source, row <= destination {
+                updated["row"] = row - 1
+                updated["row_span"] = [row - 1]
+            } else if source > destination, row >= destination, row < source {
+                updated["row"] = row + 1
+                updated["row_span"] = [row + 1]
+            }
+            return updated
+        }
+    }
+
+    private func convertTableColumnType(column: Int, to type: String, in cellsJSON: [[String: Any]]) -> [[String: Any]] {
+        cellsJSON.map { cell in
+            let col = (cell["col"] as? Int) ?? 0
+            guard col == column else { return cell }
+            let row = (cell["row"] as? Int) ?? 0
+            guard row > 0 else { return cell }
+            var updated = cell
+            let existingText = decodeRTFBase64((cell["rtf_base64"] as? String) ?? "")?.string ?? ""
+            let trimmed = existingText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let nextString: String
+            if type == NJTableColumnType.checkbox.rawValue {
+                let checked = ["☑", "☒", "✅", "true", "1", "yes", "checked", "done", "x"].contains(trimmed)
+                nextString = checked ? "☑" : "☐"
+            } else if type == NJTableColumnType.formula.rawValue {
+                nextString = ""
+            } else {
+                nextString = ["☑", "☒", "✅", "true", "1", "yes", "checked", "done", "x"].contains(trimmed) ? "checked" : ""
+            }
+            updated["rtf_base64"] = encodeRTFBase64(NSAttributedString(string: nextString)) ?? ""
+            return updated
+        }
     }
 
     private func buildTableAttachment(
         attachmentID: String,
         rows: Int,
         cols: Int,
-        cellsJSON: [[String: Any]]?
+        cellsJSON: [[String: Any]]?,
+        columnWidths: [Double]? = nil,
+        columnAlignments: [String]? = nil,
+        columnTypes: [String]? = nil,
+        columnFormulas: [String]? = nil,
+        totalsEnabled: Bool = false,
+        totalFormulas: [String]? = nil,
+        hideCheckedRows: Bool = false,
+        columnFilters: [String]? = nil,
+        sortColumn: Int? = nil,
+        sortDirection: String? = nil,
+        tableShortID: String? = nil,
+        tableName: String? = nil
     ) -> Attachment {
         let rCount = max(1, rows)
         let cCount = max(1, cols)
-        let colWidth: CGFloat = 1.0 / CGFloat(cCount)
-        let columns = (0..<cCount).map { _ in GridColumnConfiguration(width: .fractional(colWidth)) }
-        let rowsCfg = (0..<rCount).map { _ in GridRowConfiguration(initialHeight: 40) }
+        let columns: [GridColumnConfiguration] = {
+            if let columnWidths, columnWidths.count == cCount {
+                return columnWidths.map { GridColumnConfiguration(width: .fixed(max(1, CGFloat($0)))) }
+            }
+            let colWidth: CGFloat = 1.0 / CGFloat(cCount)
+            return (0..<cCount).map { _ in GridColumnConfiguration(width: .fractional(colWidth)) }
+        }()
+        let rowsCfg = (0..<rCount).map { _ in GridRowConfiguration(initialHeight: NJTableDefaultRowHeight) }
 
         let config = GridConfiguration(
             columnsConfiguration: columns,
@@ -2395,7 +3783,7 @@ final class NJProtonEditorHandle {
 
         for r in 0..<rCount {
             for c in 0..<cCount {
-                let cell = GridCell(rowSpan: [r], columnSpan: [c], initialHeight: 40, ignoresOptimizedInit: true)
+                let cell = GridCell(rowSpan: [r], columnSpan: [c], initialHeight: NJTableDefaultRowHeight, ignoresOptimizedInit: true)
                 cell.editor.forceApplyAttributedText = true
                 cell.editor.attributedText = NSAttributedString(string: "")
                 cells.append(cell)
@@ -2420,8 +3808,29 @@ final class NJProtonEditorHandle {
             attachmentID: attachmentID,
             config: config,
             cells: cells,
+            columnWidths: columnWidths?.map { CGFloat($0) },
+            columnAlignments: columnAlignments,
+            columnTypes: columnTypes,
+            columnFormulas: columnFormulas,
+            totalsEnabled: totalsEnabled,
+            totalFormulas: totalFormulas,
+            hideCheckedRows: hideCheckedRows,
+            columnFilters: columnFilters,
+            sortColumn: sortColumn,
+            sortDirection: sortDirection,
+            tableShortID: tableShortID,
+            tableName: tableName,
             onTableAction: { [weak self] id, action in
                 self?.handleTableAction(attachmentID: id, action: action)
+            },
+            onResizeTable: { [weak self] _ in
+                // Table reflow can happen during hydration, remote reload, or layout.
+                // The real table data is saved through NJTableStore; remeasure must not
+                // manufacture a block edit on an idle device.
+                self?.onRequestRemeasure?()
+            },
+            onLocalLayoutChange: { [weak self] _ in
+                self?.onRequestRemeasure?()
             }
         )
     }
@@ -2445,7 +3854,17 @@ final class NJProtonEditorHandle {
         s.replaceCharacters(in: target, with: NSAttributedString(string: ""))
         editor.attributedText = s
         editor.selectedRange = NSRange(location: min(target.location, s.length), length: 0)
-        snapshot()
+        snapshot(markUserEdit: true)
+    }
+
+    private func deleteTableAttachment(attachmentID: String) {
+        guard let editor else { return }
+        guard let (target, _) = findTableAttachment(attachmentID: attachmentID, in: editor.attributedText) else { return }
+        let s = NSMutableAttributedString(attributedString: editor.attributedText)
+        s.replaceCharacters(in: target, with: NSAttributedString(string: ""))
+        editor.attributedText = s
+        editor.selectedRange = NSRange(location: min(target.location, s.length), length: 0)
+        snapshot(markUserEdit: true)
     }
 
 
@@ -2473,17 +3892,40 @@ final class NJProtonEditorHandle {
         snapshot()
     }
 
-    func insertLink(_ url: URL) {
+    func insertLink(_ url: URL, title: String? = nil) {
         guard let editor else { return }
         guard let tv = findTextView(in: editor) else { return }
 
-        let r = tv.selectedRange
-        if r.length == 0 { return }
+        let r = clampedSelection(tv.selectedRange, maxLength: tv.attributedText.length)
+        let trimmedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
         let s = NSMutableAttributedString(attributedString: tv.attributedText)
-        s.addAttribute(.link, value: url, range: r)
+        if trimmedTitle.isEmpty && r.length > 0 {
+            s.addAttribute(.link, value: url, range: r)
+            s.addAttribute(.foregroundColor, value: UIColor.link, range: r)
+            s.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: r)
+            tv.attributedText = s
+            tv.selectedRange = NSRange(location: r.location + r.length, length: 0)
+            snapshot()
+            return
+        }
+
+        let displayTitle = trimmedTitle.isEmpty
+            ? NJExternalFileLinkSupport.defaultDisplayName(for: url)
+            : trimmedTitle
+
+        var attrs = tv.typingAttributes
+        if attrs[.font] == nil {
+            attrs[.font] = NJCanonicalBodyFont()
+        }
+        attrs[.foregroundColor] = UIColor.link
+        attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
+        attrs[.link] = url
+
+        let linkedText = NSAttributedString(string: displayTitle, attributes: attrs)
+        s.replaceCharacters(in: r, with: linkedText)
         tv.attributedText = s
-        tv.selectedRange = NSRange(location: r.location + r.length, length: 0)
+        tv.selectedRange = NSRange(location: min(r.location + linkedText.length, s.length), length: 0)
 
         snapshot()
     }
@@ -2593,6 +4035,7 @@ final class NJProtonEditorHandle {
 
     func increaseFont() { adjustFontSize(delta: 1) }
     func decreaseFont() { adjustFontSize(delta: -1) }
+    func setTextColor(_ color: UIColor) { applyTextColor(color) }
 
     func toggleBold() { toggleBoldWeight() }
 
@@ -2660,9 +4103,34 @@ final class NJProtonEditorHandle {
     func toggleItalic() { toggleFontTrait(.traitItalic) }
     func toggleStrike() { toggleStrikeThrough() }
 
-    func snapshot() {
-        guard let editor else { return }
-        onSnapshot?(editor.attributedText, editor.selectedRange)
+    func snapshot(markUserEdit: Bool = false) {
+        let attributedText: NSAttributedString
+        let selectedRange: NSRange
+        if let tv = activeTextView() {
+            attributedText = tv.attributedText ?? NSAttributedString(string: "")
+            selectedRange = tv.selectedRange
+        } else if let tv = textView, owns(textView: tv) {
+            attributedText = tv.attributedText ?? NSAttributedString(string: "")
+            selectedRange = tv.selectedRange
+        } else if let editor {
+            attributedText = editor.attributedText
+            selectedRange = editor.selectedRange
+        } else {
+            return
+        }
+        onSnapshot?(attributedText, selectedRange)
+        if markUserEdit && !isRunningProgrammaticUpdate {
+            userEditSourceHint = "handle.snapshot(markUserEdit)"
+            onUserTyped?(attributedText, selectedRange)
+        }
+        // Toolbar/shortcut formatting often changes attributes without emitting
+        // UITextView text-change notifications, so we cannot rely on the typing
+        // idle timer to end the editing window for commit/sync.
+        if isEditing {
+            DispatchQueue.main.async { [weak self] in
+                self?.isEditing = false
+            }
+        }
     }
 
     private func adjustFontSize(delta: CGFloat) {
@@ -2687,6 +4155,25 @@ final class NJProtonEditorHandle {
         }
         tv.textStorage.endEditing()
 
+        snapshot()
+    }
+
+    private func applyTextColor(_ color: UIColor) {
+        guard let tv = activeTextView() else { return }
+        isEditing = true
+
+        let r = tv.selectedRange
+        if r.length == 0 {
+            tv.typingAttributes[.foregroundColor] = color
+            return
+        }
+
+        let storage = tv.textStorage
+        storage.beginEditing()
+        storage.addAttribute(.foregroundColor, value: color, range: r)
+        storage.endEditing()
+
+        tv.typingAttributes[.foregroundColor] = color
         snapshot()
     }
 
@@ -2728,12 +4215,53 @@ final class NJProtonEditorHandle {
 
         let r = tv.selectedRange
         if r.length == 0 {
-            let v = (tv.typingAttributes[.strikethroughStyle] as? Int) ?? 0
-            if v == 0 {
-                tv.typingAttributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
-            } else {
-                tv.typingAttributes.removeValue(forKey: .strikethroughStyle)
+            let ns = tv.textStorage.string as NSString
+            guard ns.length > 0 else {
+                let v = (tv.typingAttributes[.strikethroughStyle] as? Int) ?? 0
+                if v == 0 {
+                    tv.typingAttributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+                } else {
+                    tv.typingAttributes.removeValue(forKey: .strikethroughStyle)
+                }
+                return
             }
+
+            let caret = min(r.location, max(0, ns.length - 1))
+            var paragraphRange = ns.paragraphRange(for: NSRange(location: caret, length: 0))
+            while paragraphRange.length > 0 {
+                let last = ns.character(at: paragraphRange.location + paragraphRange.length - 1)
+                if last == 10 || last == 13 {
+                    paragraphRange.length -= 1
+                } else {
+                    break
+                }
+            }
+
+            guard paragraphRange.length > 0 else {
+                let v = (tv.typingAttributes[.strikethroughStyle] as? Int) ?? 0
+                if v == 0 {
+                    tv.typingAttributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+                } else {
+                    tv.typingAttributes.removeValue(forKey: .strikethroughStyle)
+                }
+                return
+            }
+
+            let s = tv.textStorage
+            let v = (s.attribute(.strikethroughStyle, at: paragraphRange.location, effectiveRange: nil) as? Int) ?? 0
+            let has = v != 0
+
+            s.beginEditing()
+            if has {
+                s.removeAttribute(.strikethroughStyle, range: paragraphRange)
+                tv.typingAttributes.removeValue(forKey: .strikethroughStyle)
+            } else {
+                s.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: paragraphRange)
+                tv.typingAttributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+            }
+            s.endEditing()
+
+            snapshot()
             return
         }
 
@@ -2753,12 +4281,18 @@ final class NJProtonEditorHandle {
     }
 
     func hydrateFromProtonJSONString(_ json: String) {
+        guard !isActivelyEditingText else {
+            discardPendingHydration()
+            return
+        }
         pendingHydrateProtonJSON = json
         applyPendingHydrateIfNeeded()
     }
 
     private var didHydrate = false
     private var attachedEditorID: ObjectIdentifier? = nil
+    private var collapsibleTypingIdleWork: DispatchWorkItem?
+    private let collapsibleTypingIdleMs: Int = 350
 
     func invalidateHydration() {
         didHydrate = false
@@ -2767,6 +4301,8 @@ final class NJProtonEditorHandle {
         hydrationScheduled = false
         pendingJSON = nil
         pendingHydrateProtonJSON = nil
+        collapsibleTypingIdleWork?.cancel()
+        collapsibleTypingIdleWork = nil
     }
 
     func editorDidAttach(_ ev: EditorView) {
@@ -2784,6 +4320,10 @@ final class NJProtonEditorHandle {
     func applyPendingHydrateIfNeeded() {
         guard let json = pendingHydrateProtonJSON else { return }
         guard editor != nil, textView != nil else { return }
+        guard !isActivelyEditingText else {
+            discardPendingHydration()
+            return
+        }
 
         let sig = json.hashValue
         if didHydrate, sig == lastHydratedJSONSig {
@@ -2837,6 +4377,10 @@ final class NJProtonEditorHandle {
     }
 
     func scheduleHydration(_ json: String) {
+        guard !isActivelyEditingText else {
+            discardPendingHydration()
+            return
+        }
         pendingJSON = json
         guard !hydrationScheduled else { return }
         hydrationScheduled = true
@@ -2859,74 +4403,43 @@ final class NJProtonEditorHandle {
     private func applyHydrateJSON(_ json: String) {
         guard textView != nil else { return }
         guard let editor else { return }
+        guard !isActivelyEditingText else {
+            discardPendingHydration()
+            return
+        }
 
         let baseFont = NJCanonicalBodyFont()
 
         func apply(_ a: NSAttributedString) {
-            let fixedFonts = NJSanitizeSuspiciousBodyBold(
-                NJApplyBaseFontWhereMissing(a, baseFont: baseFont),
-                baseFont: baseFont
-            )
-            let r = editor.selectedRange
-            editor.attributedText = fixedFonts
-            editor.selectedRange = NSRange(location: min(r.location, fixedFonts.length), length: 0)
+            let run = { [self] in
+                let fixedFonts = NJEditorCanonicalizeRichText(a, baseSize: baseFont.pointSize)
+                let r = editor.selectedRange
+                editor.attributedText = fixedFonts
+                editor.selectedRange = NSRange(location: min(r.location, fixedFonts.length), length: 0)
 
-            if let tv = textView {
-                var ta = tv.typingAttributes
-                ta[.font] = baseFont
-                if ta[.foregroundColor] == nil { ta[.foregroundColor] = UIColor.label }
-                tv.typingAttributes = ta
+                if let tv = self.textView {
+                    tv.typingAttributes = NJEditorCanonicalTypingAttributes(
+                        tv.typingAttributes,
+                        baseSize: baseFont.pointSize
+                    )
+                }
+
+                NJLogIPadEditorDebug("hydrate", attr: fixedFonts, selection: editor.selectedRange, typingAttributes: self.textView?.typingAttributes)
+
+                self.onHydratedSnapshot?(fixedFonts, editor.selectedRange)
+
+                self.didHydrate = true
+                self.lastHydratedJSONSig = json.hashValue
             }
 
-            NJLogIPadEditorDebug("hydrate", attr: fixedFonts, selection: editor.selectedRange, typingAttributes: textView?.typingAttributes)
-
-            didHydrate = true
-            lastHydratedJSONSig = json.hashValue
-            onSnapshot?(editor.attributedText, editor.selectedRange)
+            if let withProgrammatic {
+                withProgrammatic(run)
+            } else {
+                run()
+            }
         }
 
-        if let doc = NJProtonDocCodecV2.decodeIfPresent(json: json) {
-            let decoded = NJStandardizeFontFamily(
-                NJProtonDocCodecV2.buildAttributedString(
-                    doc: doc,
-                    resolveAttachment: { [weak self] id in self?.attachmentResolver?(id) },
-                    onMissingThumb: { [weak self] id in self?.attachmentThumbPathCleaner?(id) },
-                    onOpenFullPhoto: { [weak self] id in self?.onOpenFullPhoto?(id) },
-                    onTableAction: { [weak self] id, action in
-                        self?.handleTableAction(attachmentID: id, action: action)
-                    },
-                    onDeletePhoto: { [weak self] id in
-                        self?.deletePhotoAttachment(attachmentID: id)
-                    },
-                    onCollapsibleContentChange: { [weak self] in
-                        self?.snapshot()
-                    },
-                    onCollapsibleToggle: { [weak self] id in
-                        self?.replaceCollapsibleAttachment(attachmentID: id)
-                    }
-                )
-            )
-            apply(decoded)
-            return
-        }
-
-        if let doc = NJProtonDocCodecV1.decodeIfPresent(json: json) {
-            let decoded = NJStandardizeFontFamily(NJProtonDocCodecV1.buildAttributedString(doc: doc))
-            apply(decoded)
-            return
-        }
-
-        if let nodes = NJProtonNodeCodecV1.decodeNodesIfPresent(json: json) {
-            let decoded = NJStandardizeFontFamily(NJProtonNodeCodecV1.buildAttributedString(nodes: nodes))
-            apply(decoded)
-            return
-        }
-
-        let mode = njDefaultContentMode()
-        let maxSize = CGSize(width: 4096, height: 4096)
-        let decoded = (try? NJProtonAuditCodec.decoder.decodeDocument(mode: mode, maxSize: maxSize, json: json)) ?? NSAttributedString(string: "")
-        let fixed = NJStandardizeFontFamily(NJProtonListFixups.apply(decoded))
-        apply(fixed)
+        apply(decodeAttributedStringFromProtonJSONString(json, interactive: true))
     }
 
     private func njDefaultContentMode() -> EditorContentMode {
@@ -3003,6 +4516,13 @@ final class NJProtonEditorHandle {
 
     private func decodeRTFBase64(_ b64: String) -> NSAttributedString? {
         guard let data = Data(base64Encoded: b64) else { return nil }
+        if let rtfd = try? NSAttributedString(
+            data: data,
+            options: [.documentType: NSAttributedString.DocumentType.rtfd],
+            documentAttributes: nil
+        ) {
+            return rtfd
+        }
         return try? NSAttributedString(
             data: data,
             options: [.documentType: NSAttributedString.DocumentType.rtf],
@@ -3036,32 +4556,32 @@ final class NJKeyCommandEditorView: EditorView {
 
     @objc private func cmdUnderline() {
         njHandle?.toggleUnderline()
-        njHandle?.snapshot()
+        njHandle?.snapshot(markUserEdit: true)
     }
 
     @objc private func cmdBold() {
         njHandle?.toggleBold()
-        njHandle?.snapshot()
+        njHandle?.snapshot(markUserEdit: true)
     }
 
     @objc private func cmdItalic() {
         njHandle?.toggleItalic()
-        njHandle?.snapshot()
+        njHandle?.snapshot(markUserEdit: true)
     }
 
     @objc private func cmdStrike() {
         njHandle?.toggleStrike()
-        njHandle?.snapshot()
+        njHandle?.snapshot(markUserEdit: true)
     }
 
     @objc private func tabIndent() {
         njHandle?.indent()
-        njHandle?.snapshot()
+        njHandle?.snapshot(markUserEdit: true)
     }
 
     @objc private func tabOutdent() {
         njHandle?.outdent()
-        njHandle?.snapshot()
+        njHandle?.snapshot(markUserEdit: true)
     }
 }
 
@@ -3088,9 +4608,13 @@ struct NJProtonEditorView: UIViewRepresentable {
         v.isUserInteractionEnabled = true
 
         handle.withProgrammatic = { f in
+            handle.isRunningProgrammaticUpdate = true
             context.coordinator.beginProgrammatic()
             f()
-            context.coordinator.endProgrammatic()
+            DispatchQueue.main.async {
+                context.coordinator.endProgrammatic()
+                handle.isRunningProgrammaticUpdate = false
+            }
         }
 
         handle.withProgrammatic? {
@@ -3125,7 +4649,9 @@ struct NJProtonEditorView: UIViewRepresentable {
 
         handle.onEndEditingSimple = nil
 
+        let priorOnSnapshot = handle.onSnapshot
         handle.onSnapshot = { a, r in
+            priorOnSnapshot?(a, r)
             DispatchQueue.main.async {
                 snapshotAttributedText = a
                 snapshotSelectedRange = r
@@ -3133,8 +4659,23 @@ struct NJProtonEditorView: UIViewRepresentable {
             }
         }
 
+        handle.onHydratedSnapshot = { a, r in
+            DispatchQueue.main.async {
+                snapshotAttributedText = a
+                snapshotSelectedRange = r
+                context.coordinator.updateMeasuredHeight(from: v)
+            }
+        }
+        handle.onRequestRemeasure = { [weak v, weak coordinator = context.coordinator] in
+            DispatchQueue.main.async {
+                guard let v, let coordinator else { return }
+                coordinator.invalidateAndRemeasure(from: v)
+            }
+        }
+
         let pinch = UIPinchGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.onPinch(_:)))
         pinch.cancelsTouchesInView = false
+        pinch.delegate = context.coordinator
         v.addGestureRecognizer(pinch)
 
         DispatchQueue.main.async {
@@ -3189,6 +4730,12 @@ struct NJProtonEditorView: UIViewRepresentable {
         }
 
         context.coordinator.updateMeasuredHeight(from: uiView)
+        handle.onRequestRemeasure = { [weak uiView, weak coordinator = context.coordinator] in
+            DispatchQueue.main.async {
+                guard let uiView, let coordinator else { return }
+                coordinator.invalidateAndRemeasure(from: uiView)
+            }
+        }
     }
 
     func makeCoordinator() -> Coordinator {
@@ -3221,7 +4768,7 @@ struct NJProtonEditorView: UIViewRepresentable {
         tv.typingAttributes = ta
     }
 
-    final class Coordinator: NSObject, EditorViewDelegate, UITextViewDelegate {
+    final class Coordinator: NSObject, EditorViewDelegate, UITextViewDelegate, UIGestureRecognizerDelegate {
         @Binding private var measuredHeight: CGFloat
         private weak var editor: EditorView?
         private weak var textView: UITextView?
@@ -3232,10 +4779,21 @@ struct NJProtonEditorView: UIViewRepresentable {
         private var isProgrammatic = false
         var typingIdleWork: DispatchWorkItem? = nil
         let typingIdleMs: Int = 1500
+        private struct ExpectedTextMutation {
+            let expectedLength: Int
+            let issuedAtMs: Int64
+        }
+        private var pendingLocalTextMutations: [ExpectedTextMutation] = []
+        private var lastPersistedTextChangeSignature: String?
+        private var lastPersistedTextChangeAtMs: Int64 = 0
 
 
         private weak var activeAttachment: NSTextAttachment?
         private var activeInitialBounds: CGRect = .zero
+        private weak var activePhotoView: NJPhotoAttachmentView?
+        private var activeInitialPhotoSize: CGSize = .zero
+        private var deferredHeightMeasureWork: DispatchWorkItem?
+        private var lastDeferredMeasureSignature: String?
 
         init(measuredHeight: Binding<CGFloat>, handle: NJProtonEditorHandle) {
             _measuredHeight = measuredHeight
@@ -3246,9 +4804,11 @@ struct NJProtonEditorView: UIViewRepresentable {
             if let o = textDidChangeObs {
                 NotificationCenter.default.removeObserver(o)
             }
+            deferredHeightMeasureWork?.cancel()
         }
         
         private var isNormalizingFonts = false
+        private var isNormalizingLists = false
 
         private func syncTypingAttributesToSelection(_ tv: UITextView) {
             let storage = tv.textStorage
@@ -3328,6 +4888,22 @@ struct NJProtonEditorView: UIViewRepresentable {
             }
         }
 
+        private func normalizeListAttributesInTextStorage(_ tv: UITextView) {
+            if isNormalizingLists { return }
+            let storage = tv.textStorage
+            if storage.length == 0 { return }
+
+            isNormalizingLists = true
+            storage.beginEditing()
+            let didChange = NJProtonListNormalizer.normalizeTextStorage(storage)
+            storage.endEditing()
+            isNormalizingLists = false
+
+            if didChange {
+                syncTypingAttributesToSelection(tv)
+            }
+        }
+
 
         func textViewDidBeginEditing(_ tv: UITextView) {
             if isProgrammatic { return }
@@ -3345,6 +4921,74 @@ struct NJProtonEditorView: UIViewRepresentable {
         func beginProgrammatic() { isProgrammatic = true }
         func endProgrammatic() { isProgrammatic = false }
 
+        private func editorGateNowMs() -> Int64 {
+            Int64(Date().timeIntervalSince1970 * 1000)
+        }
+
+        private func markLocalTextMutation(textView: UITextView, range: NSRange, replacementText text: String) {
+            let currentLength = textView.attributedText?.length ?? 0
+            let replacementLength = (text as NSString).length
+            let expectedLength = max(0, currentLength - range.length + replacementLength)
+            let now = editorGateNowMs()
+            pendingLocalTextMutations.append(ExpectedTextMutation(expectedLength: expectedLength, issuedAtMs: now))
+            pendingLocalTextMutations = Array(pendingLocalTextMutations.suffix(8))
+            if let id = handle.ownerBlockUUID {
+                print("NJ_EDITOR_LOCAL_MUTATION_TOKEN block_id=\(id.uuidString) expected_len=\(expectedLength) range=\(range.location),\(range.length) repl_len=\(replacementLength)")
+            }
+        }
+
+        private func textChangeSignature(for tv: UITextView) -> String {
+            let attr = tv.attributedText ?? NSAttributedString(string: "")
+            let sel = tv.selectedRange
+            return "\(attr.length):\(sel.location):\(sel.length):\(attr.string.hashValue)"
+        }
+
+        private func consumeMatchingLocalTextMutation(currentLength: Int, now: Int64) -> Bool {
+            pendingLocalTextMutations.removeAll { now - $0.issuedAtMs > 2_000 }
+            guard let index = pendingLocalTextMutations.firstIndex(where: { $0.expectedLength == currentLength }) else {
+                return false
+            }
+            pendingLocalTextMutations.remove(at: index)
+            return true
+        }
+
+        private func shouldPersistTextDidChange(for tv: UITextView) -> Bool {
+            if isProgrammatic { return false }
+            let now = editorGateNowMs()
+            let length = tv.attributedText?.length ?? 0
+            let signature = textChangeSignature(for: tv)
+            if signature == lastPersistedTextChangeSignature && now - lastPersistedTextChangeAtMs < 150 {
+                if let id = handle.ownerBlockUUID {
+                    print("NJ_EDITOR_IGNORE_DUP_TEXT_CHANGE block_id=\(id.uuidString) len=\(length) sel=\(tv.selectedRange.location),\(tv.selectedRange.length)")
+                }
+                return false
+            }
+            guard consumeMatchingLocalTextMutation(currentLength: length, now: now) else {
+                if let id = handle.ownerBlockUUID {
+                    print("NJ_EDITOR_IGNORE_NONUSER_TEXT_CHANGE block_id=\(id.uuidString) len=\(length) sel=\(tv.selectedRange.location),\(tv.selectedRange.length) pending_tokens=\(pendingLocalTextMutations.count)")
+                }
+                return false
+            }
+            lastPersistedTextChangeSignature = signature
+            lastPersistedTextChangeAtMs = now
+            return true
+        }
+
+        private func noteUserEditingActivity(in tv: UITextView) {
+            handle.isEditing = true
+            typingIdleWork?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.handle.isEditing = false
+            }
+            typingIdleWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(typingIdleMs), execute: work)
+
+            normalizeFontFamilyInTextStorage(tv)
+            normalizeListAttributesInTextStorage(tv)
+            handle.discardPendingHydration()
+        }
+
         func attachTextView(_ tv: UITextView) {
             if textView === tv { return }
 
@@ -3353,6 +4997,12 @@ struct NJProtonEditorView: UIViewRepresentable {
             if let o = textDidEndObs { NotificationCenter.default.removeObserver(o); textDidEndObs = nil }
 
             textView = tv
+            tv.delegate = self
+            tv.isSelectable = true
+            tv.linkTextAttributes = [
+                .foregroundColor: UIColor.link,
+                .underlineStyle: NSUnderlineStyle.single.rawValue
+            ]
 
             textDidChangeObs = NotificationCenter.default.addObserver(
                 forName: UITextView.textDidChangeNotification,
@@ -3363,19 +5013,7 @@ struct NJProtonEditorView: UIViewRepresentable {
                 if self.isProgrammatic { return }
                 guard let ev = self.handle.editor else { return }
 
-                self.handle.isEditing = true
-                self.typingIdleWork?.cancel()
-                let w = DispatchWorkItem { [weak self] in
-                    guard let self else { return }
-                    self.handle.isEditing = false
-                }
-                self.typingIdleWork = w
-                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(self.typingIdleMs), execute: w)
-
-                self.normalizeFontFamilyInTextStorage(tv)
-
                 self.handle.onSnapshot?(ev.attributedText, ev.selectedRange)
-                self.handle.onUserTyped?(ev.attributedText, ev.selectedRange)
                 self.updateMeasuredHeight(from: ev)
 
 
@@ -3403,13 +5041,24 @@ struct NJProtonEditorView: UIViewRepresentable {
         private var snapshotWorkItem: DispatchWorkItem?
         private let snapshotDebounceMs: Int = 200
 
+        func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
+            if !isProgrammatic, textView.isFirstResponder {
+                markLocalTextMutation(textView: textView, range: range, replacementText: text)
+            }
+            return true
+        }
+
         func textViewDidChange(_ tv: UITextView) {
             if isProgrammatic { return }
-            handle.markAsActiveHandle()
 
             let sel = tv.selectedRange
             NJLogIPadEditorDebug("did_change", attr: tv.attributedText ?? NSAttributedString(string: ""), selection: sel, typingAttributes: tv.typingAttributes)
-            handle.onUserTyped?(tv.attributedText ?? NSAttributedString(string: ""), sel)
+            if shouldPersistTextDidChange(for: tv) {
+                handle.markAsActiveHandle()
+                noteUserEditingActivity(in: tv)
+                handle.userEditSourceHint = "delegate.textViewDidChange"
+                handle.onUserTyped?(tv.attributedText ?? NSAttributedString(string: ""), sel)
+            }
 
             snapshotWorkItem?.cancel()
             let ev = editor ?? (tv.superview as? EditorView)
@@ -3455,6 +5104,21 @@ struct NJProtonEditorView: UIViewRepresentable {
             updateMeasuredHeight(from: editorView)
         }
 
+        func textView(
+            _ textView: UITextView,
+            shouldInteractWith url: URL,
+            in characterRange: NSRange,
+            interaction: UITextItemInteraction
+        ) -> Bool {
+            NJExternalFileLinkSupport.open(url: url)
+            return false
+        }
+
+        func textView(_ textView: UITextView, shouldInteractWith url: URL, in characterRange: NSRange) -> Bool {
+            NJExternalFileLinkSupport.open(url: url)
+            return false
+        }
+
         func updateMeasuredHeight(from editorView: EditorView) {
             editor = editorView
 
@@ -3463,22 +5127,106 @@ struct NJProtonEditorView: UIViewRepresentable {
             tv.isScrollEnabled = false
             tv.layoutIfNeeded()
 
-            let targetW: CGFloat
-            if tv.bounds.width > 1 {
-                targetW = tv.bounds.width
-            } else {
-                targetW = UIScreen.main.bounds.width - 32
+            guard let targetW = resolvedMeasurementWidth(for: tv, in: editorView) else {
+                scheduleDeferredHeightMeasure(from: editorView)
+                return
             }
 
             tv.textContainer.size = CGSize(width: targetW, height: .greatestFiniteMagnitude)
             tv.layoutIfNeeded()
+            tv.layoutManager.ensureLayout(for: tv.textContainer)
 
-            let fit = tv.sizeThatFits(CGSize(width: targetW, height: .greatestFiniteMagnitude))
-            let h = max(44, ceil(fit.height))
+            let fit = tv.sizeThatFits(CGSize(width: targetW, height: .greatestFiniteMagnitude)).height
+            let laidOut = tv.layoutManager.usedRect(for: tv.textContainer).height
+                + tv.textContainerInset.top
+                + tv.textContainerInset.bottom
+            let content = tv.contentSize.height
+            let settledHeight = max(fit, laidOut)
+            let h = max(44, ceil(settledHeight))
+            let hadHeightChange = abs(measuredHeight - h) > 0.5
 
-            if abs(measuredHeight - h) > 0.5 {
+            if hadHeightChange {
                 DispatchQueue.main.async { self.measuredHeight = h }
             }
+
+            let unstableAttachmentLayout =
+                DBNoteRepository.containsAttachments(tv.attributedText) &&
+                (
+                    hadHeightChange ||
+                    abs(fit - laidOut) > 1 ||
+                    abs(content - laidOut) > 1 ||
+                    abs(content - fit) > 1
+                )
+
+            if unstableAttachmentLayout {
+                let signature = "\(Int(round(targetW)))|\(Int(round(h)))|\(Int(round(content)))|\(Int(round(laidOut)))"
+                if lastDeferredMeasureSignature != signature {
+                    lastDeferredMeasureSignature = signature
+                    scheduleDeferredHeightMeasure(from: editorView)
+                }
+            } else {
+                lastDeferredMeasureSignature = nil
+            }
+        }
+
+        func invalidateAndRemeasure(from editorView: EditorView) {
+            let fullRange = NSRange(location: 0, length: editorView.attributedText.length)
+            if fullRange.length > 0 {
+                editorView.invalidateLayout(for: fullRange)
+            }
+            editorView.setNeedsLayout()
+            editorView.layoutIfNeeded()
+            updateMeasuredHeight(from: editorView)
+
+            DispatchQueue.main.async { [weak self, weak editorView] in
+                guard let self, let editorView else { return }
+                let fullRange = NSRange(location: 0, length: editorView.attributedText.length)
+                if fullRange.length > 0 {
+                    editorView.invalidateLayout(for: fullRange)
+                }
+                editorView.setNeedsLayout()
+                editorView.layoutIfNeeded()
+                self.updateMeasuredHeight(from: editorView)
+            }
+        }
+
+        private func resolvedMeasurementWidth(for textView: UITextView, in editorView: EditorView) -> CGFloat? {
+            let candidates: [CGFloat] = [
+                textView.bounds.width,
+                textView.frame.width,
+                editorView.bounds.width,
+                editorView.frame.width,
+                editorView.superview?.bounds.width ?? 0,
+                textView.textContainer.size.width
+            ]
+
+            let width = candidates.first(where: { $0 > 1 }) ?? 0
+            return width > 1 ? width : nil
+        }
+
+        private func scheduleDeferredHeightMeasure(from editorView: EditorView) {
+            if deferredHeightMeasureWork != nil { return }
+            deferredHeightMeasureWork?.cancel()
+            let work = DispatchWorkItem { [weak self, weak editorView] in
+                guard let self, let editorView else { return }
+                self.deferredHeightMeasureWork = nil
+                editorView.setNeedsLayout()
+                editorView.layoutIfNeeded()
+                self.updateMeasuredHeight(from: editorView)
+            }
+            deferredHeightMeasureWork = work
+            DispatchQueue.main.async(execute: work)
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            var current = touch.view
+            while let view = current {
+                if view is NJPhotoAttachmentView {
+                    return false
+                }
+                current = view.superview
+            }
+            return true
         }
 
         @objc func onPinch(_ gr: UIPinchGestureRecognizer) {
@@ -3486,23 +5234,51 @@ struct NJProtonEditorView: UIViewRepresentable {
             editor = ev
             guard let tv = findTextView(in: ev) else { return }
 
+            let editorPoint = gr.location(in: ev)
             let point = gr.location(in: tv)
             let idx = characterIndex(at: point, in: tv)
 
             switch gr.state {
             case .began:
+                activePhotoView = photoAttachmentView(at: editorPoint, in: ev) ?? photoAttachmentView(at: idx, in: tv)
+                activeInitialPhotoSize = activePhotoView?.displaySize ?? .zero
+                if activePhotoView != nil {
+                    activeAttachment = nil
+                    activeInitialBounds = .zero
+                    return
+                }
                 activeAttachment = attachment(at: idx, in: tv)
                 activeInitialBounds = activeAttachment?.bounds ?? .zero
             case .changed:
+                if let photoView = activePhotoView {
+                    let scale = clamp(gr.scale, 0.2, 4.0)
+                    let start = activeInitialPhotoSize == .zero ? photoView.displaySize : activeInitialPhotoSize
+                    let ratio = start.height / max(1, start.width)
+                    var candidates: [CGFloat] = [ev.bounds.width, tv.bounds.width, photoView.window?.bounds.width ?? 0]
+                    var current = photoView.superview
+                    while let view = current {
+                        candidates.append(view.bounds.width)
+                        candidates.append(view.frame.width)
+                        current = view.superview
+                    }
+                    let maxWidth = max(120, (candidates.max() ?? photoView.displaySize.width) - 16)
+                    let width = min(max(start.width * scale, 120), maxWidth)
+                    photoView.updateDisplaySize(CGSize(width: width, height: max(1, width * ratio)))
+                    handle.snapshot(markUserEdit: true)
+                    updateMeasuredHeight(from: ev)
+                    return
+                }
                 guard let att = activeAttachment else { return }
                 let scale = clamp(gr.scale, 0.2, 4.0)
                 let b = activeInitialBounds == .zero ? defaultBounds(for: att) : activeInitialBounds
                 att.bounds = CGRect(x: b.origin.x, y: b.origin.y, width: max(20, b.size.width * scale), height: max(20, b.size.height * scale))
-                handle.snapshot()
+                handle.snapshot(markUserEdit: true)
                 updateMeasuredHeight(from: ev)
             default:
                 activeAttachment = nil
                 activeInitialBounds = .zero
+                activePhotoView = nil
+                activeInitialPhotoSize = .zero
             }
         }
 
@@ -3527,6 +5303,25 @@ struct NJProtonEditorView: UIViewRepresentable {
             return tv.attributedText.attribute(.attachment, at: idx, effectiveRange: nil) as? NSTextAttachment
         }
 
+        private func photoAttachmentView(at idx: Int, in tv: UITextView) -> NJPhotoAttachmentView? {
+            if idx < 0 || idx >= tv.attributedText.length { return nil }
+            guard let attachment = tv.attributedText.attribute(.attachment, at: idx, effectiveRange: nil) as? Attachment else {
+                return nil
+            }
+            return attachment.contentView as? NJPhotoAttachmentView
+        }
+
+        private func photoAttachmentView(at point: CGPoint, in root: UIView) -> NJPhotoAttachmentView? {
+            var current = root.hitTest(point, with: nil)
+            while let view = current {
+                if let photo = view as? NJPhotoAttachmentView {
+                    return photo
+                }
+                current = view.superview
+            }
+            return nil
+        }
+
         private func clamp(_ v: CGFloat, _ lo: CGFloat, _ hi: CGFloat) -> CGFloat {
             min(max(v, lo), hi)
         }
@@ -3542,42 +5337,171 @@ struct NJProtonEditorView: UIViewRepresentable {
     }
 }
 
-private enum NJProtonListFixups {
+private enum NJProtonListNormalizer {
     static func apply(_ input: NSAttributedString) -> NSAttributedString {
         let m = NSMutableAttributedString(attributedString: input)
-        let s = m.string as NSString
-        let full = NSRange(location: 0, length: s.length)
+        _ = normalizeTextStorage(m)
+        return m
+    }
 
-        var i = 0
-        while i < s.length {
-            let paraRange = s.paragraphRange(for: NSRange(location: i, length: 0))
-            let para = m.attributedSubstring(from: paraRange)
+    @discardableResult
+    static func normalizeTextStorage(_ text: NSMutableAttributedString) -> Bool {
+        let s = text.string as NSString
+        guard s.length > 0 else { return false }
 
-            let hasList: Bool = {
-                var v: Any? = nil
-                para.enumerateAttribute(.listItem, in: NSRange(location: 0, length: para.length), options: []) { x, _, stop in
-                    if x != nil { v = x; stop.pointee = true }
+        var didChange = false
+        var cursor = 0
+
+        while cursor < s.length {
+            let paragraphRange = s.paragraphRange(for: NSRange(location: cursor, length: 0))
+            let kind = paragraphListKind(in: text, paragraphRange: paragraphRange)
+            let textList = textList(in: text, paragraphRange: paragraphRange)
+            let contentRange = contentRange(in: paragraphRange, text: s)
+
+            if let textList {
+                let currentStyle = (text.attribute(.paragraphStyle, at: paragraphRange.location, effectiveRange: nil) as? NSParagraphStyle)?
+                    .mutableCopy() as? NSMutableParagraphStyle ?? NSMutableParagraphStyle()
+                if currentStyle.textLists.first?.markerFormat != textList.markerFormat || currentStyle.textLists.count != 1 {
+                    currentStyle.textLists = [textList]
+                    text.addAttribute(.paragraphStyle, value: currentStyle, range: paragraphRange)
+                    didChange = true
                 }
-                return v != nil
-            }()
 
-            if hasList {
-                let local = para.string as NSString
-                if local.length > 0 {
-                    var j = 0
-                    while j < local.length {
-                        if local.character(at: j) == 10 {
-                            let global = paraRange.location + j
-                            m.addAttribute(.skipNextListMarker, value: true, range: NSRange(location: global, length: 1))
-                        }
-                        j += 1
-                    }
+                if contentRange.length > 0 && !contentRangeHasUniformList(text, range: contentRange, kind: kind) {
+                    text.addAttribute(.listItem, value: textList, range: contentRange)
+                    didChange = true
+                }
+
+                applySkipMarkerFixups(text, paragraphRange: paragraphRange, contentRange: contentRange)
+            } else {
+                if paragraphContainsAttribute(text, key: .listItem, range: paragraphRange) {
+                    text.removeAttribute(.listItem, range: paragraphRange)
+                    didChange = true
+                }
+
+                let currentStyle = (text.attribute(.paragraphStyle, at: paragraphRange.location, effectiveRange: nil) as? NSParagraphStyle)?
+                    .mutableCopy() as? NSMutableParagraphStyle
+                if let currentStyle, !currentStyle.textLists.isEmpty {
+                    currentStyle.textLists = []
+                    text.addAttribute(.paragraphStyle, value: currentStyle, range: paragraphRange)
+                    didChange = true
+                }
+
+                if paragraphContainsAttribute(text, key: .skipNextListMarker, range: paragraphRange) {
+                    text.removeAttribute(.skipNextListMarker, range: paragraphRange)
+                    didChange = true
                 }
             }
 
-            i = paraRange.location + max(1, paraRange.length)
+            cursor = paragraphRange.location + max(1, paragraphRange.length)
         }
 
-        return m
+        return didChange
+    }
+
+    static func paragraphListKind(in text: NSAttributedString, paragraphRange: NSRange) -> NJListKind? {
+        guard let list = textList(in: text, paragraphRange: paragraphRange) else { return nil }
+        return list.markerFormat == .decimal ? .number : .bullet
+    }
+
+    private static func textList(in text: NSAttributedString, paragraphRange: NSRange) -> NSTextList? {
+        var listValue: Any?
+        text.enumerateAttribute(.listItem, in: paragraphRange, options: []) { value, _, stop in
+            if value != nil {
+                listValue = value
+                stop.pointee = true
+            }
+        }
+
+        if let list = listValue as? NSTextList { return list }
+        if let lists = listValue as? [NSTextList], let first = lists.first { return first }
+        if let style = text.attribute(.paragraphStyle, at: paragraphRange.location, effectiveRange: nil) as? NSParagraphStyle {
+            return style.textLists.first
+        }
+        return nil
+    }
+
+    private static func contentRange(in paragraphRange: NSRange, text: NSString) -> NSRange {
+        var range = paragraphRange
+        while range.length > 0 {
+            let last = text.character(at: range.location + range.length - 1)
+            if last == 10 || last == 13 {
+                range.length -= 1
+            } else {
+                break
+            }
+        }
+        return range
+    }
+
+    private static func contentRangeHasUniformList(
+        _ text: NSAttributedString,
+        range: NSRange,
+        kind: NJListKind?
+    ) -> Bool {
+        guard range.length > 0 else { return true }
+
+        var cursor = range.location
+        while cursor < NSMaxRange(range) {
+            var effective = NSRange(location: 0, length: 0)
+            let value = text.attribute(.listItem, at: cursor, effectiveRange: &effective)
+            let currentKind = listKind(from: value)
+            if currentKind != kind {
+                return false
+            }
+            cursor = max(cursor + 1, NSMaxRange(effective))
+        }
+
+        return true
+    }
+
+    private static func paragraphContainsAttribute(
+        _ text: NSAttributedString,
+        key: NSAttributedString.Key,
+        range: NSRange
+    ) -> Bool {
+        var found = false
+        text.enumerateAttribute(key, in: range, options: []) { value, _, stop in
+            if value != nil {
+                found = true
+                stop.pointee = true
+            }
+        }
+        return found
+    }
+
+    private static func applySkipMarkerFixups(
+        _ text: NSMutableAttributedString,
+        paragraphRange: NSRange,
+        contentRange: NSRange
+    ) {
+        if paragraphContainsAttribute(text, key: .skipNextListMarker, range: paragraphRange) {
+            text.removeAttribute(.skipNextListMarker, range: paragraphRange)
+        }
+
+        guard contentRange.length > 0 else { return }
+        let local = text.attributedSubstring(from: contentRange).string as NSString
+        guard local.length > 0 else { return }
+
+        var didApply = false
+        for idx in 0..<local.length where local.character(at: idx) == 10 {
+            let global = contentRange.location + idx
+            text.addAttribute(.skipNextListMarker, value: true, range: NSRange(location: global, length: 1))
+            didApply = true
+        }
+
+        if !didApply && paragraphContainsAttribute(text, key: .skipNextListMarker, range: paragraphRange) {
+            text.removeAttribute(.skipNextListMarker, range: paragraphRange)
+        }
+    }
+
+    private static func listKind(from value: Any?) -> NJListKind? {
+        if let list = value as? NSTextList {
+            return list.markerFormat == .decimal ? .number : .bullet
+        }
+        if let lists = value as? [NSTextList], let first = lists.first {
+            return first.markerFormat == .decimal ? .number : .bullet
+        }
+        return nil
     }
 }

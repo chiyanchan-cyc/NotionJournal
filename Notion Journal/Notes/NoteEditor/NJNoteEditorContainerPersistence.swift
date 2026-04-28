@@ -25,6 +25,13 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         var instanceID: String
         var orderKey: Double
         var createdAtMs: Int64
+        var cardRowID: String
+        var cardStatus: String
+        var cardPriority: String
+        var cardCategory: String
+        var cardArea: String
+        var cardContext: String
+        var cardTitle: String
         var domainPreview: String
         var goalPreview: String
         var attr: NSAttributedString
@@ -37,6 +44,8 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         var protonJSON: String
         var tagJSON: String
         var clipPDFRel: String
+        var isChecked: Bool
+        var verifiedLocalEditAtMs: Int64
 
         init(
             id: UUID = UUID(),
@@ -44,6 +53,13 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             instanceID: String,
             orderKey: Double,
             createdAtMs: Int64 = 0,
+            cardRowID: String = "",
+            cardStatus: String = "",
+            cardPriority: String = "",
+            cardCategory: String = "",
+            cardArea: String = "",
+            cardContext: String = "",
+            cardTitle: String = "",
             domainPreview: String = "",
             goalPreview: String = "",
             attr: NSAttributedString,
@@ -55,13 +71,22 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             loadedPayloadHash: String = "",
             protonJSON: String = "",
             tagJSON: String = "",
-            clipPDFRel: String = ""
+            clipPDFRel: String = "",
+            isChecked: Bool = false,
+            verifiedLocalEditAtMs: Int64 = 0
         ) {
             self.id = id
             self.blockID = blockID
             self.instanceID = instanceID
             self.orderKey = orderKey
             self.createdAtMs = createdAtMs
+            self.cardRowID = cardRowID
+            self.cardStatus = cardStatus
+            self.cardPriority = cardPriority
+            self.cardCategory = cardCategory
+            self.cardArea = cardArea
+            self.cardContext = cardContext
+            self.cardTitle = cardTitle
             self.domainPreview = domainPreview
             self.goalPreview = goalPreview
             self.attr = attr
@@ -74,6 +99,8 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             self.protonJSON = protonJSON
             self.tagJSON = tagJSON
             self.clipPDFRel = clipPDFRel
+            self.isChecked = isChecked
+            self.verifiedLocalEditAtMs = verifiedLocalEditAtMs
         }
 
         static func == (lhs: BlockState, rhs: BlockState) -> Bool {
@@ -82,6 +109,13 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             lhs.instanceID == rhs.instanceID &&
             lhs.orderKey == rhs.orderKey &&
             lhs.createdAtMs == rhs.createdAtMs &&
+            lhs.cardRowID == rhs.cardRowID &&
+            lhs.cardStatus == rhs.cardStatus &&
+            lhs.cardPriority == rhs.cardPriority &&
+            lhs.cardCategory == rhs.cardCategory &&
+            lhs.cardArea == rhs.cardArea &&
+            lhs.cardContext == rhs.cardContext &&
+            lhs.cardTitle == rhs.cardTitle &&
             lhs.domainPreview == rhs.domainPreview &&
             lhs.goalPreview == rhs.goalPreview &&
             lhs.attr.isEqual(to: rhs.attr) &&
@@ -92,12 +126,23 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             lhs.loadedPayloadHash == rhs.loadedPayloadHash &&
             lhs.protonJSON == rhs.protonJSON &&
             lhs.tagJSON == rhs.tagJSON &&
-            lhs.clipPDFRel == rhs.clipPDFRel
+            lhs.clipPDFRel == rhs.clipPDFRel &&
+            lhs.isChecked == rhs.isChecked &&
+            lhs.verifiedLocalEditAtMs == rhs.verifiedLocalEditAtMs
         }
     }
 
     @Published var title: String = ""
     @Published var tab: String = ""
+    @Published var noteType: NJNoteType = .note
+    @Published var dominanceMode: NJNoteDominanceMode = .block
+    @Published var isChecklist: Bool = false
+    @Published var cardID: String = ""
+    @Published var cardCategory: String = ""
+    @Published var cardArea: String = ""
+    @Published var cardContext: String = ""
+    @Published var cardStatus: String = ""
+    @Published var cardPriority: String = ""
     @Published var blocks: [BlockState] = []
     @Published var focusedBlockID: UUID? = nil
     @Published private(set) var hasPendingRemoteRefresh: Bool = false
@@ -108,9 +153,16 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
     private var noteMetaCommitWork: DispatchWorkItem? = nil
     private var didConfigure = false
     private var loadedContentWatermarkMs: Int64 = 0
+    private var loadedContentSignature: String = ""
     @Published private(set) var hasPendingNoteMetaChanges: Bool = false
+    private let editorLeaseDurationMs: Int64 = 120_000
 
     init() { }
+
+    private var localEditorDeviceID: String {
+        let host = ProcessInfo.processInfo.hostName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return host.isEmpty ? UIDevice.current.identifierForVendor?.uuidString ?? "unknown" : host
+    }
 
     private func extractClipPDFRelFromPayload(_ payloadJSON: String) -> String {
         if let normalized = try? NJPayloadConverterV1.convertToV1(payloadJSON),
@@ -120,6 +172,11 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                 return p.trimmingCharacters(in: .whitespacesAndNewlines)
             }
             if let audio = try? v1.audioData(), let p = audio.pdf_path, !p.isEmpty {
+                return p.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            if let summary = try? v1.chatGPTSummaryData(),
+               let p = summary.source_pdf_path,
+               !p.isEmpty {
                 return p.trimmingCharacters(in: .whitespacesAndNewlines)
             }
         }
@@ -140,7 +197,158 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             return pdfPath.trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
+        if let summary = sections["chatgpt_summary"] as? [String: Any],
+           let summaryData = summary["data"] as? [String: Any],
+           let pdfPath = summaryData["source_pdf_path"] as? String {
+            return pdfPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
         return ""
+    }
+
+    private func stablePayloadHash(_ protonJSON: String) -> String {
+        guard !protonJSON.isEmpty else { return "" }
+        let data = Data(protonJSON.utf8)
+        return SHA256.hash(data: data).compactMap { String(format: "%02x", $0) }.joined()
+    }
+
+    private func stableContentSignature(parts: [String]) -> String {
+        let joined = parts.joined(separator: "\u{1F}")
+        let data = Data(joined.utf8)
+        return SHA256.hash(data: data).compactMap { String(format: "%02x", $0) }.joined()
+    }
+
+    private func currentContentSignature() -> String {
+        guard let store, let noteID else { return "" }
+
+        let note = store.notes.getNote(noteID)
+        let rows = store.notes.loadAllTextBlocksRTFWithPlacement(noteID: noteID.raw)
+        var parts: [String] = [
+            "note_id=\(noteID.raw)",
+            "title=\(note?.title ?? "")",
+            "tab=\(note?.tabDomain ?? "")",
+            "note_type=\(note?.noteType.rawValue ?? "")",
+            "dominance=\(note?.dominanceMode.rawValue ?? "")",
+            "is_checklist=\((note?.isChecklist ?? 0) > 0 ? 1 : 0)",
+            "card_id=\(note?.cardID ?? "")",
+            "card_category=\(note?.cardCategory ?? "")",
+            "card_area=\(note?.cardArea ?? "")",
+            "card_context=\(note?.cardContext ?? "")",
+            "card_status=\(note?.cardStatus ?? "")",
+            "card_priority=\(note?.cardPriority ?? "")"
+        ]
+        parts.reserveCapacity(parts.count + rows.count * 5)
+
+        for row in rows {
+            parts.append("block_id=\(row.blockID)")
+            parts.append("instance_id=\(row.instanceID)")
+            parts.append("order_key=\(row.orderKey)")
+            parts.append("is_checked=\(row.isChecked ? 1 : 0)")
+            parts.append("card_row_id=\(row.cardRowID)")
+            parts.append("card_status=\(row.cardStatus)")
+            parts.append("card_priority=\(row.cardPriority)")
+            parts.append("card_category=\(row.cardCategory)")
+            parts.append("card_area=\(row.cardArea)")
+            parts.append("card_context=\(row.cardContext)")
+            parts.append("card_title=\(row.cardTitle)")
+            parts.append("payload=\(row.payloadJSON)")
+        }
+
+        return stableContentSignature(parts: parts)
+    }
+
+    private func dbLoadBlockUpdatedAtMs(_ blockID: String) -> Int64 {
+        guard let store else { return 0 }
+        return store.notes.db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = "SELECT updated_at_ms FROM nj_block WHERE block_id = ? LIMIT 1;"
+            let rc = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
+            if rc != SQLITE_OK { return 0 }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, blockID, -1, SQLITE_TRANSIENT)
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                return sqlite3_column_int64(stmt, 0)
+            }
+            return 0
+        }
+    }
+
+    private func shouldAbortStaleEditorSave(index: Int, candidateProtonJSON: String) -> Bool {
+        guard blocks.indices.contains(index) else { return false }
+        let b = blocks[index]
+        let dbUpdatedAtMs = dbLoadBlockUpdatedAtMs(b.blockID)
+
+        guard b.loadedUpdatedAtMs > 0,
+              dbUpdatedAtMs > b.loadedUpdatedAtMs else {
+            return false
+        }
+
+        let candidateHash = stablePayloadHash(candidateProtonJSON)
+        let loadedHash = b.loadedPayloadHash.isEmpty ? stablePayloadHash(b.protonJSON) : b.loadedPayloadHash
+        print("NJ_BLOCK_ABORT_STALE_EDITOR_SAVE block_id=\(b.blockID) loaded_updated_at_ms=\(b.loadedUpdatedAtMs) db_updated_at_ms=\(dbUpdatedAtMs) candidate_matches_loaded=\(candidateHash == loadedHash ? 1 : 0) verified_local_edit=\(b.verifiedLocalEditAtMs > 0 ? 1 : 0)")
+
+        if b.verifiedLocalEditAtMs <= 0 {
+            print("NJ_BLOCK_ABORT_REMOTE_STALE_SAVE_NO_LOCAL_EDIT block_id=\(b.blockID) loaded_updated_at_ms=\(b.loadedUpdatedAtMs) db_updated_at_ms=\(dbUpdatedAtMs)")
+            markPendingRemoteRefresh()
+            blocks[index].isDirty = false
+            blocks[index].verifiedLocalEditAtMs = 0
+            blocks[index].protonHandle.isEditing = false
+            reloadBlockFromStore(at: index)
+            return true
+        }
+
+        if candidateHash != loadedHash {
+            markPendingRemoteRefresh()
+            return false
+        }
+
+        if b.isDirty || b.protonHandle.isEditing {
+            markPendingRemoteRefresh()
+            return true
+        }
+
+        reloadBlockFromStore(at: index)
+        return true
+    }
+
+    private func noteBlockInstanceID(for index: Int) -> String {
+        guard blocks.indices.contains(index) else { return "" }
+        let existing = blocks[index].instanceID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !existing.isEmpty { return existing }
+        return store?.notes.findFirstInstanceByBlock(blockID: blocks[index].blockID)?.instanceID ?? ""
+    }
+
+    private func publishEditorLease(for index: Int, source: String) {
+        guard let store, blocks.indices.contains(index) else { return }
+        let instanceID = noteBlockInstanceID(for: index)
+        guard !instanceID.isEmpty else { return }
+        let nowMs = DBNoteRepository.nowMs()
+        store.notes.updateNoteBlockEditorLease(
+            instanceID: instanceID,
+            deviceID: localEditorDeviceID,
+            nowMs: nowMs,
+            expiresAtMs: nowMs + editorLeaseDurationMs
+        )
+        print("NJ_BLOCK_EDITOR_LEASE_PUBLISH source=\(source) block_id=\(blocks[index].blockID) instance_id=\(instanceID) device_id=\(localEditorDeviceID) expires_at_ms=\(nowMs + editorLeaseDurationMs)")
+        store.sync.schedulePush(debounceMs: 0)
+    }
+
+    private func shouldAbortForRemoteEditorLease(index: Int) -> Bool {
+        guard let store, blocks.indices.contains(index) else { return false }
+        let nowMs = DBNoteRepository.nowMs()
+        guard let lease = store.notes.activeRemoteEditorLease(
+            blockID: blocks[index].blockID,
+            localDeviceID: localEditorDeviceID,
+            nowMs: nowMs
+        ) else {
+            return false
+        }
+        print("NJ_BLOCK_ABORT_REMOTE_EDITOR_LEASE block_id=\(blocks[index].blockID) remote_device_id=\(lease.deviceID) expires_at_ms=\(lease.expiresAtMs) now_ms=\(nowMs)")
+        markPendingRemoteRefresh()
+        blocks[index].isDirty = false
+        blocks[index].verifiedLocalEditAtMs = 0
+        blocks[index].protonHandle.isEditing = false
+        return true
     }
 
     private func extractPhotoAttachments(from attr: NSAttributedString) -> [NJPhotoAttachmentView] {
@@ -156,9 +364,61 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         return out
     }
 
+    private func blockAttachmentCount(in attr: NSAttributedString) -> Int {
+        if attr.length == 0 { return 0 }
+        var count = 0
+        let r = NSRange(location: 0, length: attr.length)
+        attr.enumerateAttribute(.attachment, in: r, options: []) { value, _, _ in
+            guard let att = value as? Attachment, att.isBlockType else { return }
+            count += 1
+        }
+        return count
+    }
+
+    private func objectReplacementCount(in attr: NSAttributedString) -> Int {
+        attr.string.reduce(0) { $0 + ($1 == "\u{FFFC}" ? 1 : 0) }
+    }
+
     private func protonPhotoNodeCount(_ protonJSON: String) -> Int {
         guard !protonJSON.isEmpty else { return 0 }
         return protonJSON.components(separatedBy: "\"kind\":\"photo\"").count - 1
+    }
+
+    private func protonAttachmentNodeCount(_ protonJSON: String) -> Int {
+        guard !protonJSON.isEmpty,
+              let data = protonJSON.data(using: .utf8),
+              let rootAny = try? JSONSerialization.jsonObject(with: data),
+              let root = rootAny as? [String: Any],
+              let doc = root["doc"] as? [Any] else {
+            return 0
+        }
+
+        return doc.reduce(0) { count, item in
+            guard let node = item as? [String: Any],
+                  (node["type"] as? String) == "attachment" else {
+                return count
+            }
+            return count + 1
+        }
+    }
+
+    private func shouldProtectStructuredAttachmentDowngrade(
+        existingProtonJSON: String,
+        candidateProtonJSON: String,
+        sourceAttr: NSAttributedString
+    ) -> Bool {
+        let existingCount = protonAttachmentNodeCount(existingProtonJSON)
+        guard existingCount > 0 else { return false }
+
+        let candidateCount = protonAttachmentNodeCount(candidateProtonJSON)
+        guard candidateCount < existingCount else { return false }
+
+        let liveBlockAttachments = blockAttachmentCount(in: sourceAttr)
+        let orphanObjects = objectReplacementCount(in: sourceAttr)
+        guard orphanObjects > liveBlockAttachments else { return false }
+
+        print("NJ_BLOCK_PROTECT_ATTACHMENT_DOWNGRADE existing=\(existingCount) candidate=\(candidateCount) live=\(liveBlockAttachments) orphan=\(orphanObjects)")
+        return true
     }
 
     private func hasMeaningfulAttributedContent(_ attr: NSAttributedString) -> Bool {
@@ -170,14 +430,105 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         return !text.isEmpty
     }
 
+    private func visibleTextScore(_ attr: NSAttributedString) -> Int {
+        let text = attr.string
+            .replacingOccurrences(of: "\u{FFFC}", with: "")
+            .replacingOccurrences(of: "\u{200B}", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.count
+    }
+
+    private func shouldPreferRTFFallback(protonAttr: NSAttributedString, rtfAttr: NSAttributedString) -> Bool {
+        if !hasMeaningfulAttributedContent(rtfAttr) { return false }
+        if !hasMeaningfulAttributedContent(protonAttr) { return true }
+
+        let protonScore = visibleTextScore(protonAttr)
+        let rtfScore = visibleTextScore(rtfAttr)
+        guard rtfScore > 0 else { return false }
+
+        // Older weekly blocks can carry a stale Proton projection beside the
+        // full RTF source. Use RTF when it is clearly the richer representation.
+        return rtfScore >= max(protonScore + 40, protonScore * 2)
+    }
+
+    private func shouldAllowRTFFallback(for protonJSON: String) -> Bool {
+        protonAttachmentNodeCount(protonJSON) == 0
+    }
+
+    private func isPlaceholderPayload(_ payloadJSON: String) -> Bool {
+        let trimmed = payloadJSON.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty || trimmed == "{}"
+    }
+
+    private func dbLoadBlockPayloadJSON(_ blockID: String) -> String {
+        guard let store else { return "" }
+        return store.notes.db.withDB { dbp in
+            var out = ""
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT payload_json
+            FROM nj_block
+            WHERE block_id = ? AND deleted = 0
+            LIMIT 1;
+            """
+            let rc = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
+            if rc != SQLITE_OK { return "" }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, blockID, -1, SQLITE_TRANSIENT)
+            if sqlite3_step(stmt) == SQLITE_ROW,
+               let c = sqlite3_column_text(stmt, 0) {
+                out = String(cString: c)
+            }
+            return out
+        }
+    }
+
+    private func shouldProtectPlaceholderShell(blockID: String, persistedProtonJSON: String, attr: NSAttributedString) -> Bool {
+        guard persistedProtonJSON.isEmpty else { return false }
+        guard !hasMeaningfulAttributedContent(attr) else { return false }
+        return isPlaceholderPayload(dbLoadBlockPayloadJSON(blockID))
+    }
+
     private func stabilizedProtonJSON(
         exported: String,
         fallback: String,
         sourceAttr: NSAttributedString
     ) -> String {
-        if !exported.isEmpty { return exported }
-        if hasMeaningfulAttributedContent(sourceAttr) { return fallback }
-        return exported
+        func normalize(_ json: String) -> String {
+            let trimmed = json.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty,
+                  let data = trimmed.data(using: .utf8),
+                  let rootAny = try? JSONSerialization.jsonObject(with: data, options: []),
+                  let root = rootAny as? [String: Any] else {
+                return json
+            }
+
+            if let schema = root["schema"] as? String,
+               (schema == "nj_proton_doc_v1" || schema == "nj_proton_doc_v2"),
+               let doc = root["doc"] as? [Any],
+               JSONSerialization.isValidJSONObject(["schema": "nj_proton_doc_v2", "doc": doc]),
+               let normalizedData = try? JSONSerialization.data(withJSONObject: ["schema": "nj_proton_doc_v2", "doc": doc], options: []),
+               let normalized = String(data: normalizedData, encoding: .utf8) {
+                return normalized
+            }
+
+            guard root["schema"] == nil,
+                  let doc = root["doc"] as? [Any] else {
+                return json
+            }
+
+            guard JSONSerialization.isValidJSONObject(["schema": "nj_proton_doc_v2", "doc": doc]),
+                  let normalizedData = try? JSONSerialization.data(withJSONObject: ["schema": "nj_proton_doc_v2", "doc": doc], options: []),
+                  let normalized = String(data: normalizedData, encoding: .utf8) else {
+                return json
+            }
+            return normalized
+        }
+
+        let normalizedExported = normalize(exported)
+        if !normalizedExported.isEmpty { return normalizedExported }
+        if hasMeaningfulAttributedContent(sourceAttr) { return normalize(fallback) }
+        return normalizedExported
     }
 
     private func dbLoadClipPDFRel(_ blockID: String) -> String {
@@ -242,7 +593,33 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return ""
         }
+
+        if let sections = obj["sections"] as? [String: Any],
+           let proton1 = sections["proton1"] as? [String: Any],
+           let dataNode = proton1["data"] as? [String: Any] {
+            return dataNode["proton_json"] as? String ?? ""
+        }
         return obj["proton_json"] as? String ?? ""
+    }
+
+    private func decodeStoredRTF(_ data: Data) -> NSAttributedString? {
+        if let rtfd = try? NSAttributedString(
+            data: data,
+            options: [.documentType: NSAttributedString.DocumentType.rtfd],
+            documentAttributes: nil
+        ) {
+            return rtfd
+        }
+
+        if let rtf = try? NSAttributedString(
+            data: data,
+            options: [.documentType: NSAttributedString.DocumentType.rtf],
+            documentAttributes: nil
+        ) {
+            return rtf
+        }
+
+        return nil
     }
 
     func configure(store: AppStore, noteID: NJNoteID) {
@@ -410,6 +787,50 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         }
     }
 
+    private func locallyProtectedReloadBlock(existing: BlockState?, incoming: BlockState) -> BlockState {
+        guard var existing else { return incoming }
+
+        let isActivelyLocal = existing.isDirty
+            || existing.protonHandle.isEditing
+            || existing.verifiedLocalEditAtMs > 0
+        let hasNewerLocalSnapshot = existing.loadedUpdatedAtMs > incoming.loadedUpdatedAtMs
+            && !existing.loadedPayloadHash.isEmpty
+            && existing.loadedPayloadHash != incoming.loadedPayloadHash
+        let wouldDropExistingContent = !existing.protonJSON.isEmpty && incoming.protonJSON.isEmpty
+
+        guard isActivelyLocal || hasNewerLocalSnapshot || wouldDropExistingContent else {
+            return incoming
+        }
+
+        existing.instanceID = incoming.instanceID.isEmpty ? existing.instanceID : incoming.instanceID
+        existing.orderKey = incoming.orderKey
+        existing.createdAtMs = incoming.createdAtMs
+        existing.cardRowID = incoming.cardRowID
+        existing.cardStatus = incoming.cardStatus
+        existing.cardPriority = incoming.cardPriority
+        existing.cardCategory = incoming.cardCategory
+        existing.cardArea = incoming.cardArea
+        existing.cardContext = incoming.cardContext
+        existing.cardTitle = incoming.cardTitle
+        existing.domainPreview = incoming.domainPreview
+        existing.goalPreview = incoming.goalPreview
+        existing.isCollapsed = incoming.isCollapsed
+        if !incoming.tagJSON.isEmpty {
+            existing.tagJSON = incoming.tagJSON
+        }
+        existing.clipPDFRel = incoming.clipPDFRel
+        existing.isChecked = incoming.isChecked
+
+        print(
+            "NJ_NOTE_RELOAD_PRESERVE_LOCAL block_id=\(existing.blockID) " +
+            "dirty=\(existing.isDirty ? 1 : 0) editing=\(existing.protonHandle.isEditing ? 1 : 0) " +
+            "verified=\(existing.verifiedLocalEditAtMs) local_updated=\(existing.loadedUpdatedAtMs) " +
+            "incoming_updated=\(incoming.loadedUpdatedAtMs)"
+        )
+
+        return existing
+    }
+
     func reload(makeHandle: @escaping () -> NJProtonEditorHandle) {
             hasPendingRemoteRefresh = false
             guard let store, let noteID else { return }
@@ -419,6 +840,15 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             if let note = store.notes.getNote(noteID) {
                 title = note.title
                 tab = note.tabDomain
+                noteType = note.noteType
+                dominanceMode = note.dominanceMode
+                isChecklist = note.isChecklist > 0
+                cardID = note.cardID
+                cardCategory = note.cardCategory
+                cardArea = note.cardArea
+                cardContext = note.cardContext
+                cardStatus = note.noteType == .card ? (note.cardStatus.isEmpty ? "Pending" : note.cardStatus) : note.cardStatus
+                cardPriority = note.noteType == .card ? (note.cardPriority.isEmpty ? "Medium" : note.cardPriority) : note.cardPriority
             } else {
                 let now = DBNoteRepository.nowMs()
                 let note = NJNote(
@@ -434,6 +864,15 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                 store.notes.upsertNote(note)
                 title = note.title
                 tab = note.tabDomain
+                noteType = note.noteType
+                dominanceMode = note.dominanceMode
+                isChecklist = note.isChecklist > 0
+                cardID = note.cardID
+                cardCategory = note.cardCategory
+                cardArea = note.cardArea
+                cardContext = note.cardContext
+                cardStatus = note.noteType == .card ? (note.cardStatus.isEmpty ? "Pending" : note.cardStatus) : note.cardStatus
+                cardPriority = note.noteType == .card ? (note.cardPriority.isEmpty ? "Medium" : note.cardPriority) : note.cardPriority
             }
 
             let rows = store.notes.loadAllTextBlocksRTFWithPlacement(noteID: noteID.raw)
@@ -461,6 +900,9 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                     instanceID: "",
                     orderKey: 1000,
                     createdAtMs: DBNoteRepository.nowMs(),
+                    cardRowID: noteType == .card ? store.notes.nextCardRowID(noteID: noteID.raw) : "",
+                    cardStatus: noteType == .card ? "Pending" : "",
+                    cardPriority: noteType == .card ? "Medium" : "",
                     domainPreview: "",
                     goalPreview: "",
                     attr: makeEmptyBlockAttr(),
@@ -471,7 +913,8 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                     loadedUpdatedAtMs: 0,
                     loadedPayloadHash: "",
                     protonJSON: "",
-                    tagJSON: inheritedTagJSON
+                    tagJSON: inheritedTagJSON,
+                    isChecked: false
                 )
 
                 blocks = [b]
@@ -490,23 +933,36 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                 let h = existing?.protonHandle ?? makeHandle()
                 h.ownerBlockUUID = stableID
 
-                let protonJSON = row.protonJSON
+                var protonJSON = row.protonJSON
 
                 let attr: NSAttributedString = {
                     if !protonJSON.isEmpty {
-                        let first = h.previewFirstLineFromProtonJSON(protonJSON)
-                        return ensureNonEmptyTyped(stripZWSP(NSAttributedString(string: first)))
+                        let decoded = h.attributedStringFromProtonJSONString(protonJSON)
+                        let cleaned = stripZWSP(decoded)
+                        if let rtf = decodeStoredRTF(row.rtfData) {
+                            let fallback = stripZWSP(rtf)
+                            if shouldAllowRTFFallback(for: protonJSON),
+                               shouldPreferRTFFallback(protonAttr: cleaned, rtfAttr: fallback) {
+                                let rebuilt = h.exportProtonJSONString(from: fallback)
+                                if !rebuilt.isEmpty {
+                                    protonJSON = rebuilt
+                                }
+                                return ensureNonEmptyTyped(fallback)
+                            }
+                        }
+                        if hasMeaningfulAttributedContent(cleaned) {
+                            return ensureNonEmptyTyped(cleaned)
+                        }
+                        return ensureNonEmptyTyped(cleaned)
                     }
-                    let s = (try? NSAttributedString(
-                        data: row.rtfData,
-                        options: [.documentType: NSAttributedString.DocumentType.rtf],
-                        documentAttributes: nil
-                    )) ?? makeEmptyBlockAttr()
+                    let s = decodeStoredRTF(row.rtfData) ?? makeEmptyBlockAttr()
                     return ensureNonEmptyTyped(stripZWSP(s))
                 }()
 
                 let createdAtMs = dbLoadBlockCreatedAtMs(row.blockID)
                 let tagJSON = dbLoadBlockTagJSON(row.blockID)
+                let loadedUpdatedAtMs = dbLoadBlockUpdatedAtMs(row.blockID)
+                let loadedPayloadHash = stablePayloadHash(protonJSON)
                 let domainPreview = {
                     let fromIndex = dbLoadDomainPreview3FromBlockTag(row.blockID)
                     if !fromIndex.isEmpty { return fromIndex }
@@ -526,6 +982,13 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                         instanceID: row.instanceID,
                         orderKey: row.orderKey,
                         createdAtMs: createdAtMs,
+                        cardRowID: row.cardRowID,
+                        cardStatus: row.cardStatus.isEmpty && noteType == .card ? "Pending" : row.cardStatus,
+                        cardPriority: row.cardPriority.isEmpty && noteType == .card ? "Medium" : row.cardPriority,
+                        cardCategory: row.cardCategory,
+                        cardArea: row.cardArea,
+                        cardContext: row.cardContext,
+                        cardTitle: row.cardTitle,
                         domainPreview: domainPreview,
                         goalPreview: goalPreview,
                         attr: attr,
@@ -533,43 +996,79 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                         isCollapsed: existing?.isCollapsed ?? loadCollapsed(blockID: row.blockID),
                         protonHandle: h,
                         isDirty: false,
-                        loadedUpdatedAtMs: 0,
-                        loadedPayloadHash: "",
+                        loadedUpdatedAtMs: loadedUpdatedAtMs,
+                        loadedPayloadHash: loadedPayloadHash,
                         protonJSON: protonJSON,
                         tagJSON: tagJSON,
-                        clipPDFRel: clipPDFRel
+                        clipPDFRel: clipPDFRel,
+                        isChecked: row.isChecked
                     )
                 )
 
             }
 
+            var priorByBlockID: [String: BlockState] = [:]
+            for prior in priorBlocks where priorByBlockID[prior.blockID] == nil {
+                priorByBlockID[prior.blockID] = prior
+            }
+            out = out.map { incoming in
+                locallyProtectedReloadBlock(existing: priorByBlockID[incoming.blockID], incoming: incoming)
+            }
+
             blocks = out
 
-            if let priorFirst = priorBlocks.first,
-               hasMeaningfulAttributedContent(priorFirst.attr),
-               (priorFirst.isDirty || priorFirst.instanceID.isEmpty),
-               !blocks.contains(where: { $0.blockID == priorFirst.blockID }) {
-                var recovered = priorFirst
-                recovered.protonHandle.ownerBlockUUID = recovered.id
-                recovered.isDirty = true
+            if noteType == .card {
+                normalizeCardRows()
+            }
 
-                if blocks.isEmpty {
-                    recovered.orderKey = max(1000, recovered.orderKey)
-                    blocks = [recovered]
-                } else {
-                    let front = blocks[0].orderKey
-                    recovered.orderKey = max(1, front - 1)
-                    blocks.insert(recovered, at: 0)
+            // My Mac can keep rows mounted without reliably re-triggering the
+            // per-row onAppear hydration path. If a block's preview string is
+            // empty until full Proton content is applied, the row can stay
+            // visually blank even though payload_json is present locally.
+            for idx in blocks.indices {
+                let protonJSON = blocks[idx].protonJSON
+                guard !protonJSON.isEmpty else { continue }
+                guard !blocks[idx].protonHandle.isEditing else { continue }
+                blocks[idx].protonHandle.hydrateFromProtonJSONString(protonJSON)
+            }
+
+            let loadedBlockIDs = Set(blocks.map(\.blockID))
+            let recoverablePriorBlocks = priorBlocks.filter { prior in
+                hasMeaningfulAttributedContent(prior.attr) &&
+                (prior.isDirty || prior.instanceID.isEmpty) &&
+                !loadedBlockIDs.contains(prior.blockID)
+            }
+
+            if !recoverablePriorBlocks.isEmpty {
+                let firstExistingOrder = blocks.first?.orderKey ?? 1000
+                for (offset, prior) in recoverablePriorBlocks.enumerated() {
+                    var recovered = prior
+                    recovered.protonHandle.ownerBlockUUID = recovered.id
+                    recovered.isDirty = true
+                    recovered.orderKey = max(1, firstExistingOrder - Double(recoverablePriorBlocks.count - offset))
+                    if noteType == .card && recovered.cardRowID.isEmpty {
+                        recovered.cardRowID = store.notes.nextCardRowID(noteID: noteID.raw)
+                    }
+                    if noteType == .card && recovered.cardPriority.isEmpty {
+                        recovered.cardPriority = "Medium"
+                    }
+                    if noteType == .card && recovered.cardStatus.isEmpty {
+                        recovered.cardStatus = "Pending"
+                    }
+                    blocks.insert(recovered, at: min(offset, blocks.count))
+                    scheduleCommit(recovered.id, debounce: 0.15)
                 }
-                scheduleCommit(recovered.id, debounce: 0.15)
             }
 
             assert(Set(blocks.map { $0.id }).count == blocks.count)
             focusedBlockID = blocks.contains(where: { $0.id == priorFocusedID }) ? priorFocusedID : blocks.first?.id
             loadedContentWatermarkMs = currentContentWatermarkMs()
+            loadedContentSignature = currentContentSignature()
 
             for b in blocks {
                 guard !b.protonJSON.isEmpty else { continue }
+                guard !b.isDirty else { continue }
+                guard !b.protonHandle.isEditing else { continue }
                 b.protonHandle.hydrateFromProtonJSONString(b.protonJSON)
             }
         }
@@ -584,11 +1083,16 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
 
     func markLocalContentCommitted() {
         loadedContentWatermarkMs = max(loadedContentWatermarkMs, currentContentWatermarkMs())
+        loadedContentSignature = currentContentSignature()
         hasPendingRemoteRefresh = false
     }
 
     func hasRemoteContentUpdateAvailable() -> Bool {
-        currentContentWatermarkMs() > loadedContentWatermarkMs
+        let currentSignature = currentContentSignature()
+        if !currentSignature.isEmpty, currentSignature == loadedContentSignature {
+            return false
+        }
+        return currentContentWatermarkMs() > loadedContentWatermarkMs
     }
 
     private func currentContentWatermarkMs() -> Int64 {
@@ -627,6 +1131,11 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         guard blocks.indices.contains(index) else { return }
 
         var b = blocks[index]
+        if b.isDirty || b.protonHandle.isEditing {
+            markPendingRemoteRefresh()
+            return
+        }
+
         let protonJSON = dbLoadBlockProtonJSON(b.blockID)
         guard !protonJSON.isEmpty else {
             markPendingRemoteRefresh()
@@ -637,10 +1146,11 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         b.tagJSON = dbLoadBlockTagJSON(b.blockID)
         b.goalPreview = dbLoadGoalPreview(b.blockID)
         b.clipPDFRel = dbLoadClipPDFRel(b.blockID)
-        let first = b.protonHandle.previewFirstLineFromProtonJSON(protonJSON)
-        b.attr = ensureNonEmptyTyped(stripZWSP(NSAttributedString(string: first)))
-        b.loadedUpdatedAtMs = DBNoteRepository.nowMs()
+        b.attr = ensureNonEmptyTyped(stripZWSP(b.protonHandle.attributedStringFromProtonJSONString(protonJSON)))
+        b.loadedUpdatedAtMs = dbLoadBlockUpdatedAtMs(b.blockID)
+        b.loadedPayloadHash = stablePayloadHash(protonJSON)
         b.isDirty = false
+        b.verifiedLocalEditAtMs = 0
         blocks[index] = b
         blocks[index].protonHandle.hydrateFromProtonJSONString(protonJSON)
         markLocalContentCommitted()
@@ -661,15 +1171,36 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
 
         func hydrateProton(_ id: UUID) {
             guard let i = blocks.firstIndex(where: { $0.id == id }) else { return }
+            guard !blocks[i].isDirty else { return }
+            guard !blocks[i].protonHandle.isEditing else { return }
             let json = blocks[i].protonJSON
             if json.isEmpty { return }
             blocks[i].protonHandle.hydrateFromProtonJSONString(json)
         }
     
     
-    func markDirty(_ id: UUID) {
+    func markDirty(_ id: UUID, source: String = "unknown") {
         guard let i = blocks.firstIndex(where: { $0.id == id }) else { return }
+        print("NJ_BLOCK_MARK_DIRTY source=\(source) block_id=\(blocks[i].blockID) id=\(id.uuidString)")
         if !blocks[i].isDirty { blocks[i].isDirty = true }
+    }
+
+    func enqueueEditorChange(_ id: UUID, source: String = "unknown") {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if self.focusedBlockID != id {
+                self.focusedBlockID = id
+            }
+            if let i = self.blocks.firstIndex(where: { $0.id == id }) {
+                if self.shouldAbortForRemoteEditorLease(index: i) {
+                    return
+                }
+                self.blocks[i].verifiedLocalEditAtMs = DBNoteRepository.nowMs()
+                self.publishEditorLease(for: i, source: source)
+            }
+            self.markDirty(id, source: source)
+            self.scheduleCommit(id, source: source)
+        }
     }
 
     func refreshGoalPreview(blockID: String) {
@@ -695,10 +1226,13 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         blocks = Array(blocks)
     }
 
-    func scheduleCommit(_ id: UUID, debounce: Double = 0.9) {
+    func scheduleCommit(_ id: UUID, debounce: Double = 0.9, source: String = "unknown") {
         commitWork[id]?.cancel()
         let w = DispatchWorkItem { [weak self] in self?.commitBlockNow(id) }
         commitWork[id] = w
+        if let i = blocks.firstIndex(where: { $0.id == id }) {
+            print("NJ_BLOCK_SCHEDULE_COMMIT source=\(source) block_id=\(blocks[i].blockID) id=\(id.uuidString) debounce=\(debounce)")
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + debounce, execute: w)
     }
 
@@ -720,15 +1254,37 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         let now = DBNoteRepository.nowMs()
         let safeTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Untitled" : title
         let safeTab = tab.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "default" : tab
+        let safeCardStatus = noteType == .card ? (cardStatus.isEmpty ? "Pending" : cardStatus) : ""
+        let safeCardPriority = noteType == .card ? (cardPriority.isEmpty ? "Medium" : cardPriority) : ""
         if var n = store.notes.getNote(noteID) {
-            if n.title == safeTitle && n.tabDomain == safeTab {
+            if n.title == safeTitle &&
+                n.tabDomain == safeTab &&
+                n.noteType == noteType &&
+                n.dominanceMode == dominanceMode &&
+                (n.isChecklist > 0) == isChecklist &&
+                n.cardID == cardID &&
+                n.cardCategory == cardCategory &&
+                n.cardArea == cardArea &&
+                n.cardContext == cardContext &&
+                n.cardStatus == safeCardStatus &&
+                n.cardPriority == safeCardPriority {
                 hasPendingNoteMetaChanges = false
                 return
             }
             n.title = safeTitle
             n.tabDomain = safeTab
+            n.noteType = noteType
+            n.dominanceMode = dominanceMode
+            n.isChecklist = isChecklist ? 1 : 0
+            n.cardID = cardID
+            n.cardCategory = cardCategory
+            n.cardArea = cardArea
+            n.cardContext = cardContext
+            n.cardStatus = safeCardStatus
+            n.cardPriority = safeCardPriority
             n.updatedAtMs = now
             store.notes.upsertNote(n)
+            markLocalContentCommitted()
         }
         hasPendingNoteMetaChanges = false
     }
@@ -740,16 +1296,19 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         NJCollapsibleAttachmentView.flushActiveBodyEditing()
 
         guard let i = blocks.firstIndex(where: { $0.id == id }) else { return }
+        let shouldCommit = blocks[i].isDirty || blocks[i].verifiedLocalEditAtMs > 0
         blocks[i].protonHandle.isEditing = false
-        markDirty(id)
+        guard shouldCommit else { return }
         commitBlockNow(id, force: true)
     }
 
     func forceEndEditingAndCommitAllDirtyNow() {
         NJCollapsibleAttachmentView.flushActiveBodyEditing()
 
-        let dirtyIDs = blocks.filter(\.isDirty).map(\.id)
-        for id in dirtyIDs {
+        let commitIDs = blocks
+            .filter { $0.isDirty || $0.verifiedLocalEditAtMs > 0 }
+            .map(\.id)
+        for id in commitIDs {
             commitWork[id]?.cancel()
             commitWork[id] = nil
             if let i = blocks.firstIndex(where: { $0.id == id }) {
@@ -757,7 +1316,7 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             }
         }
 
-        for id in dirtyIDs {
+        for id in commitIDs {
             commitBlockNow(id, force: true)
         }
     }
@@ -771,10 +1330,14 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
     func commitBlockNow(_ id: UUID, force: Bool = false) {
         guard let store, let noteID else { return }
         guard let i = blocks.firstIndex(where: { $0.id == id }) else { return }
-        if !blocks[i].isDirty { return }
+        if !blocks[i].isDirty && blocks[i].verifiedLocalEditAtMs <= 0 { return }
 
-        if !force && blocks[i].protonHandle.isEditing {
-            scheduleCommit(id, debounce: 0.6)
+        if !force && shouldDeferCommitWhileFocused(id: id, index: i) {
+            scheduleCommit(id, debounce: 0.6, source: "commitBlockNow.deferFocused")
+            return
+        }
+
+        if shouldAbortForRemoteEditorLease(index: i) {
             return
         }
 
@@ -826,12 +1389,30 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             }()
 
             if hasSnapshot {
+                if shouldProtectPlaceholderShell(
+                    blockID: b.blockID,
+                    persistedProtonJSON: persistedProtonJSON,
+                    attr: snapshotAttr
+                ) {
+                    b.isDirty = false
+                    blocks[i] = b
+                    return
+                }
                 let protonJSON: String = {
                     if !persistedProtonJSON.isEmpty {
                         return persistedProtonJSON
                     }
                     return b.protonHandle.exportProtonJSONString(from: snapshotAttr)
                 }()
+                if shouldProtectStructuredAttachmentDowngrade(
+                    existingProtonJSON: persistedProtonJSON,
+                    candidateProtonJSON: protonJSON,
+                    sourceAttr: snapshotAttr
+                ) {
+                    b.isDirty = false
+                    blocks[i] = b
+                    return
+                }
                 guard !protonJSON.isEmpty else {
                     b.isDirty = false
                     blocks[i] = b
@@ -841,13 +1422,18 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                 b.tagJSON = snapshotTagJSON
                 blocks[i].protonJSON = protonJSON
                 blocks[i].tagJSON = snapshotTagJSON
+                if shouldAbortStaleEditorSave(index: i, candidateProtonJSON: protonJSON) {
+                    return
+                }
                 store.notes.saveSingleProtonBlock(
                     blockID: b.blockID,
                     protonJSON: protonJSON,
                     tagJSON: snapshotTagJSON
                 )
-                b.loadedUpdatedAtMs = DBNoteRepository.nowMs()
+                b.loadedUpdatedAtMs = dbLoadBlockUpdatedAtMs(b.blockID)
+                b.loadedPayloadHash = stablePayloadHash(protonJSON)
                 b.isDirty = false
+                b.verifiedLocalEditAtMs = 0
                 markLocalContentCommitted()
                 blocks[i] = b
                 return
@@ -864,8 +1450,10 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                 tagJSON: snapshotTagJSON
             )
             b.tagJSON = snapshotTagJSON
-            b.loadedUpdatedAtMs = DBNoteRepository.nowMs()
+            b.loadedUpdatedAtMs = dbLoadBlockUpdatedAtMs(b.blockID)
+            b.loadedPayloadHash = stablePayloadHash(b.protonJSON)
             b.isDirty = false
+            b.verifiedLocalEditAtMs = 0
             markLocalContentCommitted()
             blocks[i] = b
             return
@@ -917,6 +1505,16 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         let originalAttr = editor.attributedText
         let views = extractPhotoAttachments(from: originalAttr)
         let sourceAttrForProton = tagRes?.cleaned ?? originalAttr
+        if views.isEmpty,
+           shouldProtectPlaceholderShell(
+                blockID: b.blockID,
+                persistedProtonJSON: b.protonJSON,
+                attr: sourceAttrForProton
+           ) {
+            b.isDirty = false
+            blocks[i] = b
+            return
+        }
         var protonJSON = stabilizedProtonJSON(
             exported: b.protonHandle.exportProtonJSONString(from: sourceAttrForProton),
             fallback: b.protonJSON,
@@ -929,6 +1527,15 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                 sourceAttr: originalAttr
             )
         }
+        if shouldProtectStructuredAttachmentDowngrade(
+            existingProtonJSON: b.protonJSON,
+            candidateProtonJSON: protonJSON,
+            sourceAttr: originalAttr
+        ) {
+            b.isDirty = false
+            blocks[i] = b
+            return
+        }
 
         guard !protonJSON.isEmpty else {
             b.isDirty = false
@@ -938,6 +1545,9 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
 
         b.protonJSON = protonJSON
         blocks[i].protonJSON = protonJSON
+        if shouldAbortStaleEditorSave(index: i, candidateProtonJSON: protonJSON) {
+            return
+        }
 
         let nowMs = DBNoteRepository.nowMs()
         let existing = store.notes.listAttachments(blockID: b.blockID)
@@ -984,9 +1594,161 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             tagJSON: tagJSONToSave
         )
 
-        b.loadedUpdatedAtMs = DBNoteRepository.nowMs()
+        b.loadedUpdatedAtMs = dbLoadBlockUpdatedAtMs(b.blockID)
+        b.loadedPayloadHash = stablePayloadHash(protonJSON)
         b.isDirty = false
+        b.verifiedLocalEditAtMs = 0
         markLocalContentCommitted()
         blocks[i] = b
+    }
+
+    private func shouldDeferCommitWhileFocused(id: UUID, index: Int) -> Bool {
+        guard blocks.indices.contains(index) else { return false }
+        let handle = blocks[index].protonHandle
+        if handle.isEditing { return true }
+        guard focusedBlockID == id else { return false }
+        if let responderHandle = NJProtonEditorHandle.firstResponderHandle(), responderHandle === handle {
+            return true
+        }
+        return false
+    }
+
+    func setBlockChecked(_ id: UUID, isChecked: Bool) {
+        guard let store else { return }
+        guard let i = blocks.firstIndex(where: { $0.id == id }) else { return }
+        let instanceID = blocks[i].instanceID
+        guard !instanceID.isEmpty else { return }
+
+        let nowMs = DBNoteRepository.nowMs()
+        store.notes.setNoteBlockChecked(instanceID: instanceID, isChecked: isChecked, nowMs: nowMs)
+        store.sync.schedulePush(debounceMs: 0)
+        blocks[i].isChecked = isChecked
+        blocks = Array(blocks)
+    }
+
+    private func ensureBlockInstance(at index: Int) -> String? {
+        guard let store, let noteID, blocks.indices.contains(index) else { return nil }
+        if !blocks[index].instanceID.isEmpty {
+            return blocks[index].instanceID
+        }
+
+        let orderKey = blocks[index].orderKey > 0 ? blocks[index].orderKey : store.notes.nextAppendOrderKey(noteID: noteID.raw)
+        let instanceID = store.notes.attachExistingBlockToNote(
+            noteID: noteID.raw,
+            blockID: blocks[index].blockID,
+            orderKey: orderKey
+        )
+        blocks[index].instanceID = instanceID
+        blocks[index].orderKey = orderKey
+        if noteType == .card && blocks[index].cardRowID.isEmpty {
+            blocks[index].cardRowID = store.notes.nextCardRowID(noteID: noteID.raw)
+        }
+        if noteType == .card && blocks[index].cardStatus.isEmpty {
+            blocks[index].cardStatus = "Pending"
+        }
+        if noteType == .card && blocks[index].cardPriority.isEmpty {
+            blocks[index].cardPriority = "Medium"
+        }
+        return instanceID
+    }
+
+    func updateCardRowFields(
+        _ id: UUID,
+        cardRowID: String? = nil,
+        status: String? = nil,
+        priority: String? = nil,
+        category: String? = nil,
+        area: String? = nil,
+        context: String? = nil,
+        title: String? = nil
+    ) {
+        guard let store else { return }
+        guard let index = blocks.firstIndex(where: { $0.id == id }) else { return }
+        guard let instanceID = ensureBlockInstance(at: index) else { return }
+
+        if let cardRowID {
+            blocks[index].cardRowID = cardRowID
+        }
+        if let status {
+            blocks[index].cardStatus = status
+        }
+        if let priority {
+            blocks[index].cardPriority = priority
+        }
+        if let category {
+            blocks[index].cardCategory = category
+        }
+        if let area {
+            blocks[index].cardArea = area
+        }
+        if let context {
+            blocks[index].cardContext = context
+        }
+        if let title {
+            blocks[index].cardTitle = title
+        }
+
+        let nowMs = DBNoteRepository.nowMs()
+        store.notes.updateNoteBlockCardRowFields(
+            instanceID: instanceID,
+            cardRowID: blocks[index].cardRowID,
+            status: blocks[index].cardStatus,
+            priority: blocks[index].cardPriority,
+            category: blocks[index].cardCategory,
+            area: blocks[index].cardArea,
+            context: blocks[index].cardContext,
+            title: blocks[index].cardTitle,
+            nowMs: nowMs
+        )
+        store.sync.schedulePush(debounceMs: 0)
+        blocks = Array(blocks)
+    }
+
+    private func normalizeCardRows() {
+        guard let store, let noteID else { return }
+
+        var didChange = false
+        for index in blocks.indices {
+            var needsPersist = false
+
+            if blocks[index].cardRowID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let existingMax = max(store.notes.nextCardRowID(noteID: noteID.raw), "1")
+                let persistedValue = Int(existingMax) ?? 1
+                let localMax = blocks.compactMap { Int($0.cardRowID) }.max() ?? 0
+                blocks[index].cardRowID = String(max(localMax + 1, persistedValue))
+                needsPersist = true
+                didChange = true
+            }
+
+            if blocks[index].cardPriority.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                blocks[index].cardPriority = "Medium"
+                needsPersist = true
+                didChange = true
+            }
+            if blocks[index].cardStatus.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                blocks[index].cardStatus = "Pending"
+                needsPersist = true
+                didChange = true
+            }
+
+            if needsPersist, !blocks[index].instanceID.isEmpty {
+                store.notes.updateNoteBlockCardRowFields(
+                    instanceID: blocks[index].instanceID,
+                    cardRowID: blocks[index].cardRowID,
+                    status: blocks[index].cardStatus,
+                    priority: blocks[index].cardPriority,
+                    category: blocks[index].cardCategory,
+                    area: blocks[index].cardArea,
+                    context: blocks[index].cardContext,
+                    title: blocks[index].cardTitle,
+                    nowMs: DBNoteRepository.nowMs()
+                )
+            }
+        }
+
+        if didChange {
+            store.sync.schedulePush(debounceMs: 0)
+            blocks = Array(blocks)
+        }
     }
 }

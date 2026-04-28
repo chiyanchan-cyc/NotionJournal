@@ -145,6 +145,7 @@ final class NJClipIngestor {
 
         let protonRTFText = finalTitle + "\n\n" + finalSummary
         let protonRTFBase64 = makeRTFBase64(protonRTFText)
+        let protonJSON = NJPayloadV1.protonDocumentV2FromRTFBase64(protonRTFBase64)
 
         let pdfOK = copyFile(fm: fm, src: item.pdfURL, dst: destPDF, label: "PDF", clipID: item.clipID)
         let jsonOK = writeBytesAtomic(fm: fm, data: rawJSON, dst: destJSON, label: "JSON", clipID: item.clipID)
@@ -176,8 +177,7 @@ final class NJClipIngestor {
                     "v": 1,
                     "data": [
                         "proton_v": 1,
-                        "proton_json": "",
-                        "rtf_base64": protonRTFBase64
+                        "proton_json": protonJSON
                     ]
                 ]
             ]

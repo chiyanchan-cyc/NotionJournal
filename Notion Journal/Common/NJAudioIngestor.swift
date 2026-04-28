@@ -4,6 +4,68 @@ import SQLite3
 
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
+struct NJMeetingParticipant: Codable, Hashable, Identifiable {
+    let personID: String?
+    let displayName: String
+    let role: String
+    let isFamily: Bool
+
+    var id: String {
+        if let personID, !personID.isEmpty { return personID }
+        return "\(displayName.lowercased())|\(role.lowercased())"
+    }
+}
+
+struct NJMeetingContextRecord: Codable, Identifiable {
+    let recordingID: String
+    let audioRelativePath: String
+    let recordedAtMs: Int64
+    let locationText: String
+    let topicText: String
+    let participants: [NJMeetingParticipant]
+    let createdAtMs: Int64
+    let updatedAtMs: Int64
+
+    var id: String { recordingID }
+}
+
+enum NJMeetingContextStore {
+    private static let containerID = "iCloud.com.CYC.NotionJournal"
+
+    static func sidecarRelativePath(audioRelativePath: String) -> String {
+        let ns = audioRelativePath as NSString
+        return ns.deletingPathExtension + ".meeting.json"
+    }
+
+    static func sidecarURL(audioRelativePath: String) -> URL? {
+        var rel = sidecarRelativePath(audioRelativePath: audioRelativePath)
+        if rel.hasPrefix("/") { rel.removeFirst() }
+        guard !rel.isEmpty else { return nil }
+        guard let root = FileManager.default.url(forUbiquityContainerIdentifier: containerID) else { return nil }
+        return root.appendingPathComponent(rel, isDirectory: false)
+    }
+
+    static func load(audioRelativePath: String) -> NJMeetingContextRecord? {
+        guard let url = sidecarURL(audioRelativePath: audioRelativePath),
+              let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(NJMeetingContextRecord.self, from: data)
+    }
+
+    @discardableResult
+    static func write(_ record: NJMeetingContextRecord) -> Bool {
+        guard let url = sidecarURL(audioRelativePath: record.audioRelativePath) else { return false }
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let data = try JSONEncoder().encode(record)
+            try data.write(to: url, options: .atomic)
+            return true
+        } catch {
+            print("NJ_MEETING_CONTEXT write_failed path=\(url.path) err=\(error)")
+            return false
+        }
+    }
+}
+
 final class NJAudioIngestor {
     static let appGroupID = "group.com.CYC.NotionJournal"
     static let inboxRelPath = "Audio/Inbox"
@@ -137,8 +199,9 @@ final class NJAudioIngestor {
             return
         }
 
-        let placeholderText = "Audio Recording\n\n(Transcript pending)"
+        let placeholderText = "\(title)\n\n(Transcript pending)"
         let rtfBase64 = NJPayloadConverterV1.makeRTFBase64(placeholderText)
+        let protonJSON = NJPayloadV1.protonDocumentV2FromRTFBase64(rtfBase64)
         let pdfOK = writePlaceholderPDF(text: placeholderText, dst: destPDF, blockID: item.blockID)
         if !pdfOK {
             print("NJ_AUDIO_INGEST pdf_placeholder_failed blockID=\(item.blockID)")
@@ -155,26 +218,50 @@ final class NJAudioIngestor {
                         "recorded_at_iso": recordedAtISO,
                         "audio_path": "Documents/\(yyyy)/\(mm)/\(item.blockID).\(item.audioExt)",
                         "pdf_path": "Documents/\(yyyy)/\(mm)/\(item.blockID).pdf",
+                        "json_path": "Documents/\(yyyy)/\(mm)/\(item.blockID).json",
                         "audio_ext": item.audioExt,
                         "original_filename": originalName,
-                        "transcript_txt": ""
+                        "transcript_txt": "",
+                        "meeting_recorded_at_ms": recordedAtMs,
+                        "meeting_location_txt": "",
+                        "meeting_topic_txt": "",
+                        "meeting_persons_json": "[]",
+                        "meeting_language_mode": "bilingual",
+                        "meeting_context_complete": 0,
+                        "meeting_context_path": "Documents/\(yyyy)/\(mm)/\(item.blockID).meeting.json",
+                        "summary_title": "",
+                        "summary_txt": "",
+                        "transcript_state": "needs_details",
+                        "transcript_requested_ms": 0,
+                        "transcript_error_txt": ""
                     ]
                 ],
                 "proton1": [
                     "v": 1,
                     "data": [
                         "proton_v": 1,
-                        "proton_json": "",
-                        "rtf_base64": rtfBase64
+                        "proton_json": protonJSON
                     ]
                 ]
             ]
         ]
 
+        let now = DBNoteRepository.nowMs()
         let payloadData = (try? JSONSerialization.data(withJSONObject: payloadObj)) ?? Data()
         let payloadJSON = String(data: payloadData, encoding: .utf8) ?? "{}"
 
-        let now = DBNoteRepository.nowMs()
+        let audioRelativePath = "Documents/\(yyyy)/\(mm)/\(item.blockID).\(item.audioExt)"
+        let contextRecord = NJMeetingContextRecord(
+            recordingID: item.blockID,
+            audioRelativePath: audioRelativePath,
+            recordedAtMs: recordedAtMs,
+            locationText: "",
+            topicText: "",
+            participants: [],
+            createdAtMs: now,
+            updatedAtMs: now
+        )
+        _ = NJMeetingContextStore.write(contextRecord)
 
         let fields: [String: Any] = [
             "block_id": item.blockID,

@@ -27,6 +27,12 @@ struct NJPayloadV1: Codable, Equatable {
         return try decode(NJProton1DataV1.self, from: s.data)
     }
 
+    func chatGPTSummaryData() throws -> NJChatGPTSummaryDataV1? {
+        guard let s = sections["chatgpt_summary"] else { return nil }
+        guard s.v == 1 else { throw NJPayloadError.unsupportedSectionVersion(section: "chatgpt_summary", v: s.v) }
+        return try decode(NJChatGPTSummaryDataV1.self, from: s.data)
+    }
+
     func validate() throws {
         guard v == 1 else { throw NJPayloadError.unsupportedPayloadVersion(v) }
         for (k, s) in sections {
@@ -42,20 +48,104 @@ struct NJPayloadV1: Codable, Equatable {
             if k == "audio" {
                 _ = try decode(NJAudioDataV1.self, from: s.data)
             }
+            if k == "chatgpt_summary" {
+                _ = try decode(NJChatGPTSummaryDataV1.self, from: s.data)
+            }
         }
+    }
+
+    static func normalizeProtonDocumentV2(_ protonJSON: String) -> String {
+        let trimmed = protonJSON.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let data = trimmed.data(using: .utf8),
+              let rootAny = try? JSONSerialization.jsonObject(with: data, options: []),
+              let root = rootAny as? [String: Any],
+              let doc = root["doc"] as? [Any] else {
+            return protonJSON
+        }
+
+        let normalized: [String: Any] = ["schema": "nj_proton_doc_v2", "doc": doc]
+        guard JSONSerialization.isValidJSONObject(normalized),
+              let normalizedData = try? JSONSerialization.data(withJSONObject: normalized, options: []),
+              let normalizedString = String(data: normalizedData, encoding: .utf8) else {
+            return protonJSON
+        }
+        return normalizedString
+    }
+
+    static func protonDocumentV2FromRTFBase64(_ rtfBase64: String) -> String {
+        let root: [String: Any] = [
+            "schema": "nj_proton_doc_v2",
+            "doc": [
+                [
+                    "type": "rich",
+                    "rtf_base64": rtfBase64
+                ]
+            ]
+        ]
+        guard JSONSerialization.isValidJSONObject(root),
+              let data = try? JSONSerialization.data(withJSONObject: root, options: []),
+              let text = String(data: data, encoding: .utf8) else {
+            return ""
+        }
+        return text
+    }
+
+    mutating func normalizeProtonStorageToV2() -> Bool {
+        guard let s = sections["proton1"], s.v == 1 else { return false }
+        var data = s.data
+        let oldData = data
+
+        data["proton_v"] = .int(1)
+
+        let protonJSON: String = {
+            if case .string(let value)? = data["proton_json"] {
+                return value
+            }
+            return ""
+        }()
+        let rtfBase64: String = {
+            if case .string(let value)? = data["rtf_base64"] {
+                return value
+            }
+            return ""
+        }()
+
+        let trimmedProtonJSON = protonJSON.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedProtonJSON.isEmpty {
+            data["proton_json"] = .string(Self.normalizeProtonDocumentV2(trimmedProtonJSON))
+            data.removeValue(forKey: "rtf_base64")
+        } else if !rtfBase64.isEmpty {
+            data["proton_json"] = .string(Self.protonDocumentV2FromRTFBase64(rtfBase64))
+            data.removeValue(forKey: "rtf_base64")
+        } else {
+            data["proton_json"] = .string("")
+            data.removeValue(forKey: "rtf_base64")
+        }
+
+        guard data != oldData else { return false }
+        sections["proton1"] = NJSectionV1(v: 1, data: data)
+        return true
     }
 
     mutating func ensureProton1ExistsWithRTFBase64(_ rtfBase64: String) throws {
         try validateBase64RTF(rtfBase64)
+        let protonJSON = Self.protonDocumentV2FromRTFBase64(rtfBase64)
         if let s = sections["proton1"], s.v == 1 {
             var data = try decode(NJProton1DataV1.self, from: s.data)
             data.proton_v = 1
-            if data.proton_json.isEmpty { data.proton_json = "" }
-            data.rtf_base64 = rtfBase64
+            if !data.proton_json.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                data.proton_json = Self.normalizeProtonDocumentV2(data.proton_json)
+                data.rtf_base64 = ""
+                sections["proton1"] = NJSectionV1(v: 1, data: try encodeToObject(data))
+                return
+            }
+            data.proton_json = protonJSON
+            data.rtf_base64 = ""
             sections["proton1"] = NJSectionV1(v: 1, data: try encodeToObject(data))
             return
         }
-        let data = NJProton1DataV1(proton_v: 1, proton_json: "", rtf_base64: rtfBase64)
+        let data = NJProton1DataV1(proton_v: 1, proton_json: protonJSON, rtf_base64: "")
         sections["proton1"] = NJSectionV1(v: 1, data: try encodeToObject(data))
     }
 
@@ -65,10 +155,12 @@ struct NJPayloadV1: Codable, Equatable {
     }
     
     mutating func upsertProton1(protonJSON: String) {
+        let protonJSON = Self.normalizeProtonDocumentV2(protonJSON)
         if let s = sections["proton1"], s.v == 1 {
             var old = s.data
             old["proton_v"] = .int(1)
             old["proton_json"] = .string(protonJSON)
+            old.removeValue(forKey: "rtf_base64")
             sections["proton1"] = NJSectionV1(v: 1, data: old)
             return
         }
@@ -148,6 +240,20 @@ struct NJProton1DataV1: Codable {
         proton_json = (try? c.decode(String.self, forKey: .proton_json)) ?? ""
         rtf_base64 = (try? c.decode(String.self, forKey: .rtf_base64)) ?? ""
     }
+}
+
+struct NJChatGPTSummaryDataV1: Codable, Equatable {
+    var date: String
+    var topic: String
+    var domains: [String]
+    var summary: String
+    var context: String?
+    var takeaway: String?
+    var open_questions: [String]
+    var source_pdf_path: String?
+    var source_text_path: String?
+    var source_json_path: String?
+    var source_title: String?
 }
 
 enum NJPayloadError: Error, Equatable {

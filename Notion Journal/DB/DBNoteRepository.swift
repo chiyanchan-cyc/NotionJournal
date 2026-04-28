@@ -18,6 +18,7 @@ final class DBNoteRepository {
     let goalTable: DBGoalTable
     let calendarTable: DBCalendarTable
     let plannedExerciseTable: DBPlannedExerciseTable
+    let healthSampleCloudTable: DBHealthSampleCloudTable
     let planningNoteTable: DBPlanningNoteTable
     let financeMacroEventTable: DBFinanceMacroEventTable
     let financeDailyBriefTable: DBFinanceDailyBriefTable
@@ -27,8 +28,13 @@ final class DBNoteRepository {
     let financeFindingTable: DBFinanceFindingTable
     let financeJournalLinkTable: DBFinanceJournalLinkTable
     let financeSourceItemTable: DBFinanceSourceItemTable
+    let financeTransactionTable: DBFinanceTransactionTable
+    let agentHeartbeatRunTable: DBAgentHeartbeatRunTable
+    let agentBackfillTaskTable: DBAgentBackfillTaskTable
     let timeSlotTable: DBTimeSlotTable
     let personalGoalTable: DBPersonalGoalTable
+    let renewalItemTable: DBRenewalItemTable
+    let cardTable: DBCardTable
     private let cloudBridge: DBCloudBridge
     
     
@@ -59,6 +65,10 @@ final class DBNoteRepository {
             enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
         )
         self.plannedExerciseTable = DBPlannedExerciseTable(
+            db: db,
+            enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
+        )
+        self.healthSampleCloudTable = DBHealthSampleCloudTable(
             db: db,
             enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
         )
@@ -98,11 +108,31 @@ final class DBNoteRepository {
             db: db,
             enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
         )
+        self.financeTransactionTable = DBFinanceTransactionTable(
+            db: db,
+            enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
+        )
+        self.agentHeartbeatRunTable = DBAgentHeartbeatRunTable(
+            db: db,
+            enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
+        )
+        self.agentBackfillTaskTable = DBAgentBackfillTaskTable(
+            db: db,
+            enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
+        )
         self.timeSlotTable = DBTimeSlotTable(
             db: db,
             enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
         )
         self.personalGoalTable = DBPersonalGoalTable(
+            db: db,
+            enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
+        )
+        self.renewalItemTable = DBRenewalItemTable(
+            db: db,
+            enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
+        )
+        self.cardTable = DBCardTable(
             db: db,
             enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
         )
@@ -114,6 +144,7 @@ final class DBNoteRepository {
             goalTable: self.goalTable,
             calendarTable: self.calendarTable,
             plannedExerciseTable: self.plannedExerciseTable,
+            healthSampleCloudTable: self.healthSampleCloudTable,
             planningNoteTable: self.planningNoteTable,
             financeMacroEventTable: self.financeMacroEventTable,
             financeDailyBriefTable: self.financeDailyBriefTable,
@@ -123,9 +154,18 @@ final class DBNoteRepository {
             financeFindingTable: self.financeFindingTable,
             financeJournalLinkTable: self.financeJournalLinkTable,
             financeSourceItemTable: self.financeSourceItemTable,
+            financeTransactionTable: self.financeTransactionTable,
+            agentHeartbeatRunTable: self.agentHeartbeatRunTable,
+            agentBackfillTaskTable: self.agentBackfillTaskTable,
             timeSlotTable: self.timeSlotTable,
-            personalGoalTable: self.personalGoalTable
+            personalGoalTable: self.personalGoalTable,
+            renewalItemTable: self.renewalItemTable,
+            cardTable: self.cardTable
         )
+        let migration = self.blockTable.migrateAllBlockPayloadsToProtonDocV2(nowMs: Self.nowMs())
+        if migration.changed > 0 {
+            print("NJ_DB_BLOCK_PAYLOAD_V2_MIGRATION scanned=\(migration.scanned) changed=\(migration.changed)")
+        }
     }
     
     func listOrphanClipBlocks(limit: Int = 200) -> [DBBlockTable.NJOrphanClipRow] {
@@ -150,6 +190,10 @@ final class DBNoteRepository {
 
     func listNotesByDateRange(startMs: Int64, endMs: Int64) -> [NJNote] {
         noteTable.listNotesByDateRange(startMs: startMs, endMs: endMs)
+    }
+
+    func listFavoriteNotes(notebook: String? = nil) -> [NJNote] {
+        noteTable.listFavoriteNotes(notebook: notebook)
     }
 
     func lastJournaledAtMsForTag(_ tag: String) -> Int64 {
@@ -273,6 +317,46 @@ final class DBNoteRepository {
         noteBlockTable.markNoteBlockDeleted(instanceID: instanceID, nowMs: nowMs)
     }
 
+    func setNoteBlockChecked(instanceID: String, isChecked: Bool, nowMs: Int64) {
+        noteBlockTable.setChecked(instanceID: instanceID, isChecked: isChecked, nowMs: nowMs)
+    }
+
+    func nextCardRowID(noteID: String) -> String {
+        noteBlockTable.nextCardRowID(noteID: noteID)
+    }
+
+    func updateNoteBlockCardRowFields(
+        instanceID: String,
+        cardRowID: String,
+        status: String,
+        priority: String,
+        category: String,
+        area: String,
+        context: String,
+        title: String,
+        nowMs: Int64
+    ) {
+        noteBlockTable.updateCardRowFields(
+            instanceID: instanceID,
+            cardRowID: cardRowID,
+            status: status,
+            priority: priority,
+            category: category,
+            area: area,
+            context: context,
+            title: title,
+            nowMs: nowMs
+        )
+    }
+
+    func updateNoteBlockEditorLease(instanceID: String, deviceID: String, nowMs: Int64, expiresAtMs: Int64) {
+        noteBlockTable.updateEditorLease(instanceID: instanceID, deviceID: deviceID, nowMs: nowMs, expiresAtMs: expiresAtMs)
+    }
+
+    func activeRemoteEditorLease(blockID: String, localDeviceID: String, nowMs: Int64) -> (deviceID: String, expiresAtMs: Int64)? {
+        noteBlockTable.activeRemoteEditorLease(blockID: blockID, localDeviceID: localDeviceID, nowMs: nowMs)
+    }
+
     func updateBlockPayloadJSON(blockID: String, payloadJSON: String, updatedAtMs: Int64) {
         blockTable.updateBlockPayloadJSON(blockID: blockID, payloadJSON: payloadJSON, updatedAtMs: updatedAtMs)
     }
@@ -371,6 +455,9 @@ final class DBNoteRepository {
         case "block":
             for (_, f) in rows { applyRemoteUpsert(entity: "block", fields: f) }
 
+        case "table":
+            for (_, f) in rows { applyRemoteUpsert(entity: "table", fields: f) }
+
         case "attachment":
             for (_, f) in rows { applyRemoteUpsert(entity: "attachment", fields: f) }
 
@@ -378,6 +465,8 @@ final class DBNoteRepository {
             for (_, f) in rows { applyRemoteUpsert(entity: "calendar_item", fields: f) }
         case "planned_exercise":
             for (_, f) in rows { applyRemoteUpsert(entity: "planned_exercise", fields: f) }
+        case "health_sample":
+            for (_, f) in rows { applyRemoteUpsert(entity: "health_sample", fields: f) }
         case "planning_note":
             for (_, f) in rows { applyRemoteUpsert(entity: "planning_note", fields: f) }
         case "finance_macro_event":
@@ -396,10 +485,22 @@ final class DBNoteRepository {
             for (_, f) in rows { applyRemoteUpsert(entity: "finance_journal_link", fields: f) }
         case "finance_source_item":
             for (_, f) in rows { applyRemoteUpsert(entity: "finance_source_item", fields: f) }
+        case "finance_transaction":
+            for (_, f) in rows { applyRemoteUpsert(entity: "finance_transaction", fields: f) }
+        case "agent_heartbeat_run":
+            for (_, f) in rows { applyRemoteUpsert(entity: "agent_heartbeat_run", fields: f) }
+        case "agent_backfill_task":
+            for (_, f) in rows { applyRemoteUpsert(entity: "agent_backfill_task", fields: f) }
         case "time_slot":
             for (_, f) in rows { applyRemoteUpsert(entity: "time_slot", fields: f) }
         case "personal_goal":
             for (_, f) in rows { applyRemoteUpsert(entity: "personal_goal", fields: f) }
+        case "renewal_item":
+            for (_, f) in rows { applyRemoteUpsert(entity: "renewal_item", fields: f) }
+        case "card_schema":
+            for (_, f) in rows { applyRemoteUpsert(entity: "card_schema", fields: f) }
+        case "card":
+            for (_, f) in rows { applyRemoteUpsert(entity: "card", fields: f) }
 
         case "outline":
             for (_, f) in rows { applyRemoteUpsert(entity: "outline", fields: f) }
@@ -409,7 +510,6 @@ final class DBNoteRepository {
 
         case "note_block":
             func noteID(_ f: [String: Any]) -> String { (f["note_id"] as? String) ?? (f["noteID"] as? String) ?? "" }
-            func blockID(_ f: [String: Any]) -> String { (f["block_id"] as? String) ?? (f["blockID"] as? String) ?? "" }
             
             var pending: [[String: Any]] = rows.map { $0.1 }
             var passes = 0
@@ -420,10 +520,8 @@ final class DBNoteRepository {
                 
                 for f in pending {
                     let n = noteID(f)
-                    let b = blockID(f)
-                    if n.isEmpty || b.isEmpty { continue }
+                    if n.isEmpty { continue }
                     if getNote(NJNoteID(n)) == nil { next.append(f); continue }
-                    if hasBlock(blockID: b) == false { next.append(f); continue }
                     applyRemoteUpsert(entity: "note_block", fields: f)
                 }
                 
@@ -525,6 +623,7 @@ final class DBNoteRepository {
         case "note_block": table = "nj_note_block"
         case "calendar_item": table = "nj_calendar_item"
         case "planned_exercise": table = "nj_planned_exercise"
+        case "health_sample": table = "health_samples"
         case "planning_note": table = "nj_planning_note"
         case "finance_macro_event": table = "nj_finance_macro_event"
         case "finance_daily_brief": table = "nj_finance_daily_brief"
@@ -534,8 +633,14 @@ final class DBNoteRepository {
         case "finance_finding": table = "nj_finance_finding"
         case "finance_journal_link": table = "nj_finance_journal_link"
         case "finance_source_item": table = "nj_finance_source_item"
+        case "finance_transaction": table = "nj_finance_transaction"
+        case "agent_heartbeat_run": table = "nj_agent_heartbeat_run"
+        case "agent_backfill_task": table = "nj_agent_backfill_task"
         case "time_slot": table = "nj_time_slot"
         case "personal_goal": table = "nj_personal_goal"
+        case "renewal_item": table = "nj_renewal_item"
+        case "card_schema": table = "nj_card_schema"
+        case "card": table = "nj_card"
         case "outline": table = "nj_outline"
         case "outline_node": table = "nj_outline_node"
         default: return 0
@@ -572,8 +677,8 @@ final class DBNoteRepository {
         blockTable.loadBlockPayloadJSON(blockID: blockID)
     }
     
-    func createNote(notebook: String, tabDomain: String, title: String) -> NJNote {
-        noteTable.createNote(notebook: notebook, tabDomain: tabDomain, title: title)
+    func createNote(notebook: String, tabDomain: String, title: String, noteType: NJNoteType = .note) -> NJNote {
+        noteTable.createNote(notebook: notebook, tabDomain: tabDomain, title: title, noteType: noteType)
     }
     
     func upsertNote(_ note: NJNote) {
@@ -595,6 +700,10 @@ final class DBNoteRepository {
     func setPinned(noteID: String, pinned: Bool) {
         noteTable.setPinned(noteID: noteID, pinned: pinned)
     }
+
+    func setFavorited(noteID: String, favorited: Bool) {
+        noteTable.setFavorited(noteID: noteID, favorited: favorited)
+    }
     
     func enqueueDirty(entity: String, entityID: String, op: String, updatedAtMs: Int64) {
         dirtyQueue.enqueueDirty(entity: entity, entityID: entityID, op: op, updatedAtMs: updatedAtMs)
@@ -611,6 +720,10 @@ final class DBNoteRepository {
     
     func clearDirty(entity: String, entityID: String) {
         dirtyQueue.clearDirty(entity: entity, entityID: entityID)
+    }
+
+    func pendingDirtyCount() -> Int {
+        dirtyQueue.pendingCount()
     }
     
     func loadRecord(entity: String, id: String) -> [String: Any]? {
@@ -873,6 +986,22 @@ final class DBNoteRepository {
         financeSourceItemTable.upsert(row)
     }
 
+    func listRecentFinanceTransactions(limit: Int = 200) -> [NJFinanceTransaction] {
+        financeTransactionTable.listRecent(limit: limit)
+    }
+
+    func listFinanceTransactions(startKey: String, endKey: String) -> [NJFinanceTransaction] {
+        financeTransactionTable.list(startKey: startKey, endKey: endKey)
+    }
+
+    func financeTransactionByFingerprint(_ fingerprint: String) -> NJFinanceTransaction? {
+        financeTransactionTable.loadByFingerprint(fingerprint)
+    }
+
+    func upsertFinanceTransaction(_ row: NJFinanceTransaction) {
+        financeTransactionTable.upsert(row)
+    }
+
     func saveFinanceDay(dateKey: String, events: [NJFinanceMacroEvent], brief: NJFinanceDailyBrief?, nowMs: Int64) {
         let existing = financeMacroEventTable.list(dateKey: dateKey)
         let incomingIDs = Set(events.map(\.eventID))
@@ -967,6 +1096,228 @@ final class DBNoteRepository {
 
     func deletePersonalGoal(goalID: String, nowMs: Int64) {
         personalGoalTable.markDeleted(goalID: goalID, nowMs: nowMs)
+    }
+
+    func listRenewalItems(ownerScope: String = "ME") -> [NJRenewalItemRecord] {
+        let cardRows = cardTable.listPersonalIdentificationRecords(ownerScope: ownerScope)
+        if !cardRows.isEmpty { return cardRows }
+        return renewalItemTable.list(ownerScope: ownerScope)
+    }
+
+    func upsertRenewalItem(_ row: NJRenewalItemRecord) {
+        renewalItemTable.upsert(row)
+        cardTable.upsertPersonalIdentificationRecord(row, nowMs: row.updatedAtMs > 0 ? row.updatedAtMs : Self.nowMs())
+    }
+
+    func deleteRenewalItem(renewalItemID: String, nowMs: Int64) {
+        renewalItemTable.markDeleted(renewalItemID: renewalItemID, nowMs: nowMs)
+        cardTable.markPersonalIdentificationDeleted(renewalItemID: renewalItemID, nowMs: nowMs)
+    }
+
+    func portRenewalItemsToPersonalIdentificationCards() {
+        let rows = renewalItemTable.list(ownerScope: "ME")
+        guard !rows.isEmpty else {
+            cardTable.ensurePersonalIdentificationSchema(nowMs: Self.nowMs())
+            return
+        }
+        cardTable.mirrorPersonalIdentificationCards(from: rows, nowMs: Self.nowMs())
+    }
+
+    func syncPersonalIdentificationCardsIntoDatabaseNote() {
+        guard let noteID = personalIdentificationDatabaseNoteID() else { return }
+
+        let rows = listRenewalItems(ownerScope: "ME")
+        let now = Self.nowMs()
+        let currentInstanceIDs = Set(rows.map { personalIdentificationNoteBlockInstanceID(for: $0.renewalItemID) })
+
+        let placeholderIDs = db.queryRows("""
+        SELECT instance_id
+        FROM nj_note_block
+        WHERE note_id = \(sqlQuote(noteID))
+          AND deleted = 0
+          AND (
+            trim(card_row_id) = ''
+            OR trim(card_title) = ''
+            OR lower(trim(card_title)) = 'untitled block'
+          );
+        """).compactMap { $0["instance_id"] }
+
+        for instanceID in placeholderIDs {
+            noteBlockTable.markNoteBlockDeleted(instanceID: instanceID, nowMs: now)
+        }
+
+        let staleGeneratedIDs = db.queryRows("""
+        SELECT instance_id
+        FROM nj_note_block
+        WHERE note_id = \(sqlQuote(noteID))
+          AND deleted = 0
+          AND instance_id LIKE 'personal-id-card-row.%';
+        """).compactMap { $0["instance_id"] }
+            .filter { !currentInstanceIDs.contains($0) }
+
+        for instanceID in staleGeneratedIDs {
+            noteBlockTable.markNoteBlockDeleted(instanceID: instanceID, nowMs: now)
+        }
+
+        for (index, row) in rows.enumerated() {
+            let instanceID = personalIdentificationNoteBlockInstanceID(for: row.renewalItemID)
+            let blockID = "personal-id-block.\(row.renewalItemID)"
+            let rowNumber = String(format: "PID-%04d", index + 1)
+            let contextParts = [row.jurisdiction, row.expiryDateKey]
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            let titleParts = [row.personName, row.documentName]
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+
+            noteBlockTable.applyNJNoteBlock([
+                "instance_id": instanceID,
+                "note_id": noteID,
+                "block_id": blockID,
+                "order_key": Double(index + 1),
+                "is_checked": Int64(0),
+                "card_row_id": rowNumber,
+                "card_status": displayCardToken(row.status),
+                "card_priority": displayCardToken(row.priority),
+                "card_category": row.documentType.isEmpty ? "Personal ID" : row.documentType,
+                "card_area": row.personName.isEmpty ? "Me" : row.personName,
+                "card_context": contextParts.joined(separator: " • "),
+                "card_title": titleParts.isEmpty ? "Personal Identification" : titleParts.joined(separator: " - "),
+                "created_at_ms": row.createdAtMs > 0 ? row.createdAtMs : now,
+                "updated_at_ms": max(row.updatedAtMs, now),
+                "deleted": row.deleted
+            ])
+            noteBlockTable.enqueueDirty(entity: "note_block", entityID: instanceID, op: "upsert", updatedAtMs: now)
+        }
+    }
+
+    func cleanupDuplicatePersonalIdentificationDatabaseNotes() -> Int {
+        struct Candidate {
+            let noteID: String
+            let dataRows: Int
+            let pinned: Int
+            let updatedAtMs: Int64
+        }
+
+        let candidates = db.queryRows("""
+        SELECT
+          n.note_id,
+          n.pinned,
+          n.updated_at_ms,
+          COALESCE(SUM(
+            CASE
+              WHEN nb.deleted = 0
+               AND trim(nb.card_row_id) <> ''
+               AND trim(nb.card_title) <> ''
+               AND lower(trim(nb.card_title)) <> 'untitled block'
+              THEN 1 ELSE 0
+            END
+          ), 0) AS data_rows
+        FROM nj_note n
+        LEFT JOIN nj_note_block nb ON nb.note_id = n.note_id
+        WHERE n.deleted = 0
+          AND n.title = 'Personal Identification'
+          AND (
+            n.card_id = 'DB-PERSONAL-ID'
+            OR n.card_context = 'Personal Identification'
+            OR lower(n.tab_domain) IN ('me.database', 'self.database')
+            OR lower(n.notebook) IN ('me', 'self')
+          )
+        GROUP BY n.note_id, n.pinned, n.updated_at_ms;
+        """).compactMap { row -> Candidate? in
+            guard let noteID = row["note_id"], !noteID.isEmpty else { return nil }
+            return Candidate(
+                noteID: noteID,
+                dataRows: Int(row["data_rows"] ?? "") ?? 0,
+                pinned: Int(row["pinned"] ?? "") ?? 0,
+                updatedAtMs: Int64(row["updated_at_ms"] ?? "") ?? 0
+            )
+        }
+
+        guard candidates.count > 1 else { return 0 }
+
+        let keep = candidates.sorted {
+            if $0.dataRows != $1.dataRows { return $0.dataRows > $1.dataRows }
+            if $0.pinned != $1.pinned { return $0.pinned > $1.pinned }
+            return $0.updatedAtMs > $1.updatedAtMs
+        }.first?.noteID
+
+        var deleted = 0
+        for candidate in candidates where candidate.noteID != keep {
+            markNoteDeleted(noteID: candidate.noteID)
+            markGeneratedPersonalIdentificationRowsDeleted(noteID: candidate.noteID)
+            deleted += 1
+        }
+        return deleted
+    }
+
+    private func markGeneratedPersonalIdentificationRowsDeleted(noteID: String) {
+        let now = Self.nowMs()
+        let instanceIDs = db.queryRows("""
+        SELECT instance_id
+        FROM nj_note_block
+        WHERE note_id = \(sqlQuote(noteID))
+          AND deleted = 0
+          AND (
+            instance_id LIKE 'personal-id-card-row.%'
+            OR trim(card_row_id) = ''
+            OR lower(trim(card_title)) = 'untitled block'
+          );
+        """).compactMap { $0["instance_id"] }
+
+        for instanceID in instanceIDs {
+            noteBlockTable.markNoteBlockDeleted(instanceID: instanceID, nowMs: now)
+        }
+    }
+
+    private func personalIdentificationDatabaseNoteID() -> String? {
+        db.queryRows("""
+        SELECT
+          n.note_id,
+          COALESCE(SUM(
+            CASE
+              WHEN nb.deleted = 0
+               AND trim(nb.card_row_id) <> ''
+               AND trim(nb.card_title) <> ''
+               AND lower(trim(nb.card_title)) <> 'untitled block'
+              THEN 1 ELSE 0
+            END
+          ), 0) AS data_rows
+        FROM nj_note n
+        LEFT JOIN nj_note_block nb ON nb.note_id = n.note_id
+        WHERE n.deleted = 0
+          AND n.title = 'Personal Identification'
+          AND (
+            n.card_id = 'DB-PERSONAL-ID'
+            OR n.card_context = 'Personal Identification'
+            OR lower(n.tab_domain) IN ('me.database', 'self.database')
+            OR lower(n.notebook) IN ('me', 'self')
+          )
+        GROUP BY n.note_id, n.pinned, n.updated_at_ms
+        ORDER BY data_rows DESC, n.pinned DESC, n.updated_at_ms DESC
+        LIMIT 1;
+        """).first?["note_id"]
+    }
+
+    private func personalIdentificationNoteBlockInstanceID(for renewalItemID: String) -> String {
+        "personal-id-card-row.\(renewalItemID)"
+    }
+
+    private func displayCardToken(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        return trimmed
+            .replacingOccurrences(of: "_", with: " ")
+            .split(separator: " ")
+            .map { part in
+                let lower = part.lowercased()
+                return lower.prefix(1).uppercased() + lower.dropFirst()
+            }
+            .joined(separator: " ")
+    }
+
+    private func sqlQuote(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "''"))'"
     }
     
     static func nowMs() -> Int64 {

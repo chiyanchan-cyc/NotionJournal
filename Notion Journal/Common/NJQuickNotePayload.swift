@@ -2,10 +2,16 @@ import Foundation
 
 enum NJQuickNotePayload {
     static func makePayloadJSON(protonJSON: String, rtfBase64: String) -> String {
-        let protonData: [String: JSONValue] = [
+        let protonJSON = {
+            let normalized = NJPayloadV1.normalizeProtonDocumentV2(protonJSON)
+            if !normalized.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return normalized
+            }
+            return NJPayloadV1.protonDocumentV2FromRTFBase64(rtfBase64)
+        }()
+        var protonData: [String: JSONValue] = [
             "proton_v": .int(1),
-            "proton_json": .string(protonJSON),
-            "rtf_base64": .string(rtfBase64)
+            "proton_json": .string(protonJSON)
         ]
 
         let v1 = NJPayloadV1(

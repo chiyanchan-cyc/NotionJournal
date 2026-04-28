@@ -4,6 +4,7 @@
 //
 
 import Foundation
+import UIKit
 import SQLite3
 
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
@@ -458,7 +459,72 @@ final class DBBlockTable {
             let rc2 = sqlite3_step(stmt)
             if rc2 != SQLITE_DONE { db.dbgErr(dbp, "updateBlockPayloadJSON.step", rc2) }
         }
-        enqueueDirty(entity: "block", entityID: blockID, op: "upsert", updatedAtMs: updatedAtMs)
+        if !DBDirtyQueueTable.isInPullScope() {
+            enqueueDirty(entity: "block", entityID: blockID, op: "upsert", updatedAtMs: updatedAtMs)
+        }
+    }
+
+    func migrateAllBlockPayloadsToProtonDocV2(nowMs: Int64) -> (scanned: Int, changed: Int) {
+        let rows: [(String, String)] = db.withDB { dbp in
+            var out: [(String, String)] = []
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT block_id, payload_json
+            FROM nj_block
+            WHERE COALESCE(payload_json, '') <> '';
+            """
+            let rc = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
+            if rc != SQLITE_OK {
+                db.dbgErr(dbp, "migrateAllBlockPayloadsToProtonDocV2.select.prepare", rc)
+                return out
+            }
+            defer { sqlite3_finalize(stmt) }
+
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let blockID = sqlite3_column_text(stmt, 0).flatMap { String(cString: $0) } ?? ""
+                let payloadJSON = sqlite3_column_text(stmt, 1).flatMap { String(cString: $0) } ?? ""
+                if !blockID.isEmpty {
+                    out.append((blockID, payloadJSON))
+                }
+            }
+            return out
+        }
+
+        var changed = 0
+        for (index, row) in rows.enumerated() {
+            guard let normalized = Self.normalizedBlockPayloadForProtonDocV2Migration(row.1),
+                  normalized != row.1 else {
+                continue
+            }
+            updateBlockPayloadJSON(
+                blockID: row.0,
+                payloadJSON: normalized,
+                updatedAtMs: nowMs + Int64(index)
+            )
+            changed += 1
+        }
+
+        if changed > 0 {
+            print("NJ_BLOCK_PAYLOAD_V2_MIGRATION scanned=\(rows.count) changed=\(changed)")
+        }
+        return (rows.count, changed)
+    }
+
+    private static func normalizedBlockPayloadForProtonDocV2Migration(_ payloadJSON: String) -> String? {
+        guard let normalized = try? NJPayloadConverterV1.convertToV1(payloadJSON),
+              let data = normalized.data(using: .utf8),
+              var payload = try? JSONDecoder().decode(NJPayloadV1.self, from: data) else {
+            return nil
+        }
+
+        let changed = payload.normalizeProtonStorageToV2()
+        guard changed || normalized != payloadJSON else { return nil }
+
+        guard let out = try? JSONEncoder().encode(payload),
+              let text = String(data: out, encoding: .utf8) else {
+            return nil
+        }
+        return text
     }
 
     func updateBlockCreatedAtMs(blockID: String, createdAtMs: Int64, updatedAtMs: Int64) {
@@ -605,6 +671,25 @@ final class DBBlockTable {
             ]
         }
     }
+
+    private func hasPendingLocalPush(blockID: String) -> Bool {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let rc = sqlite3_prepare_v2(dbp, """
+            SELECT 1
+            FROM nj_dirty
+            WHERE entity='block'
+              AND entity_id=? COLLATE NOCASE
+              AND ignore=0
+            LIMIT 1;
+            """, -1, &stmt, nil)
+            if rc != SQLITE_OK { return false }
+            defer { sqlite3_finalize(stmt) }
+
+            sqlite3_bind_text(stmt, 1, blockID, -1, SQLITE_TRANSIENT)
+            return sqlite3_step(stmt) == SQLITE_ROW
+        }
+    }
    
     func updateBlockTagJSON(
         blockID: String,
@@ -636,6 +721,210 @@ final class DBBlockTable {
         }
     }
     
+    private func isPlaceholderPayload(_ payload: String) -> Bool {
+        let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty || trimmed == "{}"
+    }
+
+    private func extractProtonJSONAndRTFBase64(fromPayloadJSON payload: String) -> (String, String) {
+        if let normalized = try? NJPayloadConverterV1.convertToV1(payload),
+           let data = normalized.data(using: .utf8),
+           let v1 = try? JSONDecoder().decode(NJPayloadV1.self, from: data),
+           let proton = try? v1.proton1Data() {
+            return proton.proton_json.isEmpty ? ("", proton.rtf_base64) : (proton.proton_json, "")
+        }
+
+        guard let data = payload.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return ("", "")
+        }
+
+        if let sections = root["sections"] as? [String: Any],
+           let proton1 = sections["proton1"] as? [String: Any],
+           let dataNode = proton1["data"] as? [String: Any] {
+            let protonJSON = dataNode["proton_json"] as? String ?? ""
+            return (
+                protonJSON,
+                protonJSON.isEmpty ? dataNode["rtf_base64"] as? String ?? "" : ""
+            )
+        }
+
+        let protonJSON = root["proton_json"] as? String ?? ""
+        let rtfBase64 = root["rtf_base64"] as? String ?? ""
+        return protonJSON.isEmpty ? ("", rtfBase64) : (protonJSON, "")
+    }
+
+    private func rtfBase64HasRenderableContent(_ rtfBase64: String) -> Bool {
+        guard let data = Data(base64Encoded: rtfBase64) else { return false }
+        let decoded =
+            (try? NSAttributedString(data: data, options: [.documentType: NSAttributedString.DocumentType.rtfd], documentAttributes: nil)) ??
+            (try? NSAttributedString(data: data, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil))
+        guard let decoded else { return false }
+
+        var hasAttachment = false
+        if decoded.length > 0 {
+            decoded.enumerateAttribute(.attachment, in: NSRange(location: 0, length: decoded.length), options: []) { value, _, stop in
+                if value != nil {
+                    hasAttachment = true
+                    stop.pointee = true
+                }
+            }
+        }
+        if hasAttachment { return true }
+
+        let visible = decoded.string
+            .replacingOccurrences(of: "\u{FFFC}", with: "")
+            .replacingOccurrences(of: "\u{200B}", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return !visible.isEmpty
+    }
+
+    private func protonJSONHasRenderableContent(_ protonJSON: String) -> Bool {
+        let trimmed = protonJSON.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return false }
+        guard let rootAny = try? JSONSerialization.jsonObject(with: data) else { return false }
+
+        func nodeHasContent(_ node: [String: Any]) -> Bool {
+            let type = (node["type"] as? String) ?? ""
+            if type == "rich" {
+                return rtfBase64HasRenderableContent((node["rtf_base64"] as? String) ?? "")
+            }
+            if type == "list" {
+                let items = (node["items"] as? [Any]) ?? []
+                return items.contains { item in
+                    guard let item = item as? [String: Any] else { return false }
+                    return rtfBase64HasRenderableContent((item["rtf_base64"] as? String) ?? "")
+                }
+            }
+            if type == "attachment" { return true }
+            if let text = node["text"] as? String,
+               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return true
+            }
+            let children = (node["contents"] as? [Any]) ?? []
+            return children.contains { child in
+                guard let child = child as? [String: Any] else { return false }
+                return nodeHasContent(child)
+            }
+        }
+
+        if let root = rootAny as? [String: Any], let doc = root["doc"] as? [Any] {
+            return doc.contains { item in
+                guard let node = item as? [String: Any] else { return false }
+                return nodeHasContent(node)
+            }
+        }
+
+        if let nodes = rootAny as? [Any] {
+            return nodes.contains { item in
+                guard let node = item as? [String: Any] else { return false }
+                return nodeHasContent(node)
+            }
+        }
+
+        return false
+    }
+
+    private func payloadJSONHasRenderableContent(_ payloadJSON: String) -> Bool {
+        let (protonJSON, rtfBase64) = extractProtonJSONAndRTFBase64(fromPayloadJSON: payloadJSON)
+        if protonJSONHasRenderableContent(protonJSON) { return true }
+        return rtfBase64HasRenderableContent(rtfBase64)
+    }
+
+    private func protonAttachmentNodeCount(_ protonJSON: String) -> Int {
+        let trimmed = protonJSON.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return 0 }
+        guard let rootAny = try? JSONSerialization.jsonObject(with: data) else { return 0 }
+
+        func countNode(_ node: [String: Any]) -> Int {
+            let type = (node["type"] as? String) ?? ""
+            var count = type == "attachment" ? 1 : 0
+            let contents = (node["contents"] as? [Any]) ?? []
+            for child in contents {
+                if let child = child as? [String: Any] {
+                    count += countNode(child)
+                }
+            }
+            return count
+        }
+
+        if let root = rootAny as? [String: Any], let doc = root["doc"] as? [Any] {
+            return doc.reduce(0) { total, item in
+                guard let node = item as? [String: Any] else { return total }
+                return total + countNode(node)
+            }
+        }
+
+        if let nodes = rootAny as? [Any] {
+            return nodes.reduce(0) { total, item in
+                guard let node = item as? [String: Any] else { return total }
+                return total + countNode(node)
+            }
+        }
+
+        return 0
+    }
+
+    private func payloadAttachmentNodeCount(_ payloadJSON: String) -> Int {
+        let (protonJSON, _) = extractProtonJSONAndRTFBase64(fromPayloadJSON: payloadJSON)
+        return protonAttachmentNodeCount(protonJSON)
+    }
+
+    private func isEffectivelyEmptyPayload(_ payload: String) -> Bool {
+        isPlaceholderPayload(payload) || !payloadJSONHasRenderableContent(payload)
+    }
+
+    private var localEditorDeviceID: String {
+        let host = ProcessInfo.processInfo.hostName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return host.isEmpty ? UIDevice.current.identifierForVendor?.uuidString ?? "unknown" : host
+    }
+
+    private func int64Any(_ value: Any?) -> Int64 {
+        if let value = value as? Int64 { return value }
+        if let value = value as? Int { return Int64(value) }
+        if let value = value as? NSNumber { return value.int64Value }
+        if let value = value as? String { return Int64(value) ?? 0 }
+        return 0
+    }
+
+    private func hasActiveLocalEditorLease(blockID: String, nowMs: Int64) -> Bool {
+        let localDeviceID = localEditorDeviceID
+        guard !blockID.isEmpty, !localDeviceID.isEmpty else { return false }
+
+        return db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let rc0 = sqlite3_prepare_v2(dbp, """
+            SELECT view_state_json
+            FROM nj_note_block
+            WHERE block_id=? AND deleted=0 AND view_state_json <> '';
+            """, -1, &stmt, nil)
+            if rc0 != SQLITE_OK {
+                db.dbgErr(dbp, "hasActiveLocalEditorLease.prepare", rc0)
+                return false
+            }
+            defer { sqlite3_finalize(stmt) }
+
+            sqlite3_bind_text(stmt, 1, blockID, -1, SQLITE_TRANSIENT)
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                guard let c = sqlite3_column_text(stmt, 0) else { continue }
+                let json = String(cString: c)
+                guard let data = json.data(using: .utf8),
+                      let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let lease = root["editor_lease"] as? [String: Any] else {
+                    continue
+                }
+
+                let deviceID = (lease["device_id"] as? String) ?? ""
+                let expiresAtMs = int64Any(lease["expires_at_ms"])
+                if deviceID == localDeviceID, expiresAtMs > nowMs {
+                    return true
+                }
+            }
+
+            return false
+        }
+    }
+
     func applyNJBlock(_ f: [String: Any]) {
         let blockID = (f["block_id"] as? String) ?? ""
         if blockID.isEmpty { return }
@@ -654,15 +943,53 @@ final class DBBlockTable {
         let existing = loadNJBlock(blockID: blockID)
         let existingDeleted = (existing?["deleted"] as? Int64) ?? 0
         let existingUpdatedAtMs = (existing?["updated_at_ms"] as? Int64) ?? 0
-        if existingDeleted == 0, existingUpdatedAtMs > updatedAtMs, updatedAtMs > 0 {
+        let existingPayload = (existing?["payload_json"] as? String) ?? ""
+        let incomingPayload = (f["payload_json"] as? String) ?? ""
+        let localPendingPush = hasPendingLocalPush(blockID: blockID)
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+
+        // Prefer local content while a local block change is still pending push.
+        if existingDeleted == 0, localPendingPush {
+            print("NJ_BLOCK_PULL_SKIP_PENDING_LOCAL_PUSH block_id=\(blockID) remote_updated_at_ms=\(updatedAtMs) local_updated_at_ms=\(existingUpdatedAtMs)")
             return
         }
 
-        let existingPayload = (existing?["payload_json"] as? String) ?? ""
-        let incomingPayload = (f["payload_json"] as? String) ?? ""
+        if existingDeleted == 0,
+           hasPayloadKey,
+           hasActiveLocalEditorLease(blockID: blockID, nowMs: nowMs) {
+            print("NJ_BLOCK_PULL_SKIP_ACTIVE_LOCAL_LEASE block_id=\(blockID) remote_updated_at_ms=\(updatedAtMs) local_updated_at_ms=\(existingUpdatedAtMs)")
+            return
+        }
+
+        // On timestamp ties, keep local content to avoid stale remote payloads
+        // overwriting fresh edits from another open editor on this device.
+        let shouldUpgradePlaceholderOnTie =
+            hasPayloadKey &&
+            existingUpdatedAtMs == updatedAtMs &&
+            updatedAtMs > 0 &&
+            isEffectivelyEmptyPayload(existingPayload) &&
+            !isEffectivelyEmptyPayload(incomingPayload)
+
+        if existingDeleted == 0,
+           existingUpdatedAtMs >= updatedAtMs,
+           updatedAtMs > 0,
+           !shouldUpgradePlaceholderOnTie {
+            return
+        }
+
         let payloadJSON: String = {
             if hasPayloadKey {
-                if incomingPayload.isEmpty, !existingPayload.isEmpty {
+                let localAttachmentCount = payloadAttachmentNodeCount(existingPayload)
+                let incomingAttachmentCount = payloadAttachmentNodeCount(incomingPayload)
+                if existingDeleted == 0,
+                   localAttachmentCount > 0,
+                   incomingAttachmentCount < localAttachmentCount {
+                    print("NJ_BLOCK_PULL_SKIP_ATTACHMENT_DOWNGRADE block_id=\(blockID) remote_updated_at_ms=\(updatedAtMs) local_updated_at_ms=\(existingUpdatedAtMs) local_attachment_count=\(localAttachmentCount) incoming_attachment_count=\(incomingAttachmentCount)")
+                    return existingPayload
+                }
+                if isEffectivelyEmptyPayload(incomingPayload),
+                   !isEffectivelyEmptyPayload(existingPayload) {
+                    print("NJ_BLOCK_PULL_SKIP_EMPTY_PAYLOAD_OVER_RENDERABLE block_id=\(blockID) remote_updated_at_ms=\(updatedAtMs) local_updated_at_ms=\(existingUpdatedAtMs)")
                     return existingPayload
                 }
                 return incomingPayload
@@ -726,7 +1053,9 @@ final class DBBlockTable {
             if rc1 != SQLITE_DONE { db.dbgErr(dbp, "applyNJBlock.step", rc1) }
         }
 
-        enqueueDirty(entity: "block", entityID: blockID, op: "upsert", updatedAtMs: updatedAtMs)
+        if !DBDirtyQueueTable.isInPullScope() {
+            enqueueDirty(entity: "block", entityID: blockID, op: "upsert", updatedAtMs: updatedAtMs)
+        }
     }
     
 }

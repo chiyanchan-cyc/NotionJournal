@@ -78,16 +78,17 @@ struct NJPayloadConverterV1 {
             ]
         }
 
+        var protonJSON = NJPayloadV1.normalizeProtonDocumentV2((obj["proton_json"] as? String) ?? "")
+        if protonJSON.isEmpty, !rtfBase64.isEmpty {
+            protonJSON = NJPayloadV1.protonDocumentV2FromRTFBase64(rtfBase64)
+        } else if protonJSON.isEmpty {
+            let seeded = makeRTFBase64(title + "\n\n" + (obj["summary"] as? String ?? ""))
+            protonJSON = NJPayloadV1.protonDocumentV2FromRTFBase64(seeded)
+        }
         var protonData: [String: Any] = [
             "proton_v": 1,
-            "proton_json": (obj["proton_json"] as? String) ?? ""
+            "proton_json": protonJSON
         ]
-        if !rtfBase64.isEmpty {
-            protonData["rtf_base64"] = rtfBase64
-        } else {
-            let seeded = makeRTFBase64(title + "\n\n" + (obj["summary"] as? String ?? ""))
-            protonData["rtf_base64"] = seeded
-        }
 
         sections["proton1"] = [
             "v": 1,
@@ -135,10 +136,14 @@ struct NJPayloadConverterV1 {
             let data = (p["data"] as? [String: Any]) ?? [:]
             var dataOut = data
             dataOut["proton_v"] = 1
-            if dataOut["proton_json"] == nil { dataOut["proton_json"] = "" }
-            if let rtf = dataOut["rtf_base64"] as? String, !rtf.isEmpty {
-                try validateRTFBase64(rtf)
+            var protonJSON = NJPayloadV1.normalizeProtonDocumentV2((dataOut["proton_json"] as? String) ?? "")
+            if protonJSON.isEmpty,
+               let rtf = dataOut["rtf_base64"] as? String,
+               !rtf.isEmpty {
+                protonJSON = NJPayloadV1.protonDocumentV2FromRTFBase64(rtf)
             }
+            dataOut["proton_json"] = protonJSON
+            dataOut.removeValue(forKey: "rtf_base64")
             sectionsOut["proton1"] = ["v": 1, "data": dataOut]
         }
 
