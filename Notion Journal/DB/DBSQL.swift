@@ -145,4 +145,25 @@ final class SQLiteDB {
         """)
         print("NJ_CK_CURSORS_RESET")
     }
+
+    func resetCloudKitCursors(entities: [String]) {
+        let cleaned = Array(
+            NSOrderedSet(
+                array: entities
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+            )
+        ) as? [String] ?? []
+        guard !cleaned.isEmpty else { return }
+
+        let values = cleaned
+            .map { "('ck_since_\($0)', '0')" }
+            .joined(separator: ",\n            ")
+
+        exec("""
+        INSERT OR REPLACE INTO nj_kv (k, v) VALUES
+            \(values);
+        """)
+        print("NJ_CK_CURSORS_RESET entities=\(cleaned)")
+    }
 }

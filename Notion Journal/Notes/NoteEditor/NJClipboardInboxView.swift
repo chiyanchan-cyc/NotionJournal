@@ -7,13 +7,14 @@ struct NJClipboardInboxView: View {
     @Environment(\.openWindow) private var openWindow
 
     let noteID: String
-    let onImported: () -> Void
+                    let onImported: () -> Void
 
     @State private var rows: [Row] = []
     @State private var selectedBlockID: String? = nil
 
     @State private var showPDF = false
     @State private var pdfURL: URL? = nil
+    @State private var meetingEditorRow: Row? = nil
 
     @State private var diagText: String = ""
 
@@ -26,6 +27,23 @@ struct NJClipboardInboxView: View {
         let jsonPath: String
         let audioPath: String
         let kind: Kind
+        let transcript: String
+        let meetingRecordedAtMs: Int64
+        let meetingLocation: String
+        let meetingTopic: String
+        let meetingParticipants: [NJMeetingParticipant]
+        let summaryTitle: String
+        let summaryText: String
+
+        var meetingContextReady: Bool {
+            !meetingLocation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            !meetingTopic.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            !meetingParticipants.isEmpty
+        }
+
+        var transcriptReady: Bool {
+            !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
     }
 
     enum Kind: String, Equatable {
@@ -95,6 +113,12 @@ struct NJClipboardInboxView: View {
                                 Text(r.title.isEmpty ? "(untitled)" : r.title)
                                     .font(.body)
                                     .lineLimit(2)
+                                if r.kind == .audio {
+                                    Text(audioStatusLine(for: r))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(3)
+                                }
                             }
                             .contentShape(Rectangle())
                         }
@@ -132,6 +156,12 @@ struct NJClipboardInboxView: View {
                         openPDF(for: r)
                     }
                     .disabled(selectedBlockID == nil || (selectedRow?.pdfPath.isEmpty ?? true))
+
+                    Button("Meeting Info") {
+                        guard let row = selectedRow, row.kind == .audio else { return }
+                        meetingEditorRow = row
+                    }
+                    .disabled(selectedRow?.kind != .audio)
 
                     Spacer()
 
@@ -190,6 +220,14 @@ struct NJClipboardInboxView: View {
                     }
                 }
             }
+            .sheet(item: $meetingEditorRow) { row in
+                NJAudioMeetingContextEditorSheet(
+                    row: row,
+                    onSave: { updatedRow in
+                        saveMeetingContext(for: updatedRow)
+                    }
+                )
+            }
         }
     }
 
@@ -212,14 +250,20 @@ struct NJClipboardInboxView: View {
                     pdfPath: meta.pdfPath,
                     jsonPath: meta.jsonPath,
                     audioPath: "",
-                    kind: .clip
+                    kind: .clip,
+                    transcript: "",
+                    meetingRecordedAtMs: r.createdAtMs,
+                    meetingLocation: "",
+                    meetingTopic: "",
+                    meetingParticipants: [],
+                    summaryTitle: "",
+                    summaryText: ""
                 )
             )
         }
 
         for r in rawAudio {
             let meta = parseAudioPayload(r.payloadJSON)
-            if meta.transcript.isEmpty { continue }
             out.append(
                 Row(
                     id: r.id,
@@ -229,7 +273,14 @@ struct NJClipboardInboxView: View {
                     pdfPath: meta.pdfPath,
                     jsonPath: meta.jsonPath,
                     audioPath: meta.audioPath,
-                    kind: .audio
+                    kind: .audio,
+                    transcript: meta.transcript,
+                    meetingRecordedAtMs: meta.meetingRecordedAtMs,
+                    meetingLocation: meta.meetingLocation,
+                    meetingTopic: meta.meetingTopic,
+                    meetingParticipants: meta.meetingParticipants,
+                    summaryTitle: meta.summaryTitle,
+                    summaryText: meta.summaryText
                 )
             )
         }
@@ -245,7 +296,14 @@ struct NJClipboardInboxView: View {
                     pdfPath: "",
                     jsonPath: "",
                     audioPath: "",
-                    kind: .quick
+                    kind: .quick,
+                    transcript: "",
+                    meetingRecordedAtMs: r.createdAtMs,
+                    meetingLocation: "",
+                    meetingTopic: "",
+                    meetingParticipants: [],
+                    summaryTitle: "",
+                    summaryText: ""
                 )
             )
         }
@@ -371,11 +429,23 @@ struct NJClipboardInboxView: View {
         return (title, website, pdfPath, jsonPath)
     }
 
-    func parseAudioPayload(_ payload: String) -> (title: String, audioPath: String, pdfPath: String, jsonPath: String, transcript: String) {
+    func parseAudioPayload(_ payload: String) -> (
+        title: String,
+        audioPath: String,
+        pdfPath: String,
+        jsonPath: String,
+        transcript: String,
+        meetingRecordedAtMs: Int64,
+        meetingLocation: String,
+        meetingTopic: String,
+        meetingParticipants: [NJMeetingParticipant],
+        summaryTitle: String,
+        summaryText: String
+    ) {
         guard
             let data = payload.data(using: .utf8),
             let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return ("", "", "", "", "") }
+        else { return ("", "", "", "", "", 0, "", "", [], "", "") }
 
         if
             let sections = obj["sections"] as? [String: Any],
@@ -395,10 +465,31 @@ struct NJClipboardInboxView: View {
             if pdfPath.hasPrefix("/") { pdfPath.removeFirst() }
             if jsonPath.hasPrefix("/") { jsonPath.removeFirst() }
             let transcript = (audioData["transcript_txt"] as? String) ?? ""
-            return (title, audioPath, pdfPath, jsonPath, transcript.trimmingCharacters(in: .whitespacesAndNewlines))
+            let meetingRecordedAtMs = ((audioData["meeting_recorded_at_ms"] as? NSNumber)?.int64Value)
+                ?? ((audioData["recorded_at_ms"] as? NSNumber)?.int64Value)
+                ?? 0
+            let meetingLocation = (audioData["meeting_location_txt"] as? String) ?? ""
+            let meetingTopic = (audioData["meeting_topic_txt"] as? String) ?? ""
+            let personsJSON = (audioData["meeting_persons_json"] as? String) ?? "[]"
+            let participants = decodeMeetingParticipants(from: personsJSON)
+            let summaryTitle = (audioData["summary_title"] as? String) ?? ""
+            let summaryText = (audioData["summary_txt"] as? String) ?? ""
+            return (
+                title,
+                audioPath,
+                pdfPath,
+                jsonPath,
+                transcript.trimmingCharacters(in: .whitespacesAndNewlines),
+                meetingRecordedAtMs,
+                meetingLocation,
+                meetingTopic,
+                participants,
+                summaryTitle,
+                summaryText
+            )
         }
 
-        return ("Audio Recording", "", "", "", "")
+        return ("Audio Recording", "", "", "", "", 0, "", "", [], "", "")
     }
 
     func parseQuickPayload(_ payload: String) -> String {
@@ -474,6 +565,80 @@ struct NJClipboardInboxView: View {
         }
 
         diagText = lines.joined(separator: "\n")
+    }
+
+    func audioStatusLine(for row: Row) -> String {
+        var parts: [String] = []
+        parts.append(row.meetingContextReady ? "meeting ready" : "meeting info needed")
+        parts.append(row.transcriptReady ? "transcribed" : "transcript pending")
+        if !row.meetingParticipants.isEmpty {
+            parts.append(row.meetingParticipants.map(\.displayName).joined(separator: ", "))
+        }
+        if !row.meetingTopic.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            parts.append(row.meetingTopic)
+        }
+        return parts.joined(separator: " • ")
+    }
+
+    func saveMeetingContext(for updatedRow: Row) {
+        guard let raw = store.notes.loadBlock(blockID: updatedRow.id),
+              let payloadJSON = raw["payload_json"] as? String,
+              let updatedPayload = mergeMeetingContext(payloadJSON: payloadJSON, row: updatedRow)
+        else { return }
+
+        store.notes.updateBlockPayloadJSON(blockID: updatedRow.id, payloadJSON: updatedPayload, updatedAtMs: DBNoteRepository.nowMs())
+        store.sync.schedulePush(debounceMs: 0)
+
+        let contextRecord = NJMeetingContextRecord(
+            recordingID: updatedRow.id,
+            audioRelativePath: updatedRow.audioPath,
+            recordedAtMs: updatedRow.meetingRecordedAtMs > 0 ? updatedRow.meetingRecordedAtMs : updatedRow.createdAtMs,
+            locationText: updatedRow.meetingLocation,
+            topicText: updatedRow.meetingTopic,
+            participants: updatedRow.meetingParticipants,
+            createdAtMs: updatedRow.createdAtMs,
+            updatedAtMs: DBNoteRepository.nowMs()
+        )
+        _ = NJMeetingContextStore.write(contextRecord)
+        meetingEditorRow = nil
+        reload()
+    }
+
+    func mergeMeetingContext(payloadJSON: String, row: Row) -> String? {
+        guard
+            let data = payloadJSON.data(using: .utf8),
+            let rootAny = try? JSONSerialization.jsonObject(with: data),
+            var root = rootAny as? [String: Any]
+        else { return nil }
+
+        var sections = (root["sections"] as? [String: Any]) ?? [:]
+        var audio = (sections["audio"] as? [String: Any]) ?? ["v": 1, "data": [:]]
+        var audioData = (audio["data"] as? [String: Any]) ?? [:]
+        audioData["meeting_recorded_at_ms"] = row.meetingRecordedAtMs > 0 ? row.meetingRecordedAtMs : row.createdAtMs
+        audioData["meeting_location_txt"] = row.meetingLocation
+        audioData["meeting_topic_txt"] = row.meetingTopic
+        audioData["meeting_persons_json"] = encodeMeetingParticipants(row.meetingParticipants)
+        audioData["meeting_context_complete"] = row.meetingContextReady ? 1 : 0
+        audioData["meeting_context_path"] = NJMeetingContextStore.sidecarRelativePath(audioRelativePath: row.audioPath)
+        audio["data"] = audioData
+        sections["audio"] = audio
+        root["sections"] = sections
+
+        guard let out = try? JSONSerialization.data(withJSONObject: root),
+              let text = String(data: out, encoding: .utf8) else { return nil }
+        return text
+    }
+
+    func decodeMeetingParticipants(from json: String) -> [NJMeetingParticipant] {
+        guard let data = json.data(using: .utf8),
+              let participants = try? JSONDecoder().decode([NJMeetingParticipant].self, from: data) else { return [] }
+        return participants
+    }
+
+    func encodeMeetingParticipants(_ participants: [NJMeetingParticipant]) -> String {
+        guard let data = try? JSONEncoder().encode(participants),
+              let text = String(data: data, encoding: .utf8) else { return "[]" }
+        return text
     }
 
     func deleteRow(_ r: Row) {
@@ -593,5 +758,160 @@ struct PDFKitContainer: UIViewRepresentable {
 
     func updateUIView(_ uiView: PDFView, context: Context) {
         uiView.document = PDFDocument(url: url)
+    }
+}
+
+private struct NJAudioMeetingContextEditorSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let row: NJClipboardInboxView.Row
+    let onSave: (NJClipboardInboxView.Row) -> Void
+
+    @State private var location: String
+    @State private var topic: String
+    @State private var familySelections: Set<String>
+    @State private var customParticipants: [NJMeetingParticipant]
+    @State private var newName: String = ""
+    @State private var newRole: String = ""
+
+    private let familyPeople: [(id: String, name: String)] = [
+        ("person:dad", "Dad"),
+        ("person:mom", "Mom"),
+        ("person:zhou_zhou", "Zhou Zhou"),
+        ("person:mushy_mushy", "Mushy Mushy")
+    ]
+
+    init(row: NJClipboardInboxView.Row, onSave: @escaping (NJClipboardInboxView.Row) -> Void) {
+        self.row = row
+        self.onSave = onSave
+        _location = State(initialValue: row.meetingLocation)
+        _topic = State(initialValue: row.meetingTopic)
+        let familyIDs = Set(row.meetingParticipants.compactMap { participant in
+            if let personID = participant.personID, participant.isFamily { return personID }
+            return nil
+        })
+        _familySelections = State(initialValue: familyIDs)
+        _customParticipants = State(initialValue: row.meetingParticipants.filter { !$0.isFamily || ($0.personID ?? "").isEmpty })
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Recording") {
+                    Text(row.title)
+                    Text(formattedRecordingDate(row.meetingRecordedAtMs > 0 ? row.meetingRecordedAtMs : row.createdAtMs))
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("Meeting Context") {
+                    TextField("Location", text: $location)
+                    TextField("Topic", text: $topic, axis: .vertical)
+                        .lineLimit(2...4)
+                }
+
+                Section("Family") {
+                    ForEach(familyPeople, id: \.id) { person in
+                        Toggle(person.name, isOn: Binding(
+                            get: { familySelections.contains(person.id) },
+                            set: { newValue in
+                                if newValue {
+                                    familySelections.insert(person.id)
+                                } else {
+                                    familySelections.remove(person.id)
+                                }
+                            }
+                        ))
+                    }
+                }
+
+                Section("Other People") {
+                    ForEach(Array(customParticipants.enumerated()), id: \.offset) { idx, participant in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(participant.displayName)
+                                if !participant.role.isEmpty {
+                                    Text(participant.role)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer()
+                            Button("Remove", role: .destructive) {
+                                customParticipants.remove(at: idx)
+                            }
+                        }
+                    }
+
+                    TextField("Name", text: $newName)
+                    TextField("Role", text: $newRole)
+                    Button("Add Person") {
+                        let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let role = newRole.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !name.isEmpty else { return }
+                        customParticipants.append(
+                            NJMeetingParticipant(personID: nil, displayName: name, role: role, isFamily: false)
+                        )
+                        newName = ""
+                        newRole = ""
+                    }
+                    .disabled(newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .navigationTitle("Meeting Info")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        onSave(updatedRow())
+                        dismiss()
+                    }
+                    .disabled(!canSave)
+                }
+            }
+        }
+    }
+
+    private var canSave: Bool {
+        !location.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        !topic.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        !combinedParticipants().isEmpty
+    }
+
+    private func combinedParticipants() -> [NJMeetingParticipant] {
+        let family = familyPeople
+            .filter { familySelections.contains($0.id) }
+            .map { NJMeetingParticipant(personID: $0.id, displayName: $0.name, role: "", isFamily: true) }
+        return family + customParticipants.filter { !$0.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+
+    private func updatedRow() -> NJClipboardInboxView.Row {
+        NJClipboardInboxView.Row(
+            id: row.id,
+            createdAtMs: row.createdAtMs,
+            website: row.website,
+            title: row.title,
+            pdfPath: row.pdfPath,
+            jsonPath: row.jsonPath,
+            audioPath: row.audioPath,
+            kind: row.kind,
+            transcript: row.transcript,
+            meetingRecordedAtMs: row.meetingRecordedAtMs > 0 ? row.meetingRecordedAtMs : row.createdAtMs,
+            meetingLocation: location.trimmingCharacters(in: .whitespacesAndNewlines),
+            meetingTopic: topic.trimmingCharacters(in: .whitespacesAndNewlines),
+            meetingParticipants: combinedParticipants(),
+            summaryTitle: row.summaryTitle,
+            summaryText: row.summaryText
+        )
+    }
+
+    private func formattedRecordingDate(_ ms: Int64) -> String {
+        let date = Date(timeIntervalSince1970: TimeInterval(ms) / 1000.0)
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
     }
 }

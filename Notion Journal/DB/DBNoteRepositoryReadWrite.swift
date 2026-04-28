@@ -37,6 +37,10 @@ extension DBNoteRepository {
         noteTable.listNotesByDateRange(startMs: startMs, endMs: endMs)
     }
 
+    func listFavoriteNotes(notebook: String? = nil) -> [NJNote] {
+        noteTable.listFavoriteNotes(notebook: notebook)
+    }
+
     func loadBlock(blockID: String) -> [String: Any]? {
         blockTable.loadNJBlock(blockID: blockID)
     }
@@ -61,8 +65,40 @@ extension DBNoteRepository {
         noteBlockTable.markNoteBlockDeleted(instanceID: instanceID, nowMs: nowMs)
     }
 
-    func createNote(notebook: String, tabDomain: String, title: String) -> NJNote {
-        noteTable.createNote(notebook: notebook, tabDomain: tabDomain, title: title)
+    func setNoteBlockChecked(instanceID: String, isChecked: Bool, nowMs: Int64) {
+        noteBlockTable.setChecked(instanceID: instanceID, isChecked: isChecked, nowMs: nowMs)
+    }
+
+    func nextCardRowID(noteID: String) -> String {
+        noteBlockTable.nextCardRowID(noteID: noteID)
+    }
+
+    func updateNoteBlockCardRowFields(
+        instanceID: String,
+        cardRowID: String,
+        status: String,
+        priority: String,
+        category: String,
+        area: String,
+        context: String,
+        title: String,
+        nowMs: Int64
+    ) {
+        noteBlockTable.updateCardRowFields(
+            instanceID: instanceID,
+            cardRowID: cardRowID,
+            status: status,
+            priority: priority,
+            category: category,
+            area: area,
+            context: context,
+            title: title,
+            nowMs: nowMs
+        )
+    }
+
+    func createNote(notebook: String, tabDomain: String, title: String, noteType: NJNoteType = .note) -> NJNote {
+        noteTable.createNote(notebook: notebook, tabDomain: tabDomain, title: title, noteType: noteType)
     }
 
     func upsertNote(_ note: NJNote) {
@@ -83,6 +119,10 @@ extension DBNoteRepository {
 
     func setPinned(noteID: String, pinned: Bool) {
         noteTable.setPinned(noteID: noteID, pinned: pinned)
+    }
+
+    func setFavorited(noteID: String, favorited: Bool) {
+        noteTable.setFavorited(noteID: noteID, favorited: favorited)
     }
 
     func enqueueDirty(entity: String, entityID: String, op: String, updatedAtMs: Int64) {

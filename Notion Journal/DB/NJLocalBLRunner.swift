@@ -57,6 +57,136 @@ final class NJLocalBLRunner {
         }
     }
 
+    // Collapse accidental duplicate live note<->block links so a note only renders
+    // one live placement row per underlying block.
+    @discardableResult
+    func dedupeDuplicateLiveNoteBlockLinks(limit: Int = 4000) -> Int {
+        db.withDB { dbp in
+            struct DuplicatePair {
+                let noteID: String
+                let blockID: String
+            }
+
+            struct LiveLink {
+                let instanceID: String
+                let orderKey: Double
+            }
+
+            var pairs: [DuplicatePair] = []
+            var pairStmt: OpaquePointer?
+            let pairSQL = """
+            SELECT note_id, block_id
+            FROM nj_note_block
+            WHERE deleted = 0
+              AND note_id <> ''
+              AND block_id <> ''
+            GROUP BY note_id, block_id
+            HAVING COUNT(*) > 1
+            ORDER BY MAX(updated_at_ms) DESC
+            LIMIT ?;
+            """
+            if sqlite3_prepare_v2(dbp, pairSQL, -1, &pairStmt, nil) == SQLITE_OK {
+                sqlite3_bind_int64(pairStmt, 1, Int64(limit))
+                while sqlite3_step(pairStmt) == SQLITE_ROW {
+                    let noteID = sqlite3_column_text(pairStmt, 0).flatMap { String(cString: $0) } ?? ""
+                    let blockID = sqlite3_column_text(pairStmt, 1).flatMap { String(cString: $0) } ?? ""
+                    if !noteID.isEmpty && !blockID.isEmpty {
+                        pairs.append(DuplicatePair(noteID: noteID, blockID: blockID))
+                    }
+                }
+            }
+            sqlite3_finalize(pairStmt)
+            if pairs.isEmpty { return 0 }
+
+            var loadStmt: OpaquePointer?
+            let loadSQL = """
+            SELECT instance_id, order_key
+            FROM nj_note_block
+            WHERE note_id = ?
+              AND block_id = ?
+              AND deleted = 0
+            ORDER BY order_key ASC, created_at_ms ASC, instance_id ASC;
+            """
+            guard sqlite3_prepare_v2(dbp, loadSQL, -1, &loadStmt, nil) == SQLITE_OK else {
+                sqlite3_finalize(loadStmt)
+                return 0
+            }
+            defer { sqlite3_finalize(loadStmt) }
+
+            var tombstoneStmt: OpaquePointer?
+            let tombstoneSQL = """
+            UPDATE nj_note_block
+            SET deleted = 1, updated_at_ms = ?
+            WHERE instance_id = ?;
+            """
+            guard sqlite3_prepare_v2(dbp, tombstoneSQL, -1, &tombstoneStmt, nil) == SQLITE_OK else {
+                sqlite3_finalize(tombstoneStmt)
+                return 0
+            }
+            defer { sqlite3_finalize(tombstoneStmt) }
+
+            var dirtyStmt: OpaquePointer?
+            let dirtySQL = """
+            INSERT INTO nj_dirty(entity, entity_id, op, updated_at_ms, attempts, last_error, ignore)
+            VALUES('note_block', ?, 'upsert', ?, 0, '', 0)
+            ON CONFLICT(entity, entity_id) DO UPDATE SET
+              op='upsert',
+              updated_at_ms=excluded.updated_at_ms,
+              attempts=0,
+              last_error='',
+              ignore=0;
+            """
+            guard sqlite3_prepare_v2(dbp, dirtySQL, -1, &dirtyStmt, nil) == SQLITE_OK else {
+                sqlite3_finalize(dirtyStmt)
+                return 0
+            }
+            defer { sqlite3_finalize(dirtyStmt) }
+
+            var changed = 0
+            for pair in pairs {
+                sqlite3_reset(loadStmt)
+                sqlite3_clear_bindings(loadStmt)
+                sqlite3_bind_text(loadStmt, 1, pair.noteID, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(loadStmt, 2, pair.blockID, -1, SQLITE_TRANSIENT)
+
+                var liveLinks: [LiveLink] = []
+                while sqlite3_step(loadStmt) == SQLITE_ROW {
+                    let instanceID = sqlite3_column_text(loadStmt, 0).flatMap { String(cString: $0) } ?? ""
+                    let orderKey = sqlite3_column_double(loadStmt, 1)
+                    if !instanceID.isEmpty {
+                        liveLinks.append(LiveLink(instanceID: instanceID, orderKey: orderKey))
+                    }
+                }
+
+                guard liveLinks.count > 1 else { continue }
+                let canonical = liveLinks.min { lhs, rhs in
+                    if lhs.orderKey != rhs.orderKey { return lhs.orderKey < rhs.orderKey }
+                    return lhs.instanceID < rhs.instanceID
+                }
+                guard let canonical else { continue }
+
+                for duplicate in liveLinks where duplicate.instanceID != canonical.instanceID {
+                    let now = Int64(Date().timeIntervalSince1970 * 1000.0)
+
+                    sqlite3_reset(tombstoneStmt)
+                    sqlite3_clear_bindings(tombstoneStmt)
+                    sqlite3_bind_int64(tombstoneStmt, 1, now)
+                    sqlite3_bind_text(tombstoneStmt, 2, duplicate.instanceID, -1, SQLITE_TRANSIENT)
+                    guard sqlite3_step(tombstoneStmt) == SQLITE_DONE else { continue }
+
+                    sqlite3_reset(dirtyStmt)
+                    sqlite3_clear_bindings(dirtyStmt)
+                    sqlite3_bind_text(dirtyStmt, 1, duplicate.instanceID, -1, SQLITE_TRANSIENT)
+                    sqlite3_bind_int64(dirtyStmt, 2, now)
+                    _ = sqlite3_step(dirtyStmt)
+                    changed += 1
+                }
+            }
+
+            return changed
+        }
+    }
+
     // Re-queue existing calendar memory photos so both the calendar row and the linked
     // attachment thumbnail asset get republished to CloudKit.
     @discardableResult
@@ -468,7 +598,9 @@ final class NJLocalBLRunner {
             var changed = 0
             for c in candidates {
                 if hasLive(c.noteID, c.blockID) { continue }
-                let now = c.updatedAtMs > 0 ? c.updatedAtMs : Int64(Date().timeIntervalSince1970 * 1000.0)
+                // Use a fresh timestamp so repaired links are visible to peers whose
+                // pull cursor has already advanced past the source attachment history.
+                let now = Int64(Date().timeIntervalSince1970 * 1000.0)
                 let iid = UUID().uuidString
                 let ok = nextOrderKey(c.noteID)
 
@@ -607,7 +739,9 @@ final class NJLocalBLRunner {
             var changed = 0
             for c in candidates {
                 if hasLive(c.noteID, c.blockID) { continue }
-                let now = c.updatedAtMs > 0 ? c.updatedAtMs : Int64(Date().timeIntervalSince1970 * 1000.0)
+                // Use a fresh timestamp so repaired links are visible to peers whose
+                // pull cursor has already advanced past the historical tombstone.
+                let now = Int64(Date().timeIntervalSince1970 * 1000.0)
                 let iid = UUID().uuidString
                 let ok = nextOrderKey(c.noteID)
 

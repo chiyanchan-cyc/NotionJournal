@@ -8,6 +8,7 @@ final class DBCloudBridge {
     let goalTable: DBGoalTable
     let calendarTable: DBCalendarTable
     let plannedExerciseTable: DBPlannedExerciseTable
+    let healthSampleCloudTable: DBHealthSampleCloudTable
     let planningNoteTable: DBPlanningNoteTable
     let financeMacroEventTable: DBFinanceMacroEventTable
     let financeDailyBriefTable: DBFinanceDailyBriefTable
@@ -17,8 +18,13 @@ final class DBCloudBridge {
     let financeFindingTable: DBFinanceFindingTable
     let financeJournalLinkTable: DBFinanceJournalLinkTable
     let financeSourceItemTable: DBFinanceSourceItemTable
+    let financeTransactionTable: DBFinanceTransactionTable
+    let agentHeartbeatRunTable: DBAgentHeartbeatRunTable
+    let agentBackfillTaskTable: DBAgentBackfillTaskTable
     let timeSlotTable: DBTimeSlotTable
     let personalGoalTable: DBPersonalGoalTable
+    let renewalItemTable: DBRenewalItemTable
+    let cardTable: DBCardTable
 
     init(
         noteTable: DBNoteTable,
@@ -28,6 +34,7 @@ final class DBCloudBridge {
         goalTable: DBGoalTable,
         calendarTable: DBCalendarTable,
         plannedExerciseTable: DBPlannedExerciseTable,
+        healthSampleCloudTable: DBHealthSampleCloudTable,
         planningNoteTable: DBPlanningNoteTable,
         financeMacroEventTable: DBFinanceMacroEventTable,
         financeDailyBriefTable: DBFinanceDailyBriefTable,
@@ -37,8 +44,13 @@ final class DBCloudBridge {
         financeFindingTable: DBFinanceFindingTable,
         financeJournalLinkTable: DBFinanceJournalLinkTable,
         financeSourceItemTable: DBFinanceSourceItemTable,
+        financeTransactionTable: DBFinanceTransactionTable,
+        agentHeartbeatRunTable: DBAgentHeartbeatRunTable,
+        agentBackfillTaskTable: DBAgentBackfillTaskTable,
         timeSlotTable: DBTimeSlotTable,
-        personalGoalTable: DBPersonalGoalTable
+        personalGoalTable: DBPersonalGoalTable,
+        renewalItemTable: DBRenewalItemTable,
+        cardTable: DBCardTable
     ) {
         self.noteTable = noteTable
         self.blockTable = blockTable
@@ -47,6 +59,7 @@ final class DBCloudBridge {
         self.goalTable = goalTable
         self.calendarTable = calendarTable
         self.plannedExerciseTable = plannedExerciseTable
+        self.healthSampleCloudTable = healthSampleCloudTable
         self.planningNoteTable = planningNoteTable
         self.financeMacroEventTable = financeMacroEventTable
         self.financeDailyBriefTable = financeDailyBriefTable
@@ -56,8 +69,13 @@ final class DBCloudBridge {
         self.financeFindingTable = financeFindingTable
         self.financeJournalLinkTable = financeJournalLinkTable
         self.financeSourceItemTable = financeSourceItemTable
+        self.financeTransactionTable = financeTransactionTable
+        self.agentHeartbeatRunTable = agentHeartbeatRunTable
+        self.agentBackfillTaskTable = agentBackfillTaskTable
         self.timeSlotTable = timeSlotTable
         self.personalGoalTable = personalGoalTable
+        self.renewalItemTable = renewalItemTable
+        self.cardTable = cardTable
     }
 
     func loadRecord(entity: String, id: String) -> [String: Any]? {
@@ -66,6 +84,8 @@ final class DBCloudBridge {
             return loadNJNote(noteID: id)
         case "block":
             return blockTable.loadNJBlock(blockID: id)
+        case "table":
+            return NJTableStore.shared.loadCloudFields(tableID: id)
         case "note_block":
             return noteBlockTable.loadNJNoteBlock(instanceID: id)
         case "attachment":
@@ -76,6 +96,8 @@ final class DBCloudBridge {
             return loadNJCalendarItem(dateKey: id)
         case "planned_exercise":
             return plannedExerciseTable.loadPlan(planID: id)
+        case "health_sample":
+            return healthSampleCloudTable.loadHealthSample(sampleID: id)
         case "planning_note":
             return planningNoteTable.loadPlanningNoteFields(planningKey: id)
         case "finance_macro_event":
@@ -94,13 +116,33 @@ final class DBCloudBridge {
             return financeJournalLinkTable.loadFields(linkID: id)
         case "finance_source_item":
             return financeSourceItemTable.loadFields(sourceItemID: id)
+        case "finance_transaction":
+            return financeTransactionTable.loadFields(transactionID: id)
+        case "agent_heartbeat_run":
+            return agentHeartbeatRunTable.loadFields(runID: id)
+        case "agent_backfill_task":
+            return agentBackfillTaskTable.loadFields(taskID: id)
         case "time_slot":
             return timeSlotTable.loadFields(timeSlotID: id)
         case "personal_goal":
             return personalGoalTable.loadFields(goalID: id)
+        case "renewal_item":
+            return renewalItemTable.loadFields(renewalItemID: id)
+        case "card_schema":
+            return cardTable.loadCardSchema(schemaKey: id)
+        case "card":
+            return cardTable.loadCard(cardID: id)
         default:
             return nil
         }
+    }
+
+    private func int64Any(_ value: Any?) -> Int64 {
+        if let value = value as? Int64 { return value }
+        if let value = value as? Int { return Int64(value) }
+        if let value = value as? NSNumber { return value.int64Value }
+        if let value = value as? String { return Int64(value) ?? 0 }
+        return 0
     }
 
     func applyRemoteUpsert(entity: String, fields: [String: Any]) {
@@ -109,6 +151,8 @@ final class DBCloudBridge {
             applyNJNote(fields: fields)
         case "block":
             blockTable.applyNJBlock(fields)
+        case "table":
+            NJTableStore.shared.applyCloudFields(fields)
         case "note_block":
             noteBlockTable.applyNJNoteBlock(fields)
         case "attachment":
@@ -119,6 +163,8 @@ final class DBCloudBridge {
             applyNJCalendarItem(fields: fields)
         case "planned_exercise":
             plannedExerciseTable.applyRemote(fields)
+        case "health_sample":
+            healthSampleCloudTable.applyRemote(fields)
         case "planning_note":
             planningNoteTable.applyRemote(fields)
         case "finance_macro_event":
@@ -137,10 +183,22 @@ final class DBCloudBridge {
             financeJournalLinkTable.applyRemote(fields)
         case "finance_source_item":
             financeSourceItemTable.applyRemote(fields)
+        case "finance_transaction":
+            financeTransactionTable.applyRemote(fields)
+        case "agent_heartbeat_run":
+            agentHeartbeatRunTable.applyRemote(fields)
+        case "agent_backfill_task":
+            agentBackfillTaskTable.applyRemote(fields)
         case "time_slot":
             timeSlotTable.applyRemote(fields)
         case "personal_goal":
             personalGoalTable.applyRemote(fields)
+        case "renewal_item":
+            renewalItemTable.applyRemote(fields)
+        case "card_schema":
+            cardTable.applyRemoteCardSchema(fields)
+        case "card":
+            cardTable.applyRemoteCard(fields)
         default:
             break
         }
@@ -155,7 +213,17 @@ final class DBCloudBridge {
             "notebook": n.notebook,
             "tab_domain": n.tabDomain,
             "title": n.title,
+            "note_type": n.noteTypeRaw,
+            "dominance_mode": n.dominanceModeRaw,
+            "is_checklist": n.isChecklist,
+            "card_id": n.cardID,
+            "card_category": n.cardCategory,
+            "card_area": n.cardArea,
+            "card_context": n.cardContext,
+            "card_status": n.cardStatus,
+            "card_priority": n.cardPriority,
             "pinned": n.pinned,
+            "favorited": n.favorited,
             "deleted": n.deleted
         ]
     }
@@ -164,13 +232,23 @@ final class DBCloudBridge {
         let noteID = (fields["note_id"] as? String) ?? ""
         if noteID.isEmpty { return }
 
-        let createdAt = (fields["created_at_ms"] as? Int64) ?? 0
-        let updatedAt = (fields["updated_at_ms"] as? Int64) ?? 0
+        let createdAt = int64Any(fields["created_at_ms"])
+        let updatedAt = int64Any(fields["updated_at_ms"])
         let notebook = (fields["notebook"] as? String) ?? ""
         let tabDomain = (fields["tab_domain"] as? String) ?? ""
         let title = (fields["title"] as? String) ?? ""
-        let pinned = (fields["pinned"] as? Int64) ?? 0
-        let deleted = (fields["deleted"] as? Int64) ?? 0
+        let incomingNoteTypeRaw = (fields["note_type"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let dominanceModeRaw = (fields["dominance_mode"] as? String) ?? NJNoteDominanceMode.block.rawValue
+        let isChecklist = int64Any(fields["is_checklist"])
+        let cardID = (fields["card_id"] as? String) ?? ""
+        let cardCategory = (fields["card_category"] as? String) ?? ""
+        let cardArea = (fields["card_area"] as? String) ?? ""
+        let cardContext = (fields["card_context"] as? String) ?? ""
+        let cardStatus = (fields["card_status"] as? String) ?? ""
+        let cardPriority = (fields["card_priority"] as? String) ?? ""
+        let pinned = int64Any(fields["pinned"])
+        let favorited = int64Any(fields["favorited"])
+        let deleted = int64Any(fields["deleted"])
 
         let existing = noteTable.getNote(NJNoteID(noteID))
         if let existing {
@@ -183,6 +261,29 @@ final class DBCloudBridge {
             }
         }
 
+        let inferredCardType: Bool = {
+            if !cardID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return true }
+            if !cardCategory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return true }
+            if !cardArea.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return true }
+            if !cardContext.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return true }
+            if !cardStatus.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return true }
+            if !cardPriority.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return true }
+            return false
+        }()
+
+        let noteTypeRaw: String = {
+            if !incomingNoteTypeRaw.isEmpty {
+                return incomingNoteTypeRaw
+            }
+            if let existing, existing.noteType == .card {
+                return NJNoteType.card.rawValue
+            }
+            if inferredCardType {
+                return NJNoteType.card.rawValue
+            }
+            return NJNoteType.note.rawValue
+        }()
+
         let keepRTF = existing?.rtfData ?? noteTable.emptyRTF()
 
         let note = NJNote(
@@ -194,7 +295,17 @@ final class DBCloudBridge {
             title: title,
             rtfData: keepRTF,
             deleted: deleted,
-            pinned: pinned
+            pinned: pinned,
+            favorited: favorited,
+            noteTypeRaw: noteTypeRaw,
+            dominanceModeRaw: dominanceModeRaw,
+            isChecklist: isChecklist,
+            cardID: cardID,
+            cardCategory: cardCategory,
+            cardArea: cardArea,
+            cardContext: cardContext,
+            cardStatus: cardStatus,
+            cardPriority: cardPriority
         )
         noteTable.upsertNote(note)
     }

@@ -16,7 +16,7 @@ enum Notebook: String, CaseIterable, Identifiable {
     var tabs: [NotebookTab] {
         switch self {
         case .zz: return [.zzEdu, .zzAdhd]
-        case .selfBook: return [.selfReflection, .selfFinance, .selfMarriage]
+        case .selfBook: return [.selfReflection, .selfFinance, .selfDatabase]
         }
     }
 
@@ -30,13 +30,13 @@ enum NotebookTab: String, CaseIterable, Identifiable {
     case zzAdhd = "ADHD"
     case selfReflection = "Reflection"
     case selfFinance = "Finance"
-    case selfMarriage = "Marriage"
+    case selfDatabase = "Database"
     var id: String { rawValue }
 
     var notebook: Notebook {
         switch self {
         case .zzEdu, .zzAdhd: return .zz
-        case .selfReflection, .selfFinance, .selfMarriage: return .selfBook
+        case .selfReflection, .selfFinance, .selfDatabase: return .selfBook
         }
     }
 
@@ -46,7 +46,7 @@ enum NotebookTab: String, CaseIterable, Identifiable {
         case .zzAdhd: return "zz.adhd"
         case .selfReflection: return "self.reflection"
         case .selfFinance: return "self.finance"
-        case .selfMarriage: return "self.marriage"
+        case .selfDatabase: return "self.database"
         }
     }
 }

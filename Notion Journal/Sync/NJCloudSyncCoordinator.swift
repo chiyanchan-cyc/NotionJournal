@@ -17,6 +17,15 @@ actor NJCloudSyncCoordinator {
     private let transport: NJCloudKitTransport
     private var isSyncing = false
     private var pendingSync = false
+    private let maxFutureCursorSkewMs: Int64 = 60_000
+    private let overlapPullMsByEntity: [String: Int64] = [
+        "block": 300_000,
+        "table": 7 * 24 * 60 * 60 * 1_000,
+        "note_block": 300_000,
+        "attachment": 300_000,
+        "note": 120_000,
+        "finance_transaction": 300_000
+    ]
 
     init(repo: DBNoteRepository, transport: NJCloudKitTransport) {
         self.repo = repo
@@ -37,6 +46,13 @@ actor NJCloudSyncCoordinator {
             await pushAll()
             await pullAll(forceSinceZero: false)
 
+            let remainingDirty = await MainActor.run {
+                repo.pendingDirtyCount()
+            }
+            if remainingDirty > 0 {
+                pendingSync = true
+            }
+
             if !pendingSync { break }
         }
     }
@@ -45,9 +61,25 @@ actor NJCloudSyncCoordinator {
         let order: [(String, String)] = await MainActor.run { NJCloudSchema.syncOrder }
 
         for (entity, recordType) in order {
-            let sinceMs: Int64 = forceSinceZero ? 0 : await loadLastPullMs(entity: entity)
+            let cursorMs: Int64 = forceSinceZero ? 0 : await loadLastPullMs(entity: entity)
+            let overlapMs = overlapPullMsByEntity[entity] ?? 0
+            let sinceMs = max(0, cursorMs - overlapMs)
 
-            let (rawRows, newMax) = await transport.pullEntityAll(entity: entity, recordType: recordType, sinceMs: sinceMs)
+            var (rawRows, newMax) = await transport.pullEntityAll(entity: entity, recordType: recordType, sinceMs: sinceMs)
+
+            if entity == "table" {
+                let tableIDs = await MainActor.run {
+                    NJTableStore.shared.listKnownTableIDs()
+                }
+                let directRows = await transport.fetchEntityRecords(entity: entity, recordType: recordType, ids: tableIDs)
+                if !directRows.isEmpty {
+                    rawRows.append(contentsOf: directRows)
+                    for row in directRows {
+                        let updated = Self.int64Any(row["updated_at_ms"])
+                        if updated > newMax { newMax = updated }
+                    }
+                }
+            }
 
             let rows: [(String, [String: Any])] = rawRows.map { r in
                 (Self.inferID(entity: entity, row: r), r)
@@ -61,7 +93,7 @@ actor NJCloudSyncCoordinator {
                 }
             }
 
-            if newMax > sinceMs {
+            if newMax > cursorMs {
                 await saveLastPullMs(entity: entity, ms: newMax)
             }
 
@@ -150,6 +182,8 @@ actor NJCloudSyncCoordinator {
             return (row["note_id"] as? String) ?? (row["id"] as? String) ?? ""
         case "block":
             return (row["block_id"] as? String) ?? (row["id"] as? String) ?? ""
+        case "table":
+            return (row["table_id"] as? String) ?? (row["id"] as? String) ?? ""
         case "note_block":
             return (row["instance_id"] as? String) ?? (row["id"] as? String) ?? ""
         case "goal":
@@ -158,12 +192,26 @@ actor NJCloudSyncCoordinator {
             return (row["date_key"] as? String) ?? (row["id"] as? String) ?? ""
         case "planned_exercise":
             return (row["plan_id"] as? String) ?? (row["id"] as? String) ?? ""
+        case "health_sample":
+            return (row["sample_id"] as? String) ?? (row["id"] as? String) ?? ""
         case "planning_note":
             return (row["planning_key"] as? String) ?? (row["id"] as? String) ?? ""
+        case "finance_transaction":
+            return (row["transaction_id"] as? String) ?? (row["id"] as? String) ?? ""
+        case "agent_heartbeat_run":
+            return (row["run_id"] as? String) ?? (row["id"] as? String) ?? ""
+        case "agent_backfill_task":
+            return (row["task_id"] as? String) ?? (row["id"] as? String) ?? ""
         case "time_slot":
             return (row["time_slot_id"] as? String) ?? (row["id"] as? String) ?? ""
         case "personal_goal":
             return (row["goal_id"] as? String) ?? (row["id"] as? String) ?? ""
+        case "renewal_item":
+            return (row["renewal_item_id"] as? String) ?? (row["id"] as? String) ?? ""
+        case "card_schema":
+            return (row["schema_key"] as? String) ?? (row["id"] as? String) ?? ""
+        case "card":
+            return (row["card_id"] as? String) ?? (row["id"] as? String) ?? ""
         case "outline":
             return (row["outline_id"] as? String) ?? (row["id"] as? String) ?? ""
         case "outline_node":
@@ -171,6 +219,14 @@ actor NJCloudSyncCoordinator {
         default:
             return (row["id"] as? String) ?? ""
         }
+    }
+
+    private static func int64Any(_ value: Any?) -> Int64 {
+        if let value = value as? Int64 { return value }
+        if let value = value as? Int { return Int64(value) }
+        if let value = value as? NSNumber { return value.int64Value }
+        if let value = value as? String { return Int64(value) ?? 0 }
+        return 0
     }
 
     private func loadLastPullMs(entity: String) async -> Int64 {
@@ -189,14 +245,25 @@ actor NJCloudSyncCoordinator {
 
                 guard let cstr = sqlite3_column_text(stmt, 0) else { return 0 }
                 let s = String(cString: cstr)
-                return Int64(s) ?? 0
+                let stored = Int64(s) ?? 0
+                let now = Int64(Date().timeIntervalSince1970 * 1000)
+                let capped = min(stored, now + self.maxFutureCursorSkewMs)
+                if capped != stored {
+                    print("NJ_CK_CURSOR_CLAMP entity=\(entity) stored=\(stored) capped=\(capped) now=\(now)")
+                }
+                return capped
             }
         }
     }
 
     private func saveLastPullMs(entity: String, ms: Int64) async {
         let key = "ck_since_\(entity)"
-        let val = String(ms)
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        let clamped = min(ms, now + maxFutureCursorSkewMs)
+        if clamped != ms {
+            print("NJ_CK_CURSOR_SAVE_CLAMP entity=\(entity) incoming=\(ms) saved=\(clamped) now=\(now)")
+        }
+        let val = String(clamped)
         await MainActor.run {
             repo.db.withDB { dbp in
                 var stmt: OpaquePointer?

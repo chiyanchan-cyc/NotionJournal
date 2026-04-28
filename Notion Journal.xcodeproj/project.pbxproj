@@ -11,12 +11,12 @@
 		046E84E02F109E9600030095 /* NotionJournalClipper.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 046E84132F0DFE1000030095 /* NotionJournalClipper.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		047763FC2F4445B10099B7B9 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 047763FB2F4445B10099B7B9 /* WidgetKit.framework */; };
 		047763FE2F4445B10099B7B9 /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 047763FD2F4445B10099B7B9 /* SwiftUI.framework */; };
+		047A10012F87425000C5221D /* NotionJournalComplicationExtensionExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 047763FA2F4445B10099B7B9 /* NotionJournalComplicationExtensionExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		048643762F87424F002F4AA5 /* New_Watch Watch App.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = 0486436C2F87424E002F4AA5 /* New_Watch Watch App.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		37B25A08E0BB4E8BB40A1DAD /* NotionJournalShareExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B04395B2369B4342A51E2DDD /* NotionJournalShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		A11111112F50000100C5221D /* NotionJournalWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = A11111152F50000100C5221D /* NotionJournalWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		A11111122F50000100C5221D /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 047763FB2F4445B10099B7B9 /* WidgetKit.framework */; };
 		A11111132F50000100C5221D /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 047763FD2F4445B10099B7B9 /* SwiftUI.framework */; };
-		B11111112F60000100C5221D /* NotionJournalWatchApp.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = B11111152F60000100C5221D /* NotionJournalWatchApp.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
-		B11111122F60000100C5221D /* NotionJournalComplicationExtensionExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 047763FA2F4445B10099B7B9 /* NotionJournalComplicationExtensionExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		B11111132F60000100C5221D /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 047763FD2F4445B10099B7B9 /* SwiftUI.framework */; };
 /* End PBXBuildFile section */
 
@@ -35,6 +35,20 @@
 			remoteGlobalIDString = 046E84122F0DFE1000030095;
 			remoteInfo = NotionJournalClipper;
 		};
+		047A10022F87425000C5221D /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 046793E32F03C62100C5221D /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 047763F92F4445B10099B7B9;
+			remoteInfo = NotionJournalComplicationExtensionExtension;
+		};
+		048643742F87424F002F4AA5 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 046793E32F03C62100C5221D /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 0486436B2F87424E002F4AA5;
+			remoteInfo = "New_Watch Watch App";
+		};
 		6A7ED5E38A424A8A93D596EF /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 046793E32F03C62100C5221D /* Project object */;
@@ -48,20 +62,6 @@
 			proxyType = 1;
 			remoteGlobalIDString = A11111192F50000100C5221D;
 			remoteInfo = NotionJournalWidgetExtension;
-		};
-		B11111162F60000100C5221D /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = 046793E32F03C62100C5221D /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = B11111192F60000100C5221D;
-			remoteInfo = NotionJournalWatchApp;
-		};
-		B11111172F60000100C5221D /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = 046793E32F03C62100C5221D /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = 047763F92F4445B10099B7B9;
-			remoteInfo = NotionJournalComplicationExtensionExtension;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -79,26 +79,26 @@
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		B11111142F60000100C5221D /* Embed Watch Content */ = {
-			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 2147483647;
-			dstPath = "";
-			dstSubfolderSpec = 16;
-			files = (
-				B11111112F60000100C5221D /* NotionJournalWatchApp.app in Embed Watch Content */,
-			);
-			name = "Embed Watch Content";
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		B111111A2F60000100C5221D /* Embed App Extensions */ = {
+		047A10042F87425000C5221D /* Embed App Extensions */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
 			dstPath = "";
 			dstSubfolderSpec = 13;
 			files = (
-				B11111122F60000100C5221D /* NotionJournalComplicationExtensionExtension.appex in Embed App Extensions */,
+				047A10012F87425000C5221D /* NotionJournalComplicationExtensionExtension.appex in Embed App Extensions */,
 			);
 			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		048643772F87424F002F4AA5 /* Embed Watch Content */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(CONTENTS_FOLDER_PATH)/Watch";
+			dstSubfolderSpec = 16;
+			files = (
+				048643762F87424F002F4AA5 /* New_Watch Watch App.app in Embed Watch Content */,
+			);
+			name = "Embed Watch Content";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXCopyFilesBuildPhase section */
@@ -109,6 +109,7 @@
 		047763FA2F4445B10099B7B9 /* NotionJournalComplicationExtensionExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NotionJournalComplicationExtensionExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		047763FB2F4445B10099B7B9 /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
 		047763FD2F4445B10099B7B9 /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
+		0486436C2F87424E002F4AA5 /* New_Watch Watch App.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "New_Watch Watch App.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		A11111152F50000100C5221D /* NotionJournalWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NotionJournalWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		B04395B2369B4342A51E2DDD /* NotionJournalShareExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NotionJournalShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		B11111152F60000100C5221D /* NotionJournalWatchApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NotionJournalWatchApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -202,6 +203,11 @@
 			path = NotionJournalComplicationExtension;
 			sourceTree = "<group>";
 		};
+		0486436D2F87424E002F4AA5 /* New_Watch Watch App */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "New_Watch Watch App";
+			sourceTree = "<group>";
+		};
 		A11111172F50000100C5221D /* NotionJournalWidgetExtension */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
@@ -253,6 +259,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		048643692F87424E002F4AA5 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		5FDD275BCC3F4C16B84FAF10 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -289,6 +302,7 @@
 				047763FF2F4445B10099B7B9 /* NotionJournalComplicationExtension */,
 				B111111B2F60000100C5221D /* NotionJournalWatchApp */,
 				A11111172F50000100C5221D /* NotionJournalWidgetExtension */,
+				0486436D2F87424E002F4AA5 /* New_Watch Watch App */,
 				046E84DF2F109E9600030095 /* Frameworks */,
 				046793EC2F03C62100C5221D /* Products */,
 			);
@@ -303,6 +317,7 @@
 				047763FA2F4445B10099B7B9 /* NotionJournalComplicationExtensionExtension.appex */,
 				B11111152F60000100C5221D /* NotionJournalWatchApp.app */,
 				A11111152F50000100C5221D /* NotionJournalWidgetExtension.appex */,
+				0486436C2F87424E002F4AA5 /* New_Watch Watch App.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -327,7 +342,7 @@
 				046793E82F03C62100C5221D /* Frameworks */,
 				046793E92F03C62100C5221D /* Resources */,
 				046E84E32F109E9600030095 /* Embed Foundation Extensions */,
-				B11111142F60000100C5221D /* Embed Watch Content */,
+				048643772F87424F002F4AA5 /* Embed Watch Content */,
 			);
 			buildRules = (
 			);
@@ -335,8 +350,8 @@
 				046E84E22F109E9600030095 /* PBXTargetDependency */,
 				046E84E52F109E9C00030095 /* PBXTargetDependency */,
 				D242750419564F7990F6E650 /* PBXTargetDependency */,
-				B111111C2F60000100C5221D /* PBXTargetDependency */,
 				A111111C2F50000100C5221D /* PBXTargetDependency */,
+				048643752F87424F002F4AA5 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				046793ED2F03C62100C5221D /* Notion Journal */,
@@ -393,6 +408,30 @@
 			productReference = 047763FA2F4445B10099B7B9 /* NotionJournalComplicationExtensionExtension.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		0486436B2F87424E002F4AA5 /* New_Watch Watch App */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 0486437A2F87424F002F4AA5 /* Build configuration list for PBXNativeTarget "New_Watch Watch App" */;
+			buildPhases = (
+				048643682F87424E002F4AA5 /* Sources */,
+				048643692F87424E002F4AA5 /* Frameworks */,
+				0486436A2F87424E002F4AA5 /* Resources */,
+				047A10042F87425000C5221D /* Embed App Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				047A10032F87425000C5221D /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				0486436D2F87424E002F4AA5 /* New_Watch Watch App */,
+			);
+			name = "New_Watch Watch App";
+			packageProductDependencies = (
+			);
+			productName = "New_Watch Watch App";
+			productReference = 0486436C2F87424E002F4AA5 /* New_Watch Watch App.app */;
+			productType = "com.apple.product-type.application";
+		};
 		A11111192F50000100C5221D /* NotionJournalWidgetExtension */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = A11111202F50000100C5221D /* Build configuration list for PBXNativeTarget "NotionJournalWidgetExtension" */;
@@ -422,12 +461,10 @@
 				B111111D2F60000100C5221D /* Sources */,
 				B111111E2F60000100C5221D /* Frameworks */,
 				B111111F2F60000100C5221D /* Resources */,
-				B111111A2F60000100C5221D /* Embed App Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
-				B11111222F60000100C5221D /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				B111111B2F60000100C5221D /* NotionJournalWatchApp */,
@@ -468,7 +505,7 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 2620;
+				LastSwiftUpdateCheck = 2640;
 				LastUpgradeCheck = 2620;
 				TargetAttributes = {
 					046793EA2F03C62100C5221D = {
@@ -479,6 +516,9 @@
 					};
 					047763F92F4445B10099B7B9 = {
 						CreatedOnToolsVersion = 26.2;
+					};
+					0486436B2F87424E002F4AA5 = {
+						CreatedOnToolsVersion = 26.4;
 					};
 					A11111192F50000100C5221D = {
 						CreatedOnToolsVersion = 26.2;
@@ -514,6 +554,7 @@
 				047763F92F4445B10099B7B9 /* NotionJournalComplicationExtensionExtension */,
 				B11111192F60000100C5221D /* NotionJournalWatchApp */,
 				A11111192F50000100C5221D /* NotionJournalWidgetExtension */,
+				0486436B2F87424E002F4AA5 /* New_Watch Watch App */,
 			);
 		};
 /* End PBXProject section */
@@ -534,6 +575,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		047763F82F4445B10099B7B9 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		0486436A2F87424E002F4AA5 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -585,6 +633,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		048643682F87424E002F4AA5 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		A111111B2F50000100C5221D /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -619,20 +674,20 @@
 			target = 046E84122F0DFE1000030095 /* NotionJournalClipper */;
 			targetProxy = 046E84E42F109E9C00030095 /* PBXContainerItemProxy */;
 		};
+		047A10032F87425000C5221D /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 047763F92F4445B10099B7B9 /* NotionJournalComplicationExtensionExtension */;
+			targetProxy = 047A10022F87425000C5221D /* PBXContainerItemProxy */;
+		};
+		048643752F87424F002F4AA5 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 0486436B2F87424E002F4AA5 /* New_Watch Watch App */;
+			targetProxy = 048643742F87424F002F4AA5 /* PBXContainerItemProxy */;
+		};
 		A111111C2F50000100C5221D /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = A11111192F50000100C5221D /* NotionJournalWidgetExtension */;
 			targetProxy = A11111142F50000100C5221D /* PBXContainerItemProxy */;
-		};
-		B111111C2F60000100C5221D /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = B11111192F60000100C5221D /* NotionJournalWatchApp */;
-			targetProxy = B11111162F60000100C5221D /* PBXContainerItemProxy */;
-		};
-		B11111222F60000100C5221D /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = 047763F92F4445B10099B7B9 /* NotionJournalComplicationExtensionExtension */;
-			targetProxy = B11111172F60000100C5221D /* PBXContainerItemProxy */;
 		};
 		D242750419564F7990F6E650 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
@@ -997,6 +1052,76 @@
 			};
 			name = Release;
 		};
+		048643782F87424F002F4AA5 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = "New_Watch Watch App/New_Watch Watch App.entitlements";
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 5LZ6X4HA3F;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = New_Watch;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = LLMJournal.NotionJournal;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = LLMJournal.NotionJournal.watchkitapp;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 26.4;
+			};
+			name = Debug;
+		};
+		048643792F87424F002F4AA5 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = "New_Watch Watch App/New_Watch Watch App.entitlements";
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 5LZ6X4HA3F;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = New_Watch;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = LLMJournal.NotionJournal;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = LLMJournal.NotionJournal.watchkitapp;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 26.4;
+			};
+			name = Release;
+		};
 		3D059760F90740399139445B /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -1216,6 +1341,15 @@
 			buildConfigurations = (
 				0477640B2F4445B30099B7B9 /* Debug */,
 				0477640C2F4445B30099B7B9 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		0486437A2F87424F002F4AA5 /* Build configuration list for PBXNativeTarget "New_Watch Watch App" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				048643782F87424F002F4AA5 /* Debug */,
+				048643792F87424F002F4AA5 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

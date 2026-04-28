@@ -290,30 +290,20 @@ struct NJProtonJSONDecoder_Audit: EditorContentDecoding {
 
     private func decodeFont(_ json: NJProtonJSON) -> UIFont {
         let size = json["size"] as? CGFloat ?? UIFont.systemFontSize
-        let family = json["family"] as? String
-        let styleName = json["textStyle"] as? String
+        let isBold = json["isBold"] as? Bool == true
+        let isItalic = json["isItalics"] as? Bool == true
+        let isMonospace = json["isMonospace"] as? Bool == true
 
-        var fontDescriptor: UIFontDescriptor
-        if let styleName {
-            fontDescriptor = UIFontDescriptor.preferredFontDescriptor(withTextStyle: UIFont.TextStyle(rawValue: styleName))
-        } else {
-            fontDescriptor = UIFont.systemFont(ofSize: size).fontDescriptor
+        if isMonospace {
+            var fontDescriptor = UIFont.monospacedSystemFont(ofSize: size, weight: isBold ? .semibold : .regular).fontDescriptor
+            if isItalic,
+               let updated = fontDescriptor.withSymbolicTraits(fontDescriptor.symbolicTraits.union(.traitItalic)) {
+                fontDescriptor = updated
+            }
+            return UIFont(descriptor: fontDescriptor, size: size)
         }
 
-        if let family {
-            fontDescriptor = fontDescriptor.withFamily(family)
-        }
-
-        var traits = fontDescriptor.symbolicTraits
-        if json["isBold"] as? Bool == true { traits.formUnion(.traitBold) }
-        if json["isItalics"] as? Bool == true { traits.formUnion(.traitItalic) }
-        if json["isMonospace"] as? Bool == true { traits.formUnion(.traitMonoSpace) }
-
-        if let updated = fontDescriptor.withSymbolicTraits(traits) {
-            fontDescriptor = updated
-        }
-
-        return UIFont(descriptor: fontDescriptor, size: size)
+        return NJEditorCanonicalBodyFont(size: size, bold: isBold, italic: isItalic)
     }
 }
 
@@ -370,4 +360,3 @@ private extension UIColor {
         return ["r": r, "g": g, "b": b, "a": a]
     }
 }
-

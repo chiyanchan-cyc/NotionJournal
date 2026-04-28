@@ -5,6 +5,8 @@ enum NJTimeSlotCategory: String, CaseIterable, Codable, Identifiable {
     case piano = "Piano"
     case exercise = "Exercise"
     case personal = "Personal"
+    case programming = "Programming"
+    case videoEditing = "Video Editing"
 
     var id: String { rawValue }
 
@@ -13,6 +15,8 @@ enum NJTimeSlotCategory: String, CaseIterable, Codable, Identifiable {
         case .piano: return "pianokeys"
         case .exercise: return "figure.run"
         case .personal: return "person"
+        case .programming: return "curlybraces.square"
+        case .videoEditing: return "video"
         }
     }
 }

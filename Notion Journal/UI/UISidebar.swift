@@ -7,6 +7,7 @@ import PhotosUI
 struct Sidebar: View {
     @EnvironmentObject var store: AppStore
     @Binding var selectedNoteID: NJNoteID?
+    var onRequestDetailFocus: (() -> Void)? = nil
     @Environment(\.openWindow) private var openWindow
 
     @State private var showNewNotebook = false
@@ -30,6 +31,7 @@ struct Sidebar: View {
     @State private var showGPSLogger = false
     @State private var showHealthLogger = false
     @State private var showHealthWeeklySummary = false
+    @State private var showMeetingInbox = false
     @State private var showExport = false
     @State private var showQuickNoteSheet = false
     @State private var quickNoteAttr = NSAttributedString(string: "")
@@ -38,28 +40,30 @@ struct Sidebar: View {
     @State private var quickNotePickedPhotoItem: PhotosPickerItem? = nil
     @State private var quickNoteHandle = NJProtonEditorHandle()
     @State private var showRecoverFromCloudConfirm = false
-
-
+    @State private var showRecoverFinanceFromCloudConfirm = false
+    @State private var tradeThesisExpanded = true
     private var notesInScope: [NJNote] {
-        guard
-            let nb = store.currentNotebookTitle,
+        guard let nb = store.currentNotebookTitle else { return [] }
+
+        let scopedNotes: [NJNote]
+        if store.showFavoriteNotesOnly {
+            scopedNotes = store.notes.listFavoriteNotes(notebook: nb)
+        } else if
             let tabID = store.selectedTabID,
             let tab = store.tabs.first(where: { $0.tabID == tabID })
-        else { return [] }
+        {
+            let dom = tab.domainKey
+            let key = dom.hasSuffix(".") ? "\(dom)%" : "\(dom).%"
+            scopedNotes = store.notes.listNotes(tabDomainKey: key)
+                .filter { $0.notebook == nb && $0.deleted == 0 }
+        } else {
+            return []
+        }
 
-        let dom = tab.domainKey
-        let key = dom.hasSuffix(".") ? "\(dom)%" : "\(dom).%"
-
-        return store.notes.listNotes(tabDomainKey: key)
-            .filter { $0.notebook == nb && $0.deleted == 0 }
-            .sorted {
-                if $0.pinned != $1.pinned { return $0.pinned > $1.pinned }
-                if $0.createdAtMs != $1.createdAtMs { return $0.createdAtMs > $1.createdAtMs }
-                return String(describing: $0.id) > String(describing: $1.id)
-            }
+        return scopedNotes.sorted(by: sortNotes)
     }
 
-    private func createNote() {
+    private func createNote(noteType: NJNoteType = .note) {
         guard
             let nb = store.currentNotebookTitle,
             let tabID = store.selectedTabID,
@@ -69,9 +73,38 @@ struct Sidebar: View {
         let n = store.notes.createNote(
             notebook: nb,
             tabDomain: tab.domainKey,
-            title: ""
+            title: "",
+            noteType: noteType
         )
         selectedNoteID = n.id
+    }
+
+    private func cardPriorityRank(_ note: NJNote) -> Int {
+        switch note.cardPriority.lowercased() {
+        case "high": return 0
+        case "medium": return 1
+        case "low": return 2
+        default: return 3
+        }
+    }
+
+    private func cardStatusRank(_ note: NJNote) -> Int {
+        switch note.cardStatus.lowercased() {
+        case "pending": return 0
+        case "in progress": return 1
+        case "tbt": return 2
+        case "done": return 3
+        case "dropped": return 4
+        default: return 5
+        }
+    }
+
+    private func sortNotes(_ lhs: NJNote, _ rhs: NJNote) -> Bool {
+        if lhs.pinned != rhs.pinned { return lhs.pinned > rhs.pinned }
+
+        if lhs.updatedAtMs != rhs.updatedAtMs { return lhs.updatedAtMs > rhs.updatedAtMs }
+        if lhs.createdAtMs != rhs.createdAtMs { return lhs.createdAtMs > rhs.createdAtMs }
+        return String(describing: lhs.id) > String(describing: rhs.id)
     }
 
     private func njDateSubscript(_ ms: Int64) -> String {
@@ -88,6 +121,11 @@ struct Sidebar: View {
         #else
         return false
         #endif
+    }
+
+    private func focusDetailIfNeeded() {
+        guard isPhone else { return }
+        onRequestDetailFocus?()
     }
 
     private func addMenu() -> some View {
@@ -153,18 +191,27 @@ struct Sidebar: View {
             ModuleToolbarButtons.Item(id: "note", title: "Note", systemImage: "doc.text", isOn: store.selectedModule == .note, action: {
                 store.selectedModule = .note
                 selectedNoteID = nil
+                focusDetailIfNeeded()
             }),
             ModuleToolbarButtons.Item(id: "goal", title: "Goal", systemImage: "target", isOn: store.selectedModule == .goal, action: {
                 store.selectedModule = .goal
                 selectedNoteID = nil
+                focusDetailIfNeeded()
             }),
             ModuleToolbarButtons.Item(id: "outline", title: "Outline", systemImage: "list.bullet.rectangle", isOn: store.selectedModule == .outline, action: {
                 store.selectedModule = .outline
                 selectedNoteID = nil
+                focusDetailIfNeeded()
             }),
             ModuleToolbarButtons.Item(id: "time", title: "Time", systemImage: "applewatch", isOn: store.selectedModule == .time, action: {
                 store.selectedModule = .time
                 selectedNoteID = nil
+                focusDetailIfNeeded()
+            }),
+            ModuleToolbarButtons.Item(id: "investment", title: "Investment", systemImage: "chart.line.uptrend.xyaxis", isOn: store.selectedModule == .investment, action: {
+                store.selectedModule = .investment
+                selectedNoteID = nil
+                focusDetailIfNeeded()
             }),
             ModuleToolbarButtons.Item(id: "planning", title: "Planning", systemImage: "calendar", isOn: false, action: {
                 openCalendarView()
@@ -205,7 +252,16 @@ struct Sidebar: View {
                             HStack(spacing: 8) {
                                 Spacer()
 
-                                Button(action: createNote) { Image(systemName: "plus") }
+                                Menu {
+                                    Button("New Note", systemImage: "doc.text") {
+                                        createNote()
+                                    }
+                                    Button("New Card", systemImage: "rectangle.stack") {
+                                        createNote(noteType: .card)
+                                    }
+                                } label: {
+                                    Image(systemName: "plus")
+                                }
                                     .disabled(store.selectedTabID == nil || store.selectedNotebookID == nil)
 
                                 addMenu()
@@ -229,6 +285,10 @@ struct Sidebar: View {
 
                                     Button("Recover from Cloud", systemImage: "icloud.and.arrow.down") {
                                         showRecoverFromCloudConfirm = true
+                                    }
+
+                                    Button("Pull Finance from Cloud", systemImage: "banknote.and.arrow.down") {
+                                        showRecoverFinanceFromCloudConfirm = true
                                     }
 
                                     Button("Export", systemImage: "square.and.arrow.up") {
@@ -249,7 +309,16 @@ struct Sidebar: View {
                             HStack(spacing: 8) {
                                 Spacer(minLength: 0)
 
-                                Button(action: createNote) { Image(systemName: "plus") }
+                                Menu {
+                                    Button("New Note", systemImage: "doc.text") {
+                                        createNote()
+                                    }
+                                    Button("New Card", systemImage: "rectangle.stack") {
+                                        createNote(noteType: .card)
+                                    }
+                                } label: {
+                                    Image(systemName: "plus")
+                                }
                                     .disabled(store.selectedTabID == nil || store.selectedNotebookID == nil)
 
                                 addMenu()
@@ -273,6 +342,10 @@ struct Sidebar: View {
 
                                     Button("Recover from Cloud", systemImage: "icloud.and.arrow.down") {
                                         showRecoverFromCloudConfirm = true
+                                    }
+
+                                    Button("Pull Finance from Cloud", systemImage: "banknote.and.arrow.down") {
+                                        showRecoverFinanceFromCloudConfirm = true
                                     }
 
                                     Button("Export", systemImage: "square.and.arrow.up") {
@@ -326,19 +399,27 @@ struct Sidebar: View {
                         if store.selectedNotebookID == nil {
                             ContentUnavailableView("Create a notebook", systemImage: "books.vertical")
                                 .frame(maxWidth: .infinity, alignment: .center)
-                        } else if store.selectedTabID == nil {
+                        } else if !store.showFavoriteNotesOnly && store.selectedTabID == nil {
                             ContentUnavailableView("Create a tab", systemImage: "rectangle.on.rectangle")
                                 .frame(maxWidth: .infinity, alignment: .center)
                         } else if notesInScope.isEmpty {
-                            Text("No notes")
+                            Text(store.showFavoriteNotesOnly ? "No favorite notes" : "No notes")
                                 .foregroundStyle(.secondary)
                         } else {
                             ForEach(notesInScope, id: \.id) { n in
                                 NavigationLink(value: n.id) {
                                     VStack(alignment: .leading, spacing: 2) {
                                         HStack(spacing: 6) {
+                                            Image(systemName: n.noteType == .card ? "rectangle.stack.fill" : "doc.text")
+                                                .font(.caption2)
+                                                .foregroundStyle(n.noteType == .card ? .blue : .secondary)
                                             Text(n.title.isEmpty ? "Untitled" : n.title)
                                                 .lineLimit(1)
+                                            if n.favorited > 0 {
+                                                Image(systemName: "star.fill")
+                                                    .font(.caption2)
+                                                    .foregroundStyle(.yellow)
+                                            }
                                             if n.pinned > 0 {
                                                 Image(systemName: "pin.fill")
                                                     .font(.caption2)
@@ -346,7 +427,9 @@ struct Sidebar: View {
                                             }
                                         }
 
-                                        if n.createdAtMs > 0 {
+                                        if n.noteType == .card {
+                                            cardSubtitle(for: n)
+                                        } else if n.createdAtMs > 0 {
                                             Text(njDateSubscript(n.createdAtMs))
                                                 .font(.caption2)
                                                 .foregroundStyle(.secondary)
@@ -360,10 +443,16 @@ struct Sidebar: View {
                                     selectedNoteID = nil
                                     DispatchQueue.main.async { selectedNoteID = n.id }
                                 })
-                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                     Button {
-                                        store.notes.setPinned(noteID: n.id.raw, pinned: n.pinned == 0)
-                                        store.objectWillChange.send()
+                                        toggleFavorite(note: n)
+                                    } label: {
+                                        Label(n.favorited == 0 ? "Star" : "Unstar", systemImage: n.favorited == 0 ? "star" : "star.slash")
+                                    }
+                                    .tint(n.favorited == 0 ? .yellow : .gray)
+
+                                    Button {
+                                        togglePinned(note: n)
                                     } label: {
                                         Label(n.pinned == 0 ? "Pin" : "Unpin", systemImage: n.pinned == 0 ? "pin" : "pin.slash")
                                     }
@@ -381,6 +470,10 @@ struct Sidebar: View {
                         selectedNoteID = nil
                         noteListResetKey = UUID()
                     }
+                    .onChange(of: store.showFavoriteNotesOnly) { _, _ in
+                        selectedNoteID = nil
+                        noteListResetKey = UUID()
+                    }
                     .safeAreaInset(edge: .bottom) {
                         Color.clear.frame(height: 56)
                     }
@@ -391,6 +484,11 @@ struct Sidebar: View {
                     .environmentObject(store)
             } else if store.selectedModule == .outline {
                 NJOutlineSidebarView(outline: store.outline)
+                    .environmentObject(store)
+            } else if store.selectedModule == .investment {
+                investmentSidebar
+            } else if store.selectedModule == .time, isPhone {
+                NJTimeModuleView()
                     .environmentObject(store)
             } else {
                 Spacer(minLength: 0)
@@ -412,6 +510,19 @@ struct Sidebar: View {
                         showHealthWeeklySummary = true
                     }
 
+                    SidebarSquareButton(
+                        systemName: store.showFavoriteNotesOnly ? "star.fill" : "star",
+                        isOn: store.showFavoriteNotesOnly
+                    ) {
+                        store.showFavoriteNotesOnly.toggle()
+                        selectedNoteID = nil
+                        noteListResetKey = UUID()
+                    }
+
+                    SidebarSquareButton(systemName: "waveform.badge.mic") {
+                        showMeetingInbox = true
+                    }
+
                     Spacer()
                 }
                 .padding(.horizontal, 10)
@@ -419,20 +530,22 @@ struct Sidebar: View {
             }
         }
         .overlay(alignment: .bottomTrailing) {
-            Button {
-                resetQuickNoteEditor()
-                showQuickNoteSheet = true
-            } label: {
-                Image(systemName: "square.and.pencil")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 46, height: 46)
-                    .background(Circle().fill(Color.accentColor))
-                    .shadow(color: .black.opacity(0.2), radius: 6, x: 0, y: 3)
+            if store.selectedModule == .note {
+                Button {
+                    resetQuickNoteEditor()
+                    showQuickNoteSheet = true
+                } label: {
+                    Image(systemName: "square.and.pencil")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 46, height: 46)
+                        .background(Circle().fill(Color.accentColor))
+                        .shadow(color: .black.opacity(0.2), radius: 6, x: 0, y: 3)
+                }
+                .buttonStyle(.plain)
+                .padding(.trailing, 14)
+                .padding(.bottom, 64)
             }
-            .buttonStyle(.plain)
-            .padding(.trailing, 14)
-            .padding(.bottom, store.selectedModule == .note ? 64 : 14)
         }
         .toolbar(.hidden, for: .navigationBar)
         .sheet(isPresented: $showQuickNoteSheet) {
@@ -566,6 +679,12 @@ struct Sidebar: View {
                     .environmentObject(store)
             }
         }
+        .sheet(isPresented: $showMeetingInbox) {
+            NavigationStack {
+                NJMeetingInboxView()
+                    .environmentObject(store)
+            }
+        }
         
         .sheet(isPresented: $showExport) {
             NJExportView().environmentObject(store)
@@ -604,6 +723,7 @@ struct Sidebar: View {
         }
         .sheet(isPresented: $store.showDBDebugPanel) {
             NJDebugSQLConsole(db: store.db)
+                .environmentObject(store)
         }
         .alert("Recover from Cloud?", isPresented: $showRecoverFromCloudConfirm) {
             Button("Cancel", role: .cancel) { }
@@ -612,6 +732,14 @@ struct Sidebar: View {
             }
         } message: {
             Text("This resets only this Mac app's local CloudKit pull cursors and re-downloads notes and blocks from iCloud. It does not erase data from your iPhone or iPad.")
+        }
+        .alert("Pull Finance from Cloud?", isPresented: $showRecoverFinanceFromCloudConfirm) {
+            Button("Cancel", role: .cancel) { }
+            Button("Pull") {
+                store.pullFinanceFromCloudNow()
+            }
+        } message: {
+            Text("This resets only the local finance transaction pull cursor and re-downloads finance records from iCloud for this device.")
         }
     }
 
@@ -679,6 +807,16 @@ struct Sidebar: View {
         }
     }
 
+    private func toggleFavorite(note: NJNote) {
+        store.notes.setFavorited(noteID: note.id.raw, favorited: note.favorited == 0)
+        store.objectWillChange.send()
+    }
+
+    private func togglePinned(note: NJNote) {
+        store.notes.setPinned(noteID: note.id.raw, pinned: note.pinned == 0)
+        store.objectWillChange.send()
+    }
+
     private func resetQuickNoteEditor() {
         quickNoteAttr = NSAttributedString(string: "")
         quickNoteSel = NSRange(location: 0, length: 0)
@@ -698,10 +836,101 @@ private extension Sidebar {
         return true
         #endif
     }
+
+    var investmentSidebar: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Investment")
+                .font(.headline.weight(.bold))
+                .padding(.horizontal, 14)
+                .padding(.top, 16)
+                .padding(.bottom, 8)
+
+            ForEach(NJInvestmentSection.allCases) { section in
+                if section == .trades {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Button {
+                            tradeThesisExpanded.toggle()
+                            store.selectedInvestmentSection = .trades
+                            selectedNoteID = nil
+                            focusDetailIfNeeded()
+                        } label: {
+                            HStack(spacing: 8) {
+                                Label(section.rawValue, systemImage: section.symbolName)
+                                Spacer()
+                                Image(systemName: tradeThesisExpanded ? "chevron.down" : "chevron.right")
+                                    .font(.caption.weight(.bold))
+                            }
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(store.selectedInvestmentSection == section ? Color.accentColor : Color.primary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 10)
+                            .background(store.selectedInvestmentSection == section ? Color.accentColor.opacity(0.14) : Color.clear)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                        .buttonStyle(.plain)
+
+                        if tradeThesisExpanded {
+                            ForEach(NJInvestmentTradeTab.allCases) { tab in
+                                Button {
+                                    store.selectedInvestmentSection = .trades
+                                    store.selectedInvestmentTradeTab = tab
+                                    selectedNoteID = nil
+                                    focusDetailIfNeeded()
+                                } label: {
+                                    Label(tab.rawValue, systemImage: tab.symbolName)
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(store.selectedInvestmentSection == .trades && store.selectedInvestmentTradeTab == tab ? Color.accentColor : Color.primary)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(.leading, 28)
+                                        .padding(.trailing, 12)
+                                        .padding(.vertical, 8)
+                                        .background(store.selectedInvestmentSection == .trades && store.selectedInvestmentTradeTab == tab ? Color.accentColor.opacity(0.10) : Color.clear)
+                                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                } else {
+                    Button {
+                        store.selectedInvestmentSection = section
+                        selectedNoteID = nil
+                        focusDetailIfNeeded()
+                    } label: {
+                        Label(section.rawValue, systemImage: section.symbolName)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(store.selectedInvestmentSection == section ? Color.accentColor : Color.primary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 10)
+                            .background(store.selectedInvestmentSection == section ? Color.accentColor.opacity(0.14) : Color.clear)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 10)
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color(UIColor.systemBackground))
+    }
+
+    @ViewBuilder
+    private func cardSubtitle(for note: NJNote) -> some View {
+        Text(note.tabDomain)
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+    }
 }
 
 private struct SidebarSquareButton: View {
     let systemName: String
+    var isOn: Bool = false
     let action: () -> Void
 
     var body: some View {
@@ -710,10 +939,145 @@ private struct SidebarSquareButton: View {
                 .frame(width: 40, height: 40)
                 .background(
                     RoundedRectangle(cornerRadius: 8)
-                        .fill(Color(UIColor.secondarySystemBackground))
+                        .fill(isOn ? Color.accentColor.opacity(0.22) : Color(UIColor.secondarySystemBackground))
                 )
         }
         .buttonStyle(.plain)
+    }
+}
+
+private struct NJDatabaseSidebarView: View {
+    @EnvironmentObject var store: AppStore
+    @State private var rows: [NJRenewalItemRecord] = []
+
+    var body: some View {
+        List {
+            Section("Browse") {
+                familyFilterRow(
+                    title: "Personal Identification",
+                    subtitle: "\(rows.count) total",
+                    systemImage: "person.text.rectangle",
+                    isSelected: store.selectedFamilyInfoPerson == "All" && store.selectedFamilyInfoType == "All"
+                ) {
+                    store.selectedFamilyInfoPerson = "All"
+                    store.selectedFamilyInfoType = "All"
+                }
+            }
+
+            Section("People") {
+                ForEach(personItems, id: \.title) { item in
+                    familyFilterRow(
+                        title: item.title,
+                        subtitle: "\(item.count)",
+                        systemImage: "person.fill",
+                        isSelected: store.selectedFamilyInfoPerson == item.title
+                    ) {
+                        store.selectedFamilyInfoPerson = item.title
+                    }
+                }
+            }
+
+            Section("Types") {
+                ForEach(typeItems, id: \.rawType) { item in
+                    familyFilterRow(
+                        title: item.title,
+                        subtitle: "\(item.count)",
+                        systemImage: item.icon,
+                        isSelected: store.selectedFamilyInfoType == item.rawType
+                    ) {
+                        store.selectedFamilyInfoType = item.rawType
+                    }
+                }
+            }
+        }
+        .listStyle(.sidebar)
+        .navigationTitle("Database")
+        .onAppear(perform: reload)
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            reload()
+        }
+    }
+
+    private var personItems: [(title: String, count: Int)] {
+        Dictionary(grouping: rows) { row in
+            row.personName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Unknown" : row.personName
+        }
+        .map { (title: $0.key, count: $0.value.count) }
+        .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+    }
+
+    private var typeItems: [(rawType: String, title: String, icon: String, count: Int)] {
+        Dictionary(grouping: rows) { row in
+            row.documentType.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "other" : row.documentType
+        }
+        .map { key, value in
+            (
+                rawType: key,
+                title: key.replacingOccurrences(of: "_", with: " ").capitalized,
+                icon: icon(for: key),
+                count: value.count
+            )
+        }
+        .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+    }
+
+    @ViewBuilder
+    private func familyFilterRow(
+        title: String,
+        subtitle: String,
+        systemImage: String,
+        isSelected: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 14, weight: .semibold))
+                    .frame(width: 24, height: 24)
+                    .foregroundStyle(isSelected ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 8)
+
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(Color.accentColor)
+                }
+            }
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .listRowBackground(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(isSelected ? Color.accentColor.opacity(0.12) : Color.clear)
+                .padding(.vertical, 2)
+        )
+    }
+
+    private func icon(for rawType: String) -> String {
+        switch rawType {
+        case "passport": return "globe"
+        case "driver_license": return "car.fill"
+        case "identity_card": return "person.text.rectangle.fill"
+        case "travel_permit": return "airplane"
+        case "vaccine_record": return "cross.case.fill"
+        case "medical_record": return "cross.vial.fill"
+        default: return "folder"
+        }
+    }
+
+    private func reload() {
+        rows = store.notes.listRenewalItems(ownerScope: "ME")
     }
 }
 

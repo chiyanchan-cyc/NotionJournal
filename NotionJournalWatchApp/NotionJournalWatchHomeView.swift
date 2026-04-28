@@ -1,8 +1,12 @@
 import SwiftUI
 import Combine
+import WatchConnectivity
 
 private enum NJWatchTimeSlotCategory: String, Codable {
     case personal = "Personal"
+    case programming = "Programming"
+    case videoEditing = "Video Editing"
+    case piano = "Piano"
 }
 
 private struct NJWatchTimeSlot: Identifiable, Codable {
@@ -16,6 +20,7 @@ private struct NJWatchTimeSlot: Identifiable, Codable {
 
 private struct NJWatchActiveTracker: Codable {
     var title: String
+    var category: NJWatchTimeSlotCategory
     var startDate: Date
     var notes: String
 }
@@ -24,11 +29,13 @@ private struct NJWatchTrackerPreset: Identifiable {
     let id: String
     let title: String
     let icon: String
+    let category: NJWatchTimeSlotCategory
 
-    init(title: String, icon: String) {
+    init(title: String, icon: String, category: NJWatchTimeSlotCategory = .personal) {
         self.id = title
         self.title = title
         self.icon = icon
+        self.category = category
     }
 }
 
@@ -66,11 +73,15 @@ private final class NJWatchTimeSlotViewModel: ObservableObject {
     private let slotsKey = "nj_time_module_slots_v1"
     private let trackerKey = "nj_watch_active_tracker_v1"
     private var timerCancellable: AnyCancellable?
+    private var defaultsChangeCancellable: AnyCancellable?
+    private let sessionManager = NJWatchPhoneSyncManager.shared
 
     let presets: [NJWatchTrackerPreset] = [
         NJWatchTrackerPreset(title: "Reflection", icon: "book.closed"),
         NJWatchTrackerPreset(title: "MM Play Time", icon: "figure.play"),
         NJWatchTrackerPreset(title: "MM Story time", icon: "text.book.closed"),
+        NJWatchTrackerPreset(title: "Programming", icon: "curlybraces.square", category: .programming),
+        NJWatchTrackerPreset(title: "Video Editing", icon: "video", category: .videoEditing),
     ]
 
     let musicInstruments: [NJWatchMusicInstrument] = [
@@ -102,6 +113,10 @@ private final class NJWatchTimeSlotViewModel: ObservableObject {
             .sink { [weak self] date in
                 self?.now = date
             }
+        defaultsChangeCancellable = NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification, object: defaults)
+            .sink { [weak self] _ in
+                self?.reload()
+            }
     }
 
     func reload() {
@@ -126,9 +141,10 @@ private final class NJWatchTimeSlotViewModel: ObservableObject {
             .sorted { $0.startDate > $1.startDate }
     }
 
-    func startTracker(title: String) {
+    func startTracker(title: String, category: NJWatchTimeSlotCategory = .personal) {
         let tracker = NJWatchActiveTracker(
             title: title,
+            category: category,
             startDate: Date(),
             notes: "From Watch Tracker"
         )
@@ -139,6 +155,14 @@ private final class NJWatchTimeSlotViewModel: ObservableObject {
 
     func endTracker() {
         guard let tracker = activeTracker else { return }
+        let slot = NJWatchTimeSlot(
+            id: UUID().uuidString.lowercased(),
+            title: tracker.title,
+            category: tracker.category,
+            startDate: tracker.startDate,
+            endDate: max(Date(), tracker.startDate.addingTimeInterval(60)),
+            notes: tracker.notes
+        )
 
         var slots: [NJWatchTimeSlot] = []
         if let data = defaults.data(forKey: slotsKey),
@@ -146,21 +170,13 @@ private final class NJWatchTimeSlotViewModel: ObservableObject {
             slots = decoded
         }
 
-        slots.append(
-            NJWatchTimeSlot(
-                id: UUID().uuidString.lowercased(),
-                title: tracker.title,
-                category: .personal,
-                startDate: tracker.startDate,
-                endDate: max(Date(), tracker.startDate.addingTimeInterval(60)),
-                notes: tracker.notes
-            )
-        )
+        slots.append(slot)
 
         guard let data = try? JSONEncoder().encode(slots) else { return }
         defaults.set(data, forKey: slotsKey)
         defaults.removeObject(forKey: trackerKey)
         activeTracker = nil
+        sessionManager.transfer(slot: slot)
         reload()
     }
 
@@ -169,8 +185,53 @@ private final class NJWatchTimeSlotViewModel: ObservableObject {
     }
 
     func startMusicTracker(instrument: NJWatchMusicInstrument, song: NJWatchMusicSong) {
-        startTracker(title: "Music - \(instrument.name) - \(song.title)")
+        startTracker(title: "Music - \(instrument.name) - \(song.title)", category: .piano)
     }
+
+    func resendTodaySlotsToPhone() {
+        for slot in todaySlots.sorted(by: { $0.startDate < $1.startDate }) {
+            sessionManager.transfer(slot: slot)
+        }
+    }
+}
+
+private final class NJWatchPhoneSyncManager: NSObject, WCSessionDelegate {
+    static let shared = NJWatchPhoneSyncManager()
+
+    private override init() {
+        super.init()
+        guard WCSession.isSupported() else { return }
+        let session = WCSession.default
+        session.delegate = self
+        session.activate()
+    }
+
+    func transfer(slot: NJWatchTimeSlot) {
+        guard WCSession.isSupported() else { return }
+        let session = WCSession.default
+        if session.delegate !== self {
+            session.delegate = self
+        }
+        if session.activationState != .activated {
+            session.activate()
+        }
+        session.transferUserInfo([
+            "kind": "NJTimeSlot",
+            "id": slot.id,
+            "title": slot.title,
+            "category": slot.category.rawValue.lowercased(),
+            "start_ts": slot.startDate.timeIntervalSince1970,
+            "end_ts": slot.endDate.timeIntervalSince1970,
+            "notes": slot.notes
+        ])
+    }
+
+    func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {}
+    #if !os(watchOS)
+    func sessionDidBecomeInactive(_ session: WCSession) {}
+    func sessionDidDeactivate(_ session: WCSession) {}
+    #endif
+    func sessionReachabilityDidChange(_ session: WCSession) {}
 }
 
 struct NotionJournalWatchHomeView: View {
@@ -210,7 +271,7 @@ struct NotionJournalWatchHomeView: View {
 
                     ForEach(viewModel.presets) { preset in
                         Button {
-                            viewModel.startTracker(title: preset.title)
+                            viewModel.startTracker(title: preset.title, category: preset.category)
                         } label: {
                             HStack {
                                 Label(preset.title, systemImage: preset.icon)
@@ -228,6 +289,11 @@ struct NotionJournalWatchHomeView: View {
                     Text("No time slots yet.")
                         .foregroundStyle(.secondary)
                 } else {
+                    Button("Resend to iPhone") {
+                        viewModel.resendTodaySlotsToPhone()
+                    }
+                    .font(.footnote.weight(.semibold))
+
                     ForEach(Array(viewModel.todaySlots.prefix(6))) { slot in
                         VStack(alignment: .leading, spacing: 4) {
                             HStack(spacing: 6) {

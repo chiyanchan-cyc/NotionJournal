@@ -19,9 +19,11 @@ struct UINoteListView: View {
         let rawDomainKey = store.tabs.first(where: { $0.tabID == store.selectedTabID })?.domainKey ?? "default"
         let domainKey = cleanDomainKey(rawDomainKey)
 
-        let notes: [NJNote] = store.notes
-            .listNotes(tabDomainKey: domainKey)
-            .filter { $0.deleted == 0 }
+        let notes: [NJNote] = (store.showFavoriteNotesOnly
+            ? store.notes.listFavoriteNotes(notebook: store.currentNotebookTitle)
+            : store.notes
+                .listNotes(tabDomainKey: domainKey)
+                .filter { $0.deleted == 0 })
             .sorted {
                 if $0.pinned != $1.pinned { return $0.pinned > $1.pinned }
                 if $0.updatedAtMs != $1.updatedAtMs { return $0.updatedAtMs > $1.updatedAtMs }
@@ -35,18 +37,36 @@ struct UINoteListView: View {
                 } label: {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: 6) {
+                            Image(systemName: n.noteType == .card ? "rectangle.stack.fill" : "doc.text")
+                                .font(.caption)
+                                .foregroundStyle(n.noteType == .card ? .blue : .secondary)
                             Text(n.title.isEmpty ? "Untitled" : n.title).font(.headline)
+                            if n.favorited > 0 {
+                                Image(systemName: "star.fill")
+                                    .font(.caption)
+                                    .foregroundStyle(.yellow)
+                            }
                             if n.pinned > 0 {
                                 Image(systemName: "pin.fill")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
                         }
-                        Text(n.tabDomain).font(.caption).foregroundStyle(.secondary)
+                        Text(n.tabDomain)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
                 .buttonStyle(.plain)
-                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button {
+                        store.notes.setFavorited(noteID: n.id.raw, favorited: n.favorited == 0)
+                        store.objectWillChange.send()
+                    } label: {
+                        Label(n.favorited == 0 ? "Star" : "Unstar", systemImage: n.favorited == 0 ? "star" : "star.slash")
+                    }
+                    .tint(n.favorited == 0 ? .yellow : .gray)
+
                     Button {
                         store.notes.setPinned(noteID: n.id.raw, pinned: n.pinned == 0)
                         store.objectWillChange.send()
@@ -57,11 +77,16 @@ struct UINoteListView: View {
                 }
             }
         }
-        .id("\(nb)|\(domainKey)")
+        .id("\(nb)|\(domainKey)|fav:\(store.showFavoriteNotesOnly)")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button {
-                    let _ = store.notes.createNote(notebook: nb, tabDomain: domainKey, title: "New Note")
+                Menu {
+                    Button("New Note", systemImage: "doc.text") {
+                        let _ = store.notes.createNote(notebook: nb, tabDomain: domainKey, title: "New Note")
+                    }
+                    Button("New Card", systemImage: "rectangle.stack") {
+                        let _ = store.notes.createNote(notebook: nb, tabDomain: domainKey, title: "", noteType: .card)
+                    }
                 } label: {
                     Image(systemName: "plus")
                 }

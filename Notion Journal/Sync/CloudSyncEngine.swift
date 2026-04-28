@@ -68,6 +68,13 @@ final class CloudSyncEngine: ObservableObject {
         NotificationCenter.default.post(name: .njPullCompleted, object: nil)
     }
 
+    func forceSyncNow() async {
+        scheduledTask?.cancel()
+        scheduledTask = nil
+        await coordinator.syncOnce()
+        NotificationCenter.default.post(name: .njPullCompleted, object: nil)
+    }
+
     func schedulePush(debounceMs: Int) {
         scheduledTask?.cancel()
         scheduledTask = Task { [weak self] in

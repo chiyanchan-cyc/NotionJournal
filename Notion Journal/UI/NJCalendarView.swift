@@ -1,4 +1,5 @@
 import SwiftUI
+import Charts
 import Combine
 import Photos
 import PhotosUI
@@ -7,6 +8,8 @@ import EventKit
 import Proton
 import UniformTypeIdentifiers
 import CoreLocation
+@preconcurrency import Vision
+import CryptoKit
 #if canImport(HealthKit)
 import HealthKit
 #endif
@@ -323,6 +326,15 @@ private enum NJCalendarContentMode: String, CaseIterable, Identifiable {
 private enum NJFinanceWorkspaceMode: String, CaseIterable, Identifiable {
     case calendar = "Calendar"
     case research = "Research"
+    case spending = "Spending"
+    var id: String { rawValue }
+}
+
+private enum NJFinanceSpendingWindow: String, CaseIterable, Identifiable {
+    case week = "Week"
+    case month = "Month"
+    case custom = "Date Range"
+
     var id: String { rawValue }
 }
 
@@ -333,6 +345,21 @@ private struct NJFinanceIssueTab: Identifiable, Hashable {
     let promptHint: String
     var id: String { premiseID }
     var sessionID: String { "issue.\(premiseID)" }
+}
+
+private struct NJFinanceComparisonBar: Identifiable {
+    let metric: String
+    let periodLabel: String
+    let totalMinor: Int64
+
+    var id: String { "\(metric):\(periodLabel)" }
+}
+
+private struct NJFinanceCategorySlice: Identifiable {
+    let category: String
+    let total: Int64
+
+    var id: String { category }
 }
 
 private struct NJCalendarHealthDay {
@@ -463,6 +490,11 @@ private struct NJFinanceEditorTarget: Identifiable {
     var id: String { String(Int(date.timeIntervalSince1970)) }
 }
 
+private struct NJFinanceTransactionEditorTarget: Identifiable {
+    let transactionID: String
+    var id: String { transactionID }
+}
+
 private struct NJCalendarExportTarget: Identifiable {
     let url: URL
     var id: String { url.path }
@@ -483,6 +515,60 @@ private struct NJTrainingPlannerWeekTarget: Identifiable {
     var id: String { String(Int(weekStart.timeIntervalSince1970)) }
 }
 
+private enum NJFinanceLedgerColumn: String, CaseIterable, Identifiable {
+    case date
+    case time
+    case source
+    case merchant
+    case details
+    case nature
+    case category
+    case tags
+    case originalAmount
+    case rmbAmount
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .date: return "Date"
+        case .time: return "Time"
+        case .source: return "Source"
+        case .merchant: return "Merchant"
+        case .details: return "Details"
+        case .nature: return "Nature"
+        case .category: return "Category"
+        case .tags: return "Tags"
+        case .originalAmount: return "Orig"
+        case .rmbAmount: return "RMB"
+        }
+    }
+
+    var width: CGFloat {
+        switch self {
+        case .date: return 96
+        case .time: return 64
+        case .source: return 110
+        case .merchant: return 210
+        case .details: return 280
+        case .nature: return 118
+        case .category: return 132
+        case .tags: return 190
+        case .originalAmount: return 110
+        case .rmbAmount: return 110
+        }
+    }
+
+    var alignment: Alignment {
+        switch self {
+        case .originalAmount, .rmbAmount:
+            return .trailing
+        default:
+            return .leading
+        }
+    }
+}
+
 struct NJCalendarView: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) private var dismiss
@@ -495,6 +581,7 @@ struct NJCalendarView: View {
     @State private var selectedDate: Date = Date()
     @State private var itemsByDate: [String: NJCalendarItem] = [:]
     @State private var healthByDate: [String: NJCalendarHealthDay] = [:]
+    @State private var renewalItemsByDate: [String: [NJRenewalItemRecord]] = [:]
     @State private var timeLogsByDate: [String: [NJTimeSlotRecord]] = [:]
     @State private var financeEventsByDate: [String: [NJFinanceMacroEvent]] = [:]
     @State private var financeBriefsByDate: [String: NJFinanceDailyBrief] = [:]
@@ -503,6 +590,7 @@ struct NJCalendarView: View {
     @State private var financeResearchTasks: [String: [NJFinanceResearchTask]] = [:]
     @State private var financeFindingsByPremise: [String: [NJFinanceFinding]] = [:]
     @State private var financeSourceItemsByPremise: [String: [NJFinanceSourceItem]] = [:]
+    @State private var financeTransactions: [NJFinanceTransaction] = []
     @State private var selectedFinanceIssueID: String = "p1_late_cycle_everything_bubble"
     @State private var financeDraftMessage: String = ""
     @State private var latestHeightMForVisibleRange: Double? = nil
@@ -529,13 +617,29 @@ struct NJCalendarView: View {
     @State private var showTrainingAlert = false
     @State private var financeAlertMessage = ""
     @State private var showFinanceAlert = false
+    @State private var showFinanceDataImporter = false
+    @State private var showFinanceScreenshotImporter = false
+    @State private var financeSourceFilters: Set<String> = []
+    @State private var financeTagFilters: Set<String> = []
+    @State private var financeSpendingWindow: NJFinanceSpendingWindow = .month
+    @State private var financeCustomRangeStart: Date = Calendar.current.date(byAdding: .day, value: -30, to: Date()) ?? Date()
+    @State private var financeCustomRangeEnd: Date = Date()
+    @State private var financeSelectedChartAngle: Double? = nil
+    @State private var financeSelectedCategory: String? = nil
+    @State private var financeInlineTagDrafts: [String: String] = [:]
+    @State private var financeTransactionEditorTarget: NJFinanceTransactionEditorTarget? = nil
+    @State private var financeLedgerColumnWidths: [NJFinanceLedgerColumn: CGFloat] = [:]
     @State private var trainingManageTarget: NJTrainingManageTarget? = nil
     @State private var trainingEditTarget: NJTrainingEditTarget? = nil
     @State private var trainingPlannerWeekTarget: NJTrainingPlannerWeekTarget? = nil
     @State private var matchedTrainingResultByPlanID: [String: NJCalendarTrainingResult] = [:]
     @StateObject private var weatherForecast = NJCalendarWeatherForecastProvider()
 
-    private let calendar = Calendar.current
+    private let calendar: Calendar = {
+        var calendar = Calendar.current
+        calendar.firstWeekday = 1
+        return calendar
+    }()
     private let eventStore = EKEventStore()
 
     init() {
@@ -550,6 +654,8 @@ struct NJCalendarView: View {
             headerSection()
             if contentMode == .finance && financeWorkspaceMode == .research {
                 financeResearchWorkspaceView()
+            } else if contentMode == .finance && financeWorkspaceMode == .spending {
+                financeSpendingWorkspaceView()
             } else if displayMode == .month {
                 calendarGrid()
             } else {
@@ -563,9 +669,18 @@ struct NJCalendarView: View {
             reloadAll()
             weatherForecast.startIfNeeded()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .njPullCompleted)) { _ in
+            reloadAll()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .njTimeSlotInboxDidChange)) { _ in
+            reloadAll()
+        }
         .onChange(of: displayMode) { _, _ in reloadAll() }
         .onChange(of: contentMode) { _, _ in reloadAll() }
-        .onChange(of: financeWorkspaceMode) { _, _ in reloadFinanceResearchWorkspace() }
+        .onChange(of: financeWorkspaceMode) { _, _ in
+            reloadFinanceResearchWorkspace()
+            reloadFinanceTransactions()
+        }
         .onChange(of: focusedDate) { _, _ in reloadItemsForVisibleRange() }
         .onChange(of: selectedDate) { _, _ in syncSelectedItem() }
         .fileImporter(
@@ -574,6 +689,20 @@ struct NJCalendarView: View {
             allowsMultipleSelection: false
         ) { result in
             handleTrainingPlanImport(result: result)
+        }
+        .fileImporter(
+            isPresented: $showFinanceDataImporter,
+            allowedContentTypes: [.commaSeparatedText, .text, .plainText, .data, .content, .zip],
+            allowsMultipleSelection: false
+        ) { result in
+            handleFinanceDataImport(result: result)
+        }
+        .fileImporter(
+            isPresented: $showFinanceScreenshotImporter,
+            allowedContentTypes: [.image],
+            allowsMultipleSelection: true
+        ) { result in
+            handleFinanceScreenshotImport(result: result)
         }
         .sheet(item: $photoPickerTarget) { target in
             NJDatePhotoPicker(date: target.date) { image, localID in
@@ -674,6 +803,18 @@ struct NJCalendarView: View {
                 }
             )
         }
+        .sheet(item: $financeTransactionEditorTarget) { target in
+            if let row = financeTransactions.first(where: { $0.transactionID == target.transactionID }) {
+                NJFinanceTransactionEditorSheet(
+                    row: row,
+                    onSave: { updated in
+                        store.notes.upsertFinanceTransaction(updated)
+                        store.sync.schedulePush(debounceMs: 0)
+                        reloadFinanceTransactions()
+                    }
+                )
+            }
+        }
         .sheet(isPresented: $showPlanningClipboardPreviewSheet) {
             NJPlanningClipboardPreviewSheet(
                 drafts: planningClipboardDrafts,
@@ -685,7 +826,7 @@ struct NJCalendarView: View {
         } message: {
             Text(trainingAlertMessage)
         }
-        .alert("Finance Research", isPresented: $showFinanceAlert) {
+        .alert("Finance", isPresented: $showFinanceAlert) {
             Button("OK", role: .cancel) {}
         } message: {
             Text(financeAlertMessage)
@@ -839,7 +980,7 @@ struct NJCalendarView: View {
 
     @ViewBuilder
     private func modePicker() -> some View {
-        if contentMode == .finance && financeWorkspaceMode == .research {
+        if contentMode == .finance && financeWorkspaceMode != .calendar {
             EmptyView()
         } else {
             Picker("View", selection: $displayMode) {
@@ -950,6 +1091,7 @@ struct NJCalendarView: View {
         let key = dateKey(date)
         let item = itemsByDate[key]
         let events = eventsByDate[key] ?? []
+        let renewals = renewalItemsByDate[key] ?? []
         let isSelected = calendar.isDate(date, inSameDayAs: selectedDate)
         let isInMonth = calendar.isDate(date, equalTo: focusedDate, toGranularity: .month)
         let textColor: Color = isInMonth ? .primary : .secondary
@@ -1022,13 +1164,44 @@ struct NJCalendarView: View {
                     weatherBadgeView(weatherBadge, isWeekly: isWeekly)
                 }
 
-                if !events.isEmpty {
+                let planningPreviewTitle: String = {
+                    guard isWeekly, contentMode == .memory else { return "" }
+                    return calendar.component(.weekday, from: date) == 1 ? "WEEKLY PLANNING NOTE" : "PLANNING NOTE"
+                }()
+
+                let planningPreviewLines: [String] = {
+                    guard isWeekly, contentMode == .memory else { return [] }
+                    return calendar.component(.weekday, from: date) == 1
+                        ? weeklyPlanningPreviewLines(for: date)
+                        : dayPlanningPreviewLines(for: date)
+                }()
+
+                if !events.isEmpty || !renewals.isEmpty {
                     if contentMode == .memory {
-                        ForEach(events.prefix(isWeekly ? 6 : 2), id: \.eventIdentifier) { ev in
+                        ForEach(Array(renewals.prefix(isWeekly ? 4 : 2)), id: \.renewalItemID) { row in
+                            Text(renewalCalendarLine(for: row))
+                                .font(isWeekly ? .callout : .caption2)
+                                .lineLimit(1)
+                                .foregroundStyle(renewalCalendarColor(for: row))
+                        }
+                        ForEach(Array(events.prefix(isWeekly ? 6 : 2).enumerated()), id: \.offset) { _, ev in
                             Text(ev.title)
                                 .font(isWeekly ? .callout : .caption2)
                                 .lineLimit(1)
                                 .foregroundStyle(.secondary)
+                        }
+                        if !planningPreviewLines.isEmpty {
+                            Divider()
+                                .padding(.top, 2)
+                            Text(planningPreviewTitle)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            ForEach(Array(planningPreviewLines.prefix(3).enumerated()), id: \.offset) { _, line in
+                                Text(line)
+                                    .font(.caption)
+                                    .lineLimit(1)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     } else {
                         contentSummaryView(date: date, isWeekly: isWeekly)
@@ -1036,8 +1209,23 @@ struct NJCalendarView: View {
                     }
                 } else {
                     if contentMode == .memory {
-                        Text(" ")
-                            .font(.caption2)
+                        if !planningPreviewLines.isEmpty {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(planningPreviewTitle)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                ForEach(Array(planningPreviewLines.prefix(4).enumerated()), id: \.offset) { _, line in
+                                    Text(line)
+                                        .font(.caption)
+                                        .lineLimit(1)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        } else {
+                            Text(" ")
+                                .font(.caption2)
+                        }
                     } else {
                         contentSummaryView(date: date, isWeekly: isWeekly)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -1140,6 +1328,7 @@ struct NJCalendarView: View {
     private func reloadAll() {
         reloadItemsForVisibleRange()
         reloadFinanceResearchWorkspace()
+        reloadFinanceTransactions()
         syncSelectedItem()
     }
 
@@ -1151,6 +1340,7 @@ struct NJCalendarView: View {
         let endKey = dateKey(end)
         let items = store.notes.listCalendarItems(startKey: startKey, endKey: endKey)
         itemsByDate = Dictionary(uniqueKeysWithValues: items.map { ($0.dateKey, $0) })
+        reloadRenewalsForVisibleRange(startKey: startKey, endKey: endKey)
         for item in items where !item.photoAttachmentID.isEmpty {
             ensureThumbCached(attachmentID: item.photoAttachmentID, dateKey: item.dateKey)
         }
@@ -1164,6 +1354,48 @@ struct NJCalendarView: View {
 
     private func syncSelectedItem() {
         _ = dateKey(selectedDate)
+    }
+
+    private func reloadRenewalsForVisibleRange(startKey: String, endKey: String) {
+        let grouped = Dictionary(grouping: store.notes.listRenewalItems(ownerScope: "ME").filter { row in
+            let key = row.expiryDateKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty, key >= startKey, key <= endKey else { return false }
+            return shouldShowRenewalOnCalendar(row)
+        }) { row in
+            row.expiryDateKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        renewalItemsByDate = grouped.mapValues { rows in
+            rows.sorted {
+                if $0.personName.localizedCaseInsensitiveCompare($1.personName) == .orderedSame {
+                    return $0.documentName.localizedCaseInsensitiveCompare($1.documentName) == .orderedAscending
+                }
+                return $0.personName.localizedCaseInsensitiveCompare($1.personName) == .orderedAscending
+            }
+        }
+    }
+
+    private func shouldShowRenewalOnCalendar(_ row: NJRenewalItemRecord) -> Bool {
+        let type = row.documentType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return type == "passport" || type == "identity_card"
+    }
+
+    private func renewalCalendarLine(for row: NJRenewalItemRecord) -> String {
+        let person = row.personName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let document = row.documentName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if person.isEmpty { return "\(document) expiry" }
+        return "\(person) • \(document) expiry"
+    }
+
+    private func renewalCalendarColor(for row: NJRenewalItemRecord) -> Color {
+        switch row.status {
+        case "expired":
+            return .red
+        case "due_soon":
+            return .orange
+        default:
+            return .secondary
+        }
     }
 
     private func savePhoto(for date: Date, image: UIImage, localIdentifier: String) {
@@ -1529,6 +1761,10 @@ struct NJCalendarView: View {
         financeBriefsByDate = Dictionary(uniqueKeysWithValues: briefs.map { ($0.dateKey, $0) })
     }
 
+    private func reloadFinanceTransactions() {
+        financeTransactions = store.notes.listRecentFinanceTransactions(limit: 300)
+    }
+
     private func financeIssueTabs() -> [NJFinanceIssueTab] {
         [
             NJFinanceIssueTab(premiseID: "p1_late_cycle_everything_bubble", themeID: "late_cycle", title: "Late-Cycle Bubble", promptHint: "What new evidence supports or weakens the late-cycle bubble thesis?"),
@@ -1739,6 +1975,1031 @@ struct NJCalendarView: View {
         showFinanceAlert = true
     }
 
+    private func financeSpendingWorkspaceView() -> some View {
+        let availableSources = Set(financeTransactions.map(\.sourceType))
+        let availableTags = Set(financeTransactions.flatMap(financeTags(for:)))
+        let dateFiltered = financeTransactions.filter { row in
+            financeDateRangeContains(row.occurredAtMs)
+        }
+        let sourceFiltered = dateFiltered.filter { financeSourceFilters.isEmpty || financeSourceFilters.contains($0.sourceType) }
+        let filtered = sourceFiltered.filter { row in
+            financeTagFilters.isEmpty || !financeTagFilters.isDisjoint(with: Set(financeTags(for: row)))
+        }
+        let grouped = Dictionary(grouping: filtered) { $0.dateKey }
+        let sortedKeys = grouped.keys.sorted(by: >)
+        let chartSlices = financeCategorySlices(rows: filtered)
+        let ledgerScopeRows = filtered.filter { row in
+            guard let financeSelectedCategory else { return true }
+            return financeAnalysisCategory(for: row, within: filtered) == financeSelectedCategory
+        }
+        let ledgerRows = ledgerScopeRows.sorted {
+            if $0.occurredAtMs == $1.occurredAtMs {
+                return $0.updatedAtMs > $1.updatedAtMs
+            }
+            return $0.occurredAtMs > $1.occurredAtMs
+        }
+
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Expense")
+                            .font(.title3.weight(.semibold))
+                        Text(financeRangeTitle())
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Menu {
+                        Button {
+                            showFinanceDataImporter = true
+                        } label: {
+                            Label("Import file", systemImage: "doc.badge.plus")
+                        }
+                        Button {
+                            showFinanceScreenshotImporter = true
+                        } label: {
+                            Label("Import Octopus screenshots", systemImage: "photo.on.rectangle")
+                        }
+                    } label: {
+                        Label("Import", systemImage: "square.and.arrow.down")
+                    }
+                    .labelStyle(.titleAndIcon)
+                    .buttonStyle(.bordered)
+                }
+
+                financeWindowControls()
+                financeComparisonPanel(rows: filtered)
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Source Filter")
+                        .font(.headline)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            financeSourceChip(title: "All", sourceType: nil, isActive: financeSourceFilters.isEmpty)
+                            ForEach(Array(availableSources).sorted(), id: \.self) { source in
+                                financeSourceChip(
+                                    title: source.replacingOccurrences(of: "_", with: " ").capitalized,
+                                    sourceType: source,
+                                    isActive: financeSourceFilters.contains(source)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                if !availableTags.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Tag Filter")
+                            .font(.headline)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                financeTagChip(title: "All", tag: nil, isActive: financeTagFilters.isEmpty)
+                                ForEach(Array(availableTags).sorted(), id: \.self) { tag in
+                                    financeTagChip(title: tag, tag: tag, isActive: financeTagFilters.contains(tag))
+                                }
+                            }
+                        }
+                    }
+                }
+
+                financeSummaryPanel(rows: filtered)
+                financeCategoryChartPanel(rows: filtered, slices: chartSlices)
+                financeLedgerPanel(rows: ledgerRows)
+
+                if filtered.isEmpty {
+                    Text("No spending records imported yet.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 8)
+                } else {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Daily Summary")
+                            .font(.headline)
+                        ForEach(sortedKeys, id: \.self) { key in
+                            let rows = (grouped[key] ?? []).sorted {
+                                if $0.occurredAtMs == $1.occurredAtMs {
+                                    return $0.updatedAtMs > $1.updatedAtMs
+                                }
+                                return $0.occurredAtMs > $1.occurredAtMs
+                            }
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack {
+                                    Text(key)
+                                        .font(.headline)
+                                    Spacer()
+                                    Text(financeDayTotalText(rows))
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                }
+                                ForEach(rows.prefix(3)) { row in
+                                    financeTransactionRow(row)
+                                }
+                                if rows.count > 3 {
+                                    Text("\(rows.count - 3) more transaction(s) in ledger below")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(12)
+        }
+    }
+
+    private func financeWindowControls() -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Picker("Period", selection: $financeSpendingWindow) {
+                ForEach(NJFinanceSpendingWindow.allCases) { window in
+                    Text(window.rawValue).tag(window)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            if financeSpendingWindow == .custom {
+                HStack(spacing: 12) {
+                    DatePicker("From", selection: $financeCustomRangeStart, displayedComponents: .date)
+                    DatePicker("To", selection: $financeCustomRangeEnd, in: financeCustomRangeStart..., displayedComponents: .date)
+                }
+            } else {
+                Text("Summary and chart are currently scoped to the \(financeSpendingWindow.rawValue.lowercased()) containing the selected date.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(14)
+        .background(Color(UIColor.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private func financeSourceChip(title: String, sourceType: String?, isActive: Bool) -> some View {
+        Button {
+            if let sourceType {
+                if financeSourceFilters.contains(sourceType) {
+                    financeSourceFilters.remove(sourceType)
+                } else {
+                    financeSourceFilters.insert(sourceType)
+                }
+            } else {
+                financeSourceFilters.removeAll()
+            }
+        } label: {
+            Text(title)
+                .font(.caption.weight(.medium))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(isActive ? Color.accentColor.opacity(0.18) : Color(UIColor.secondarySystemBackground))
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func financeTagChip(title: String, tag: String?, isActive: Bool) -> some View {
+        Button {
+            if let tag {
+                if financeTagFilters.contains(tag) {
+                    financeTagFilters.remove(tag)
+                } else {
+                    financeTagFilters.insert(tag)
+                }
+            } else {
+                financeTagFilters.removeAll()
+            }
+        } label: {
+            Text(title)
+                .font(.caption.weight(.medium))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(isActive ? Color.green.opacity(0.18) : Color(UIColor.secondarySystemBackground))
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func financeSummaryPanel(rows: [NJFinanceTransaction]) -> some View {
+        let grossExpenseMinor = rows.reduce(Int64(0)) { partial, row in
+            row.analysisNature == "expense" ? partial + row.amountCNYMinor : partial
+        }
+        let refundMinor = rows.reduce(Int64(0)) { partial, row in
+            row.analysisNature == "refund" ? partial + row.amountCNYMinor : partial
+        }
+        let expenseMinor = max(0, grossExpenseMinor - refundMinor)
+        let incomeMinor = rows.reduce(Int64(0)) { partial, row in
+            row.analysisNature == "income" ? partial + row.amountCNYMinor : partial
+        }
+        let netMinor = incomeMinor - expenseMinor
+        let bySource = Dictionary(grouping: rows, by: \.sourceType)
+            .mapValues { sourceRows in
+                sourceRows.reduce(Int64(0)) { partial, row in
+                    switch row.analysisNature {
+                    case "income", "refund":
+                        return partial + row.amountCNYMinor
+                    default:
+                        return partial - row.amountCNYMinor
+                    }
+                }
+            }
+
+        return VStack(alignment: .leading, spacing: 10) {
+            Text("Summary / Trial Balance")
+                .font(.headline)
+            HStack {
+                financeMetricCard(title: "Expense", value: financeAmountText(totalMinor: -expenseMinor, currencyCode: "CNY"))
+                financeMetricCard(title: "Income", value: financeAmountText(totalMinor: incomeMinor, currencyCode: "CNY"))
+                financeMetricCard(title: "Refund Offset", value: financeAmountText(totalMinor: refundMinor, currencyCode: "CNY"))
+                financeMetricCard(title: "Net", value: financeAmountText(totalMinor: netMinor, currencyCode: "CNY"))
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(bySource.keys.sorted(), id: \.self) { source in
+                    HStack {
+                        Text(source.replacingOccurrences(of: "_", with: " ").capitalized)
+                            .font(.subheadline)
+                        Spacer()
+                        Text(financeAmountText(totalMinor: bySource[source] ?? 0, currencyCode: "CNY"))
+                            .font(.subheadline.weight(.medium))
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .background(Color(UIColor.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private func financeComparisonPanel(rows: [NJFinanceTransaction]) -> some View {
+        let comparison = financeComparisonPeriods()
+        let currentRows = rows.filter { financeRows($0, inside: comparison.currentRange) }
+        let previousRows = financeRows(in: rows, matching: comparison.previousRange)
+        let currentMetrics = financeMetrics(rows: currentRows)
+        let previousMetrics = financeMetrics(rows: previousRows)
+        let bars: [NJFinanceComparisonBar] = [
+            NJFinanceComparisonBar(metric: "Expense", periodLabel: comparison.currentLabel, totalMinor: currentMetrics.expenseMinor),
+            NJFinanceComparisonBar(metric: "Expense", periodLabel: comparison.previousLabel, totalMinor: previousMetrics.expenseMinor),
+            NJFinanceComparisonBar(metric: "Refund", periodLabel: comparison.currentLabel, totalMinor: currentMetrics.refundMinor),
+            NJFinanceComparisonBar(metric: "Refund", periodLabel: comparison.previousLabel, totalMinor: previousMetrics.refundMinor),
+            NJFinanceComparisonBar(metric: "Income", periodLabel: comparison.currentLabel, totalMinor: currentMetrics.incomeMinor),
+            NJFinanceComparisonBar(metric: "Income", periodLabel: comparison.previousLabel, totalMinor: previousMetrics.incomeMinor),
+            NJFinanceComparisonBar(metric: "Net", periodLabel: comparison.currentLabel, totalMinor: currentMetrics.netMinor),
+            NJFinanceComparisonBar(metric: "Net", periodLabel: comparison.previousLabel, totalMinor: previousMetrics.netMinor)
+        ]
+
+        return VStack(alignment: .leading, spacing: 12) {
+            Text("Period Comparison")
+                .font(.headline)
+            Text("\(comparison.currentLabel) vs \(comparison.previousLabel)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Chart(bars) { bar in
+                BarMark(
+                    x: .value("Metric", bar.metric),
+                    y: .value("Amount", Decimal(bar.totalMinor) / Decimal(100))
+                )
+                .foregroundStyle(by: .value("Period", bar.periodLabel))
+                .position(by: .value("Period", bar.periodLabel))
+            }
+            .frame(height: 220)
+
+            HStack {
+                Text(comparison.currentLabel)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(comparison.previousLabel)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(14)
+        .background(Color(UIColor.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private func financeCategoryChartPanel(rows: [NJFinanceTransaction], slices: [NJFinanceCategorySlice]) -> some View {
+        let grouped = slices
+
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Expense Mix")
+                    .font(.headline)
+                Spacer()
+                if let financeSelectedCategory {
+                    Button("Show all categories") {
+                        self.financeSelectedCategory = nil
+                        financeSelectedChartAngle = nil
+                    }
+                    .font(.caption.weight(.medium))
+                }
+            }
+
+            if grouped.isEmpty {
+                Text("No expense rows in this range.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            } else {
+                Chart(grouped, id: \.category) { slice in
+                    SectorMark(
+                        angle: .value("Amount", Double(slice.total)),
+                        innerRadius: .ratio(0.58),
+                        angularInset: 2
+                    )
+                    .foregroundStyle(by: .value("Category", slice.category))
+                    .opacity(financeSelectedCategory == nil || financeSelectedCategory == slice.category ? 1 : 0.3)
+                }
+                .chartAngleSelection(value: $financeSelectedChartAngle)
+                .onChange(of: financeSelectedChartAngle) { _, newValue in
+                    financeSelectedCategory = financeCategory(forAngle: newValue, slices: grouped)
+                }
+                .frame(height: 220)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(grouped.prefix(6), id: \.category) { slice in
+                        Button {
+                            financeSelectedCategory = slice.category
+                        } label: {
+                            HStack {
+                                Text(slice.category)
+                                    .font(.subheadline)
+                                Spacer()
+                                Text(financeAmountText(totalMinor: -slice.total, currencyCode: "CNY"))
+                                    .font(.subheadline.weight(.medium))
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        HStack {
+                            Text(slice.category)
+                                .font(.caption)
+                                .foregroundStyle(financeSelectedCategory == slice.category ? Color.accentColor : .clear)
+                            Spacer()
+                            if financeSelectedCategory == slice.category {
+                                Text("Ledger scoped here")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .background(Color(UIColor.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private func financeLedgerPanel(rows: [NJFinanceTransaction]) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Ledger")
+                    .font(.headline)
+                Spacer()
+                if let financeSelectedCategory {
+                    Text("Showing \(financeSelectedCategory)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Editable grid")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if rows.isEmpty {
+                Text("No rows in the selected range.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        financeLedgerHeaderRow()
+                        ForEach(rows) { row in
+                            financeLedgerDataRow(row)
+                            Divider()
+                        }
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .background(Color(UIColor.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private func financeLedgerHeaderRow() -> some View {
+        HStack(spacing: 0) {
+            ForEach(NJFinanceLedgerColumn.allCases) { column in
+                financeLedgerHeaderCell(column)
+            }
+        }
+        .background(Color(UIColor.systemBackground).opacity(0.9))
+    }
+
+    private func financeLedgerDataRow(_ row: NJFinanceTransaction) -> some View {
+        HStack(spacing: 0) {
+            ForEach(NJFinanceLedgerColumn.allCases) { column in
+                financeLedgerDataCell(column, row: row)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) {
+            financeTransactionEditorTarget = NJFinanceTransactionEditorTarget(transactionID: row.transactionID)
+        }
+    }
+
+    private func financeLedgerHeaderCell(_ column: NJFinanceLedgerColumn) -> some View {
+        financeLedgerCell(column.title, width: financeLedgerWidth(for: column), alignment: column.alignment, isHeader: true)
+            .overlay(alignment: .trailing) {
+                Rectangle()
+                    .fill(Color.clear)
+                    .frame(width: 16, height: 30)
+                    .overlay(alignment: .center) {
+                        Capsule()
+                            .fill(Color.secondary.opacity(0.45))
+                            .frame(width: 3, height: 18)
+                    }
+                    .offset(x: 8)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                resizeFinanceLedgerColumn(column, delta: value.translation.width)
+                            }
+                    )
+            }
+    }
+
+    @ViewBuilder
+    private func financeLedgerDataCell(_ column: NJFinanceLedgerColumn, row: NJFinanceTransaction) -> some View {
+        switch column {
+        case .date:
+            financeLedgerCell(row.dateKey, width: financeLedgerWidth(for: column), alignment: column.alignment, isHeader: false)
+        case .time:
+            financeLedgerCell(timeTextFromMs(row.occurredAtMs), width: financeLedgerWidth(for: column), alignment: column.alignment, isHeader: false)
+        case .source:
+            financeLedgerCell(row.sourceType.replacingOccurrences(of: "_", with: " ").capitalized, width: financeLedgerWidth(for: column), alignment: column.alignment, isHeader: false)
+        case .merchant:
+            financeLedgerCell(row.merchantName.isEmpty ? fallbackTransactionTitle(row) : row.merchantName, width: financeLedgerWidth(for: column), alignment: column.alignment, isHeader: false)
+        case .details:
+            financeLedgerCell(row.details, width: financeLedgerWidth(for: column), alignment: column.alignment, isHeader: false)
+        case .nature:
+            financeLedgerMenuCell(
+                title: row.analysisNature.capitalized,
+                width: financeLedgerWidth(for: column),
+                options: ["expense", "income", "refund", "transfer"]
+            ) { selected in
+                saveFinanceTransactionEdit(row: row, analysisNature: selected)
+            }
+        case .category:
+            financeLedgerMenuCell(
+                title: normalizedFinanceCategory(row.category),
+                width: financeLedgerWidth(for: column),
+                options: ["dining", "groceries", "transport", "shopping", "health", "top_up", "transfer", "fees", "other"]
+            ) { selected in
+                saveFinanceTransactionEdit(row: row, category: selected)
+            }
+        case .tags:
+            financeLedgerTagCell(row, width: financeLedgerWidth(for: column))
+        case .originalAmount:
+            financeLedgerCell(financeAmountText(row), width: financeLedgerWidth(for: column), alignment: column.alignment, isHeader: false)
+        case .rmbAmount:
+            financeLedgerCell(financeAmountText(totalMinor: signedCNYMinor(row), currencyCode: "CNY"), width: financeLedgerWidth(for: column), alignment: column.alignment, isHeader: false)
+        }
+    }
+
+    private func financeLedgerWidth(for column: NJFinanceLedgerColumn) -> CGFloat {
+        financeLedgerColumnWidths[column] ?? column.width
+    }
+
+    private func resizeFinanceLedgerColumn(_ column: NJFinanceLedgerColumn, delta: CGFloat) {
+        let currentWidth = financeLedgerWidth(for: column)
+        let nextWidth = max(60, currentWidth + delta)
+        financeLedgerColumnWidths[column] = nextWidth
+    }
+
+    private func financeLedgerCell(_ text: String, width: CGFloat, alignment: Alignment, isHeader: Bool) -> some View {
+        Text(text)
+            .font(isHeader ? .caption.weight(.semibold) : .caption)
+            .foregroundStyle(isHeader ? .secondary : .primary)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .frame(width: width, alignment: alignment)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 8)
+    }
+
+    private func financeLedgerMenuCell(title: String, width: CGFloat, options: [String], onSelect: @escaping (String) -> Void) -> some View {
+        Menu {
+            ForEach(options, id: \.self) { option in
+                Button(option.replacingOccurrences(of: "_", with: " ").capitalized) {
+                    onSelect(option)
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(title)
+                    .font(.caption)
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(width: width, alignment: .leading)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 8)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func financeLedgerTagCell(_ row: NJFinanceTransaction, width: CGFloat) -> some View {
+        HStack(spacing: 6) {
+            TextField("tags", text: financeInlineTagBinding(for: row), prompt: Text("zhou zhou"))
+                .textFieldStyle(.roundedBorder)
+                .font(.caption)
+                .onSubmit {
+                    commitFinanceTagDraft(for: row)
+                }
+            Button {
+                commitFinanceTagDraft(for: row)
+            } label: {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.caption)
+            }
+            .buttonStyle(.plain)
+        }
+        .frame(width: width, alignment: .leading)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+    }
+
+    private func financeRangeTitle() -> String {
+        let range = financeSelectedDateRange()
+        let formatter = DateFormatter()
+        formatter.locale = Locale.current
+        formatter.dateStyle = .medium
+        return "\(formatter.string(from: range.start)) - \(formatter.string(from: range.end))"
+    }
+
+    private func financeSelectedDateRange() -> (start: Date, end: Date) {
+        let baseDate = selectedDate
+        switch financeSpendingWindow {
+        case .week:
+            let interval = calendar.dateInterval(of: .weekOfYear, for: baseDate) ?? DateInterval(start: calendar.startOfDay(for: baseDate), duration: 86_400)
+            return (interval.start, interval.end.addingTimeInterval(-1))
+        case .month:
+            let interval = calendar.dateInterval(of: .month, for: baseDate) ?? DateInterval(start: calendar.startOfDay(for: baseDate), duration: 86_400)
+            return (interval.start, interval.end.addingTimeInterval(-1))
+        case .custom:
+            let start = calendar.startOfDay(for: min(financeCustomRangeStart, financeCustomRangeEnd))
+            let endDay = calendar.startOfDay(for: max(financeCustomRangeStart, financeCustomRangeEnd))
+            let end = calendar.date(byAdding: .day, value: 1, to: endDay)?.addingTimeInterval(-1) ?? endDay
+            return (start, end)
+        }
+    }
+
+    private func financeComparisonPeriods() -> (currentRange: (start: Date, end: Date), previousRange: (start: Date, end: Date), currentLabel: String, previousLabel: String) {
+        let currentRange = financeSelectedDateRange()
+        let formatter = DateFormatter()
+        formatter.locale = Locale.current
+        formatter.dateStyle = .short
+
+        let previousRange: (start: Date, end: Date)
+        switch financeSpendingWindow {
+        case .week:
+            let previousStart = calendar.date(byAdding: .day, value: -7, to: currentRange.start) ?? currentRange.start
+            let previousEnd = calendar.date(byAdding: .day, value: -7, to: currentRange.end) ?? currentRange.end
+            previousRange = (previousStart, previousEnd)
+        case .month:
+            let priorDate = calendar.date(byAdding: .month, value: -1, to: selectedDate) ?? selectedDate
+            let interval = calendar.dateInterval(of: .month, for: priorDate) ?? DateInterval(start: priorDate, duration: 86_400)
+            previousRange = (interval.start, interval.end.addingTimeInterval(-1))
+        case .custom:
+            let span = max(1, calendar.dateComponents([.day], from: currentRange.start, to: currentRange.end).day ?? 0) + 1
+            let previousEnd = calendar.date(byAdding: .day, value: -1, to: currentRange.start) ?? currentRange.start
+            let previousStart = calendar.date(byAdding: .day, value: -(span - 1), to: calendar.startOfDay(for: previousEnd)) ?? previousEnd
+            let adjustedEnd = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: previousEnd))?.addingTimeInterval(-1) ?? previousEnd
+            previousRange = (previousStart, adjustedEnd)
+        }
+
+        return (
+            currentRange: currentRange,
+            previousRange: previousRange,
+            currentLabel: "\(formatter.string(from: currentRange.start))-\(formatter.string(from: currentRange.end))",
+            previousLabel: "\(formatter.string(from: previousRange.start))-\(formatter.string(from: previousRange.end))"
+        )
+    }
+
+    private func financeRows(_ row: NJFinanceTransaction, inside range: (start: Date, end: Date)) -> Bool {
+        let date = Date(timeIntervalSince1970: TimeInterval(row.occurredAtMs) / 1000.0)
+        return date >= range.start && date <= range.end
+    }
+
+    private func financeRows(in rows: [NJFinanceTransaction], matching range: (start: Date, end: Date)) -> [NJFinanceTransaction] {
+        rows.filter { financeRows($0, inside: range) }
+    }
+
+    private func financeMetrics(rows: [NJFinanceTransaction]) -> (expenseMinor: Int64, refundMinor: Int64, incomeMinor: Int64, netMinor: Int64) {
+        let grossExpenseMinor = rows.reduce(Int64(0)) { partial, row in
+            row.analysisNature == "expense" ? partial + row.amountCNYMinor : partial
+        }
+        let refundMinor = rows.reduce(Int64(0)) { partial, row in
+            row.analysisNature == "refund" ? partial + row.amountCNYMinor : partial
+        }
+        let expenseMinor = max(0, grossExpenseMinor - refundMinor)
+        let incomeMinor = rows.reduce(Int64(0)) { partial, row in
+            row.analysisNature == "income" ? partial + row.amountCNYMinor : partial
+        }
+        return (expenseMinor, refundMinor, incomeMinor, incomeMinor - expenseMinor)
+    }
+
+    private func financeDateRangeContains(_ occurredAtMs: Int64) -> Bool {
+        let range = financeSelectedDateRange()
+        let date = Date(timeIntervalSince1970: TimeInterval(occurredAtMs) / 1000.0)
+        return date >= range.start && date <= range.end
+    }
+
+    private func normalizedFinanceCategory(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return "Other" }
+        return trimmed.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+
+    private func financeTags(for row: NJFinanceTransaction) -> [String] {
+        row.tagText
+            .split { $0 == "," || $0 == "\n" || $0 == ";" }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    private func financeCategorySlices(rows: [NJFinanceTransaction]) -> [NJFinanceCategorySlice] {
+        var totalsByCategory: [String: Int64] = [:]
+        for row in rows where row.amountCNYMinor > 0 {
+            switch row.analysisNature {
+            case "expense":
+                let category = financeAnalysisCategory(for: row, within: rows)
+                totalsByCategory[category, default: 0] += row.amountCNYMinor
+            case "refund":
+                let category = financeAnalysisCategory(for: row, within: rows)
+                totalsByCategory[category, default: 0] -= row.amountCNYMinor
+            default:
+                continue
+            }
+        }
+
+        return totalsByCategory
+            .filter { $0.value > 0 }
+            .map { NJFinanceCategorySlice(category: $0.key, total: $0.value) }
+            .sorted { $0.total > $1.total }
+    }
+
+    private func financeCategory(forAngle angle: Double?, slices: [NJFinanceCategorySlice]) -> String? {
+        guard let angle else { return financeSelectedCategory }
+        var cumulative = 0.0
+        for slice in slices {
+            cumulative += Double(slice.total)
+            if angle <= cumulative {
+                return slice.category
+            }
+        }
+        return nil
+    }
+
+    private func financeMetricCard(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.headline)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(Color(UIColor.systemBackground).opacity(0.8))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func financeTransactionRow(_ row: NJFinanceTransaction) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(row.merchantName.isEmpty ? fallbackTransactionTitle(row) : row.merchantName)
+                        .font(.body.weight(.medium))
+                    Text(transactionMetaText(row))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 3) {
+                    Text(financeAmountText(row))
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(financeAmountColor(row))
+                    Text(financeAmountText(totalMinor: signedCNYMinor(row), currencyCode: "CNY"))
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if !row.details.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(row.details)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+            }
+            if !row.itemName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               row.itemName != row.merchantName {
+                Text(row.itemName)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            HStack {
+                Text(row.analysisNature.capitalized)
+                Text(row.category.replacingOccurrences(of: "_", with: " ").capitalized)
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            if !financeTags(for: row).isEmpty {
+                Text(financeTags(for: row).joined(separator: ", "))
+                    .font(.caption2)
+                    .foregroundStyle(.green)
+            }
+        }
+        .padding(12)
+        .background(Color(UIColor.secondarySystemBackground).opacity(0.7))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .onTapGesture {
+            financeTransactionEditorTarget = NJFinanceTransactionEditorTarget(transactionID: row.transactionID)
+        }
+    }
+
+    private func financeDayTotalText(_ rows: [NJFinanceTransaction]) -> String {
+        let totalMinor = rows.reduce(Int64(0)) { partial, row in
+            switch row.analysisNature {
+            case "income", "refund":
+                return partial + row.amountCNYMinor
+            default:
+                return partial - row.amountCNYMinor
+            }
+        }
+        return financeAmountText(totalMinor: totalMinor, currencyCode: "CNY")
+    }
+
+    private func financeAmountText(_ row: NJFinanceTransaction) -> String {
+        let sign = (row.analysisNature == "income" || row.analysisNature == "refund") ? 1 : -1
+        return financeAmountText(totalMinor: row.amountMinor * Int64(sign), currencyCode: row.currencyCode)
+    }
+
+    private func financeAmountText(totalMinor: Int64, currencyCode: String) -> String {
+        let amount = Decimal(totalMinor) / Decimal(100)
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .currency
+        formatter.currencyCode = currencyCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "CNY" : currencyCode
+        formatter.locale = Locale.current
+        return formatter.string(from: amount as NSDecimalNumber) ?? "\(amount)"
+    }
+
+    private func financeAmountColor(_ row: NJFinanceTransaction) -> Color {
+        switch row.analysisNature {
+        case "income":
+            return .green
+        case "refund":
+            return .blue
+        default:
+            return .primary
+        }
+    }
+
+    private func transactionMetaText(_ row: NJFinanceTransaction) -> String {
+        let time = timeTextFromMs(row.occurredAtMs)
+        let source = row.sourceType.replacingOccurrences(of: "_", with: " ").capitalized
+        let account = row.accountLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if account.isEmpty {
+            return "\(time) • \(source) • \(row.status)"
+        }
+        return "\(time) • \(source) • \(account) • \(row.status)"
+    }
+
+    private func signedCNYMinor(_ row: NJFinanceTransaction) -> Int64 {
+        switch row.analysisNature {
+        case "income", "refund":
+            return row.amountCNYMinor
+        default:
+            return -row.amountCNYMinor
+        }
+    }
+
+    private func financeInlineTagBinding(for row: NJFinanceTransaction) -> Binding<String> {
+        Binding(
+            get: { financeInlineTagDrafts[row.transactionID] ?? row.tagText },
+            set: { financeInlineTagDrafts[row.transactionID] = $0 }
+        )
+    }
+
+    private func commitFinanceTagDraft(for row: NJFinanceTransaction) {
+        let tagText = financeInlineTagDrafts[row.transactionID] ?? row.tagText
+        saveFinanceTransactionEdit(row: row, tagText: tagText)
+        financeInlineTagDrafts.removeValue(forKey: row.transactionID)
+    }
+
+    private func saveFinanceTransactionEdit(row: NJFinanceTransaction, analysisNature: String? = nil, category: String? = nil, tagText: String? = nil) {
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000.0)
+        let updated = NJFinanceTransaction(
+            transactionID: row.transactionID,
+            fingerprint: row.fingerprint,
+            sourceType: row.sourceType,
+            accountID: row.accountID,
+            accountLabel: row.accountLabel,
+            externalRef: row.externalRef,
+            occurredAtMs: row.occurredAtMs,
+            dateKey: row.dateKey,
+            merchantName: row.merchantName,
+            amountMinor: row.amountMinor,
+            currencyCode: row.currencyCode,
+            direction: row.direction,
+            analysisNature: analysisNature ?? row.analysisNature,
+            category: category ?? row.category,
+            tagText: tagText ?? row.tagText,
+            fxRateToCNY: row.fxRateToCNY,
+            amountCNYMinor: row.amountCNYMinor,
+            status: row.status,
+            counterparty: row.counterparty,
+            itemName: row.itemName,
+            details: row.details,
+            note: row.note,
+            importBatchID: row.importBatchID,
+            sourceFileName: row.sourceFileName,
+            rawPayloadJSON: row.rawPayloadJSON,
+            createdAtMs: row.createdAtMs,
+            updatedAtMs: nowMs,
+            deleted: row.deleted
+        )
+        store.notes.upsertFinanceTransaction(updated)
+        reloadFinanceTransactions()
+    }
+
+    private func financeAnalysisCategory(for row: NJFinanceTransaction, within rows: [NJFinanceTransaction]) -> String {
+        if row.analysisNature == "refund",
+           let matched = matchedExpenseForRefund(row, within: rows) {
+            return normalizedFinanceCategory(matched.category)
+        }
+        return normalizedFinanceCategory(row.category)
+    }
+
+    private func matchedExpenseForRefund(_ refund: NJFinanceTransaction, within rows: [NJFinanceTransaction]) -> NJFinanceTransaction? {
+        let merchantKey = normalizedFinanceMerchantKey(refund)
+        guard !merchantKey.isEmpty else { return nil }
+
+        return rows
+            .filter {
+                $0.analysisNature == "expense" &&
+                $0.amountCNYMinor > 0 &&
+                $0.occurredAtMs <= refund.occurredAtMs &&
+                normalizedFinanceMerchantKey($0) == merchantKey
+            }
+            .sorted { lhs, rhs in
+                if lhs.occurredAtMs == rhs.occurredAtMs {
+                    return lhs.updatedAtMs > rhs.updatedAtMs
+                }
+                return lhs.occurredAtMs > rhs.occurredAtMs
+            }
+            .first
+    }
+
+    private func normalizedFinanceMerchantKey(_ row: NJFinanceTransaction) -> String {
+        let raw = row.merchantName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? fallbackTransactionTitle(row)
+            : row.merchantName
+        let lowered = raw.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !lowered.isEmpty else { return "" }
+
+        let filteredScalars = lowered.unicodeScalars.filter { scalar in
+            CharacterSet.alphanumerics.contains(scalar) || CharacterSet.whitespaces.contains(scalar)
+        }
+        let cleaned = String(String.UnicodeScalarView(filteredScalars))
+        return cleaned
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
+    private func fallbackTransactionTitle(_ row: NJFinanceTransaction) -> String {
+        let counterparty = row.counterparty.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !counterparty.isEmpty { return counterparty }
+        let item = row.itemName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !item.isEmpty { return item }
+        return row.sourceType.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+
+    private func timeTextFromMs(_ value: Int64) -> String {
+        guard value > 0 else { return "--:--" }
+        let formatter = DateFormatter()
+        formatter.locale = Locale.current
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: Date(timeIntervalSince1970: TimeInterval(value) / 1000.0))
+    }
+
+    private func handleFinanceDataImport(result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            importFinanceData(from: url)
+        case .failure(let error):
+            presentFinanceAlert(error.localizedDescription)
+        }
+    }
+
+    private func handleFinanceScreenshotImport(result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard !urls.isEmpty else { return }
+            Task { await importFinanceScreenshots(from: urls) }
+        case .failure(let error):
+            presentFinanceAlert(error.localizedDescription)
+        }
+    }
+
+    private func importFinanceData(from url: URL) {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer {
+            if scoped { url.stopAccessingSecurityScopedResource() }
+        }
+
+        do {
+            let data = try Data(contentsOf: url)
+            let result = try NJFinanceImportService.importFile(
+                data: data,
+                filename: url.lastPathComponent,
+                nowMs: DBNoteRepository.nowMs()
+            )
+            applyImportedFinanceTransactions(result.rows, importedLabel: result.summaryText)
+        } catch {
+            presentFinanceAlert("Import failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func importFinanceScreenshots(from urls: [URL]) async {
+        do {
+            let result = try await NJFinanceImportService.importOctopusScreenshots(
+                urls: urls,
+                nowMs: DBNoteRepository.nowMs()
+            )
+            await MainActor.run {
+                applyImportedFinanceTransactions(result.rows, importedLabel: result.summaryText)
+            }
+        } catch {
+            await MainActor.run {
+                presentFinanceAlert("Screenshot import failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func applyImportedFinanceTransactions(_ rows: [NJFinanceTransaction], importedLabel: String) {
+        guard !rows.isEmpty else {
+            presentFinanceAlert("No new transactions were found.")
+            return
+        }
+        for row in rows {
+            if let existing = store.notes.financeTransactionByFingerprint(row.fingerprint) {
+                store.notes.upsertFinanceTransaction(
+                    NJFinanceTransaction(
+                        transactionID: existing.transactionID,
+                        fingerprint: row.fingerprint,
+                        sourceType: row.sourceType,
+                        accountID: row.accountID,
+                        accountLabel: row.accountLabel,
+                        externalRef: row.externalRef,
+                        occurredAtMs: row.occurredAtMs,
+                        dateKey: row.dateKey,
+                        merchantName: row.merchantName,
+                        amountMinor: row.amountMinor,
+                        currencyCode: row.currencyCode,
+                        direction: row.direction,
+                        analysisNature: existing.analysisNature.isEmpty ? row.analysisNature : existing.analysisNature,
+                        category: existing.category.isEmpty ? row.category : existing.category,
+                        tagText: existing.tagText,
+                        fxRateToCNY: existing.fxRateToCNY == 0 ? row.fxRateToCNY : existing.fxRateToCNY,
+                        amountCNYMinor: existing.fxRateToCNY == 0 ? row.amountCNYMinor : Int64((Double(row.amountMinor) * existing.fxRateToCNY).rounded()),
+                        status: row.status,
+                        counterparty: row.counterparty,
+                        itemName: row.itemName,
+                        details: existing.details,
+                        note: row.note,
+                        importBatchID: row.importBatchID,
+                        sourceFileName: row.sourceFileName,
+                        rawPayloadJSON: row.rawPayloadJSON,
+                        createdAtMs: existing.createdAtMs == 0 ? row.createdAtMs : existing.createdAtMs,
+                        updatedAtMs: row.updatedAtMs,
+                        deleted: 0
+                    )
+                )
+            } else {
+                store.notes.upsertFinanceTransaction(row)
+            }
+        }
+        store.sync.schedulePush(debounceMs: 0)
+        reloadFinanceTransactions()
+        presentFinanceAlert(importedLabel)
+    }
+
     private func financePreviewLines(for brief: NJFinanceDailyBrief) -> [String] {
         [
             brief.newsSummary,
@@ -1755,7 +3016,7 @@ struct NJCalendarView: View {
             rows.append(bias)
         }
         for event in events {
-            let title = event.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let title = normalizedMarketSnapshotTitle(event.title).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !title.isEmpty else { continue }
             rows.append("\(eventTimeLabel(event.timeText)) \(title)")
         }
@@ -1923,6 +3184,22 @@ struct NJCalendarView: View {
         if n.contains("tennis") { return "sportscourt" }
         if n.contains("strength") || n.contains("gym") { return "dumbbell" }
         return "figure.mixed.cardio"
+    }
+
+    private func normalizedMarketSnapshotTitle(_ title: String) -> String {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.uppercased().hasPrefix("US10Y ") else { return trimmed }
+
+        let parts = trimmed.split(separator: " ", maxSplits: 2).map(String.init)
+        guard parts.count >= 2 else { return trimmed }
+        let rawValue = parts[1]
+            .replacingOccurrences(of: "%", with: "")
+            .replacingOccurrences(of: ",", with: "")
+        guard let value = Double(rawValue) else { return trimmed }
+
+        let corrected = value < 1 ? value * 10 : value
+        let rest = parts.count > 2 ? " \(parts[2])" : ""
+        return String(format: "US10Y %.2f%%%@", corrected, rest)
     }
 
     @ViewBuilder
@@ -2534,7 +3811,7 @@ struct NJCalendarView: View {
     }
 
     private func weeklyHeaderBlock() -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        return VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 12) {
                 miniMonthView()
                 Spacer(minLength: 0)
@@ -2607,6 +3884,34 @@ struct NJCalendarView: View {
             return formatter.string(from: date)
         }
         return "\(formatter.string(from: start))  –  \(formatter.string(from: endDate))"
+    }
+
+    private func weeklyPlanningPreviewLines(for date: Date) -> [String] {
+        let key = weekPlanningTargetKey(for: date)
+        guard let row = store.notes.planningNote(kind: "weekly", targetKey: key) else { return [] }
+        let protonLines = summaryLineItems(from: attributedTextFromProtonJSON(row.protonJSON))
+        if !protonLines.isEmpty { return protonLines }
+
+        let plainLines = row.note
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return Array(plainLines.prefix(6))
+    }
+
+    private func dayPlanningPreviewLines(for date: Date) -> [String] {
+        let key = dateKey(date)
+        guard let row = store.notes.planningNote(kind: "daily", targetKey: key) else { return [] }
+        let protonLines = summaryLineItems(from: attributedTextFromProtonJSON(row.protonJSON))
+        if !protonLines.isEmpty { return protonLines }
+
+        let plainLines = row.note
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return Array(plainLines.prefix(6))
     }
 
     private func weekRange(for date: Date) -> (Date, Date)? {
@@ -3114,11 +4419,11 @@ struct NJCalendarView: View {
         let row = store.notes.planningNote(kind: "daily", targetKey: key)
         let text = row?.note ?? ""
         let protonJSON = row?.protonJSON ?? ""
-        planningNoteAttr = NSAttributedString(string: text)
+        planningNoteHandle = makePlanningNoteHandle()
+        planningNoteAttr = planningNoteInitialAttr(text: text, protonJSON: protonJSON, handle: planningNoteHandle)
         planningNoteSel = NSRange(location: 0, length: 0)
         planningNoteEditorHeight = 120
         planningNotePickedPhotoItem = nil
-        planningNoteHandle = makePlanningNoteHandle()
         planningNoteTarget = NJPlanningNoteSheetTarget(
             kind: "daily",
             targetKey: key,
@@ -3133,11 +4438,11 @@ struct NJCalendarView: View {
         let row = store.notes.planningNote(kind: "weekly", targetKey: key)
         let text = row?.note ?? ""
         let protonJSON = row?.protonJSON ?? ""
-        planningNoteAttr = NSAttributedString(string: text)
+        planningNoteHandle = makePlanningNoteHandle()
+        planningNoteAttr = planningNoteInitialAttr(text: text, protonJSON: protonJSON, handle: planningNoteHandle)
         planningNoteSel = NSRange(location: 0, length: 0)
         planningNoteEditorHeight = 120
         planningNotePickedPhotoItem = nil
-        planningNoteHandle = makePlanningNoteHandle()
         planningNoteTarget = NJPlanningNoteSheetTarget(
             kind: "weekly",
             targetKey: key,
@@ -3232,6 +4537,21 @@ struct NJCalendarView: View {
             NJPhotoLibraryPresenter.presentFullPhoto(localIdentifier: id)
         }
         return h
+    }
+
+    private func planningNoteInitialAttr(text: String, protonJSON: String, handle: NJProtonEditorHandle) -> NSAttributedString {
+        let trimmedProton = protonJSON.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedProton.isEmpty {
+            let decoded = handle.attributedStringFromProtonJSONString(trimmedProton)
+            let visible = decoded.string
+                .replacingOccurrences(of: "\u{FFFC}", with: "")
+                .replacingOccurrences(of: "\u{200B}", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !visible.isEmpty {
+                return decoded
+            }
+        }
+        return NSAttributedString(string: text)
     }
 
     private func canOpenWeekPlanningNote(for date: Date) -> Bool {
@@ -3749,6 +5069,9 @@ struct NJCalendarView: View {
         }
         let weeklySummaryBody = joinedLines(weeklySummaryLines)
         let weeklyPreviewBody = joinedLines([weeklySummaryBody, weeklyNote])
+        let weeklyPayloadBody = weeklyProtonJSON.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? weeklyPreviewBody
+            : weeklySummaryBody
         drafts.append(
             NJPlanningClipboardDraft(
                 title: weeklyTitle,
@@ -3757,7 +5080,7 @@ struct NJCalendarView: View {
                 tags: ["#WEEKLY"],
                 payloadJSON: makePlanningClipboardPayload(
                     title: weeklyTitle,
-                    body: weeklyPreviewBody,
+                    body: weeklyPayloadBody,
                     protonJSONBody: weeklyProtonJSON
                 )
             )
@@ -3775,9 +5098,13 @@ struct NJCalendarView: View {
             let eventTitles = (eventsByDate[dayKey] ?? [])
                 .map { $0.title.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
+            let renewalLines = (renewalItemsByDate[dayKey] ?? []).map { renewalCalendarLine(for: $0) }
             var mergedEventLines: [String] = []
             if !calendarItem.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 mergedEventLines.append(calendarItem.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+            for line in renewalLines where !mergedEventLines.contains(line) {
+                mergedEventLines.append(line)
             }
             for t in eventTitles where !mergedEventLines.contains(t) {
                 mergedEventLines.append(t)
@@ -3796,21 +5123,25 @@ struct NJCalendarView: View {
             if health.medDoseCount > 0 { healthLines.append("Medication: logged") }
 
             let dailyTitle = "(\(dayCompact)) \(weekdayShort) - Daily Focus"
-            let dailyBodyLines: [String] = [
+            let dailySummaryLines: [String] = [
                 joinedLines(mergedEventLines),
                 joinedLines(healthLines),
-                joinedLines(planLines),
-                dayPlanning
+                joinedLines(planLines)
             ]
+            let dailySummaryBody = joinedLines(dailySummaryLines)
+            let dailyPreviewBody = joinedLines([dailySummaryBody, dayPlanning])
+            let dailyPayloadBody = dayPlanningProtonJSON.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? dailyPreviewBody
+                : dailySummaryBody
             drafts.append(
                 NJPlanningClipboardDraft(
                     title: dailyTitle,
-                    body: joinedLines(dailyBodyLines),
+                    body: dailyPreviewBody,
                     createdAtMs: msAtNoon(for: day),
                     tags: ["#WEEKLY"],
                     payloadJSON: makePlanningClipboardPayload(
                         title: dailyTitle,
-                        body: joinedLines(dailyBodyLines),
+                        body: dailyPayloadBody,
                         protonJSONBody: dayPlanningProtonJSON
                     )
                 )
@@ -3891,7 +5222,8 @@ struct NJCalendarView: View {
         }
 
         let rtfBase64 = DBNoteRepository.encodeRTFBase64FromAttributedText(full)
-        return NJQuickNotePayload.makePayloadJSON(protonJSON: "", rtfBase64: rtfBase64)
+        let protonJSON = NJProtonEditorHandle().exportProtonJSONString(from: full)
+        return NJQuickNotePayload.makePayloadJSON(protonJSON: protonJSON, rtfBase64: rtfBase64)
     }
 
     private func msAtNoon(for date: Date) -> Int64 {
@@ -4510,7 +5842,10 @@ private struct NJPlanningNoteSheet: View {
                         handle.snapshot()
                         let attr = handle.editor?.attributedText ?? snapshotAttributedText
                         let plain = attr.string.trimmingCharacters(in: .whitespacesAndNewlines)
-                        let proton = handle.exportProtonJSONString()
+                        let exported = handle.exportProtonJSONString()
+                        let proton = exported.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            ? handle.exportProtonJSONString(from: attr)
+                            : exported
                         onSave(plain, proton)
                         dismiss()
                     }
@@ -5236,5 +6571,536 @@ private enum NJLLMJournalBridge {
         if s.contains("walk") { return "zz.sport.walking" }
         if s.contains("swim") { return "zz.sport.swimming" }
         return "zz.sport.training"
+    }
+}
+
+private struct NJFinanceImportResult {
+    let rows: [NJFinanceTransaction]
+    let summaryText: String
+}
+
+private struct NJFinanceTransactionEditorSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let row: NJFinanceTransaction
+    let onSave: (NJFinanceTransaction) -> Void
+
+    @State private var analysisNature: String
+    @State private var category: String
+    @State private var tagText: String
+
+    init(row: NJFinanceTransaction, onSave: @escaping (NJFinanceTransaction) -> Void) {
+        self.row = row
+        self.onSave = onSave
+        _analysisNature = State(initialValue: row.analysisNature.isEmpty ? row.direction : row.analysisNature)
+        _category = State(initialValue: row.category.isEmpty ? "shopping" : row.category)
+        _tagText = State(initialValue: row.tagText)
+    }
+
+    private let natures = ["expense", "income", "refund", "transfer"]
+    private let categories = ["dining", "groceries", "transport", "shopping", "health", "top_up", "transfer", "fees", "other"]
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Transaction") {
+                    Text(row.merchantName.isEmpty ? row.counterparty : row.merchantName)
+                    Text(row.sourceType.replacingOccurrences(of: "_", with: " ").capitalized)
+                        .foregroundStyle(.secondary)
+                    Text("\(row.currencyCode) \(Decimal(row.amountMinor) / Decimal(100))")
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("Analysis") {
+                    Picker("Nature", selection: $analysisNature) {
+                        ForEach(natures, id: \.self) { value in
+                            Text(value.capitalized).tag(value)
+                        }
+                    }
+                    Picker("Category", selection: $category) {
+                        ForEach(categories, id: \.self) { value in
+                            Text(value.replacingOccurrences(of: "_", with: " ").capitalized).tag(value)
+                        }
+                    }
+                    TextField("Tags", text: $tagText, prompt: Text("zhou zhou, family"))
+                    Text("Use commas to separate tags.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("RMB") {
+                    Text("Converted for analysis using FX \(String(format: "%.4f", row.fxRateToCNY))")
+                    Text("CNY \(Decimal(row.amountCNYMinor) / Decimal(100))")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Edit Transaction")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        onSave(
+                            NJFinanceTransaction(
+                                transactionID: row.transactionID,
+                                fingerprint: row.fingerprint,
+                                sourceType: row.sourceType,
+                                accountID: row.accountID,
+                                accountLabel: row.accountLabel,
+                                externalRef: row.externalRef,
+                                occurredAtMs: row.occurredAtMs,
+                                dateKey: row.dateKey,
+                                merchantName: row.merchantName,
+                                amountMinor: row.amountMinor,
+                                currencyCode: row.currencyCode,
+                                direction: row.direction,
+                                analysisNature: analysisNature,
+                                category: category,
+                                tagText: tagText,
+                                fxRateToCNY: row.fxRateToCNY,
+                                amountCNYMinor: row.amountCNYMinor,
+                                status: row.status,
+                                counterparty: row.counterparty,
+                                itemName: row.itemName,
+                                details: row.details,
+                                note: row.note,
+                                importBatchID: row.importBatchID,
+                                sourceFileName: row.sourceFileName,
+                                rawPayloadJSON: row.rawPayloadJSON,
+                                createdAtMs: row.createdAtMs,
+                                updatedAtMs: DBNoteRepository.nowMs(),
+                                deleted: row.deleted
+                            )
+                        )
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+private enum NJFinanceImportService {
+    static func importFile(data: Data, filename: String, nowMs: Int64) throws -> NJFinanceImportResult {
+        let lower = filename.lowercased()
+        if lower.hasSuffix(".zip") {
+            throw NSError(domain: "NJFinanceImport", code: 10, userInfo: [NSLocalizedDescriptionKey: "This WeChat export is still password-protected. Please unzip it first, then import the extracted file."])
+        }
+        if lower.hasSuffix(".xlsx") {
+            throw NSError(domain: "NJFinanceImport", code: 11, userInfo: [NSLocalizedDescriptionKey: "The extracted WeChat file is `.xlsx`. I haven’t wired spreadsheet parsing into the app yet, so for now please convert it to CSV first."])
+        }
+
+        let text = try decodeText(data)
+        if text.contains("支付宝交易记录明细查询") || (text.contains("交易号") && text.contains("收/支")) {
+            return try importAlipayCSV(text: text, filename: filename, nowMs: nowMs)
+        }
+        if text.contains("微信支付") || (text.contains("交易时间") && text.contains("交易类型")) {
+            return try importWeChatCSV(text: text, filename: filename, nowMs: nowMs)
+        }
+
+        throw NSError(domain: "NJFinanceImport", code: 12, userInfo: [NSLocalizedDescriptionKey: "I couldn’t recognize this file format yet."])
+    }
+
+    static func importOctopusScreenshots(urls: [URL], nowMs: Int64) async throws -> NJFinanceImportResult {
+        let batchID = UUID().uuidString.lowercased()
+        var allRows: [NJFinanceTransaction] = []
+        var seenFingerprints: Set<String> = []
+
+        for url in urls.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer {
+                if scoped { url.stopAccessingSecurityScopedResource() }
+            }
+            guard let image = UIImage(contentsOfFile: url.path),
+                  let cgImage = image.cgImage else { continue }
+            let lines = try await recognizeLines(cgImage: cgImage)
+            let parsed = parseOctopusLines(lines, sourceFileName: url.lastPathComponent, importBatchID: batchID, nowMs: nowMs)
+            for row in parsed where seenFingerprints.insert(row.fingerprint).inserted {
+                allRows.append(row)
+            }
+        }
+
+        return NJFinanceImportResult(rows: allRows.sorted { $0.occurredAtMs > $1.occurredAtMs }, summaryText: "Imported \(allRows.count) Octopus transaction(s). Duplicates were skipped.")
+    }
+
+    private static func importAlipayCSV(text: String, filename: String, nowMs: Int64) throws -> NJFinanceImportResult {
+        let lines = text.components(separatedBy: .newlines)
+        let accountLine = lines.first { $0.contains("账号:[") } ?? ""
+        let accountID = bracketValue(from: accountLine)
+        guard let headerIndex = lines.firstIndex(where: { $0.contains("交易号") && $0.contains("交易状态") }) else {
+            throw NSError(domain: "NJFinanceImport", code: 20, userInfo: [NSLocalizedDescriptionKey: "Could not find the Alipay header row."])
+        }
+
+        let indexes = keyedIndexes(csvFields(from: lines[headerIndex]))
+        let batchID = UUID().uuidString.lowercased()
+        var rows: [NJFinanceTransaction] = []
+
+        for rawLine in lines.dropFirst(headerIndex + 1) {
+            let trimmed = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            let fields = csvFields(from: rawLine)
+            if fields.count < 10 { continue }
+
+            let externalRef = field(named: ["交易号"], indexes: indexes, fields: fields)
+            if externalRef.isEmpty { continue }
+
+            let occurredText = field(named: ["付款时间", "交易创建时间", "最近修改时间"], indexes: indexes, fields: fields)
+            let occurredAtMs = parseDateTimeMs(occurredText) ?? nowMs
+            let merchant = firstNonEmpty([field(named: ["交易对方"], indexes: indexes, fields: fields), field(named: ["商品名称"], indexes: indexes, fields: fields)])
+            let amountMinor = decimalMinor(from: field(named: ["金额（元）", "金额(元)"], indexes: indexes, fields: fields))
+            let inOut = field(named: ["收/支"], indexes: indexes, fields: fields)
+            let fundStatus = field(named: ["资金状态"], indexes: indexes, fields: fields)
+            let status = field(named: ["交易状态"], indexes: indexes, fields: fields)
+            let direction = mapAlipayDirection(inOut: inOut, fundStatus: fundStatus, status: status)
+            if direction == "ignore" { continue }
+
+            let fingerprint = transactionFingerprint(sourceType: "alipay", accountID: accountID, externalRef: externalRef, occurredAtMs: occurredAtMs, merchantName: merchant, amountMinor: amountMinor, currencyCode: "CNY")
+            let payload = [
+                "trade_no": externalRef,
+                "merchant_order_no": field(named: ["商家订单号"], indexes: indexes, fields: fields),
+                "type": field(named: ["类型"], indexes: indexes, fields: fields),
+                "counterparty": field(named: ["交易对方"], indexes: indexes, fields: fields),
+                "item_name": field(named: ["商品名称"], indexes: indexes, fields: fields),
+                "note": field(named: ["备注"], indexes: indexes, fields: fields)
+            ]
+
+            let category = suggestedCategory(sourceType: "alipay", merchantName: merchant, itemName: field(named: ["商品名称"], indexes: indexes, fields: fields))
+            let fxRate = defaultFXRateToCNY(currencyCode: "CNY")
+            rows.append(NJFinanceTransaction(transactionID: "alipay.\(fingerprint)", fingerprint: fingerprint, sourceType: "alipay", accountID: accountID, accountLabel: accountID.isEmpty ? "Alipay" : "Alipay \(accountID)", externalRef: externalRef, occurredAtMs: occurredAtMs, dateKey: dateKey(fromMs: occurredAtMs), merchantName: merchant, amountMinor: amountMinor, currencyCode: "CNY", direction: direction, analysisNature: direction, category: category, tagText: "", fxRateToCNY: fxRate, amountCNYMinor: convertedToCNYMinor(amountMinor: amountMinor, fxRateToCNY: fxRate), status: status.isEmpty ? fundStatus : status, counterparty: field(named: ["交易对方"], indexes: indexes, fields: fields), itemName: field(named: ["商品名称"], indexes: indexes, fields: fields), details: "", note: field(named: ["备注"], indexes: indexes, fields: fields), importBatchID: batchID, sourceFileName: filename, rawPayloadJSON: encodeJSON(payload), createdAtMs: nowMs, updatedAtMs: nowMs, deleted: 0))
+        }
+
+        let deduped = dedupe(rows)
+        return NJFinanceImportResult(rows: deduped, summaryText: "Imported \(deduped.count) Alipay transaction(s). Duplicates were skipped.")
+    }
+
+    private static func importWeChatCSV(text: String, filename: String, nowMs: Int64) throws -> NJFinanceImportResult {
+        let lines = text.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        guard let headerIndex = lines.firstIndex(where: { $0.contains("交易时间") && $0.contains("交易类型") }) else {
+            throw NSError(domain: "NJFinanceImport", code: 30, userInfo: [NSLocalizedDescriptionKey: "Could not find the WeChat bill header row."])
+        }
+        let indexes = keyedIndexes(csvFields(from: lines[headerIndex]))
+        let batchID = UUID().uuidString.lowercased()
+        var rows: [NJFinanceTransaction] = []
+
+        for rawLine in lines.dropFirst(headerIndex + 1) {
+            let fields = csvFields(from: rawLine)
+            if fields.count < 6 { continue }
+            let occurredText = field(named: ["交易时间"], indexes: indexes, fields: fields)
+            guard let occurredAtMs = parseDateTimeMs(occurredText) else { continue }
+            let merchant = firstNonEmpty([field(named: ["交易对方"], indexes: indexes, fields: fields), field(named: ["商品"], indexes: indexes, fields: fields)])
+            let amountMinor = decimalMinor(from: field(named: ["金额(元)", "金额(人民币)", "金额"], indexes: indexes, fields: fields))
+            let inOut = field(named: ["收/支"], indexes: indexes, fields: fields)
+            let status = field(named: ["当前状态", "支付状态"], indexes: indexes, fields: fields)
+            let externalRef = firstNonEmpty([field(named: ["交易单号"], indexes: indexes, fields: fields), field(named: ["商户单号"], indexes: indexes, fields: fields)])
+            let direction = mapWeChatDirection(inOut: inOut, status: status)
+            if direction == "ignore" { continue }
+
+            let fingerprint = transactionFingerprint(sourceType: "wechat_pay", accountID: "wechat_pay", externalRef: externalRef, occurredAtMs: occurredAtMs, merchantName: merchant, amountMinor: amountMinor, currencyCode: "CNY")
+            let payload = [
+                "trade_type": field(named: ["交易类型"], indexes: indexes, fields: fields),
+                "counterparty": field(named: ["交易对方"], indexes: indexes, fields: fields),
+                "item_name": field(named: ["商品"], indexes: indexes, fields: fields),
+                "payment_method": field(named: ["支付方式"], indexes: indexes, fields: fields),
+                "note": field(named: ["备注"], indexes: indexes, fields: fields)
+            ]
+
+            let category = suggestedCategory(sourceType: "wechat_pay", merchantName: merchant, itemName: field(named: ["商品"], indexes: indexes, fields: fields))
+            let fxRate = defaultFXRateToCNY(currencyCode: "CNY")
+            rows.append(NJFinanceTransaction(transactionID: "wechat.\(fingerprint)", fingerprint: fingerprint, sourceType: "wechat_pay", accountID: "wechat_pay", accountLabel: "WeChat Pay", externalRef: externalRef, occurredAtMs: occurredAtMs, dateKey: dateKey(fromMs: occurredAtMs), merchantName: merchant, amountMinor: amountMinor, currencyCode: "CNY", direction: direction, analysisNature: direction, category: category, tagText: "", fxRateToCNY: fxRate, amountCNYMinor: convertedToCNYMinor(amountMinor: amountMinor, fxRateToCNY: fxRate), status: status, counterparty: field(named: ["交易对方"], indexes: indexes, fields: fields), itemName: field(named: ["商品"], indexes: indexes, fields: fields), details: "", note: field(named: ["备注"], indexes: indexes, fields: fields), importBatchID: batchID, sourceFileName: filename, rawPayloadJSON: encodeJSON(payload), createdAtMs: nowMs, updatedAtMs: nowMs, deleted: 0))
+        }
+
+        let deduped = dedupe(rows)
+        return NJFinanceImportResult(rows: deduped, summaryText: "Imported \(deduped.count) WeChat transaction(s). Duplicates were skipped.")
+    }
+
+    private static func parseOctopusLines(_ lines: [String], sourceFileName: String, importBatchID: String, nowMs: Int64) -> [NJFinanceTransaction] {
+        let accountLabel = lines.first(where: { $0.lowercased().contains("octopus") }) ?? "Octopus"
+        let accountID = lines.first(where: { $0.range(of: #"\d{6,}"#, options: .regularExpression) != nil }) ?? accountLabel
+        var rows: [NJFinanceTransaction] = []
+
+        for index in lines.indices {
+            guard let occurredAtMs = parseDateTimeMs(lines[index]) else { continue }
+            let merchantLine = index > 0 ? lines[index - 1] : ""
+            var signedMinor = amountMinorAtEnd(of: merchantLine)
+            if signedMinor == nil, index + 1 < lines.count {
+                signedMinor = amountMinorAtEnd(of: lines[index + 1])
+            }
+            let merchant = stripAmountSuffix(from: merchantLine)
+            guard let signedMinor else { continue }
+            guard !merchant.isEmpty,
+                  !merchant.lowercased().contains("remaining value"),
+                  !merchant.lowercased().contains("transaction history"),
+                  !merchant.lowercased().contains("update transaction history"),
+                  !merchant.lowercased().contains("spending summary") else { continue }
+
+            let direction = signedMinor >= 0 ? "income" : "expense"
+            let fingerprint = transactionFingerprint(sourceType: "octopus", accountID: accountID, externalRef: "", occurredAtMs: occurredAtMs, merchantName: merchant, amountMinor: abs(signedMinor), currencyCode: "HKD")
+            let payload = ["ocr_source": sourceFileName, "merchant_line": merchantLine, "date_line": lines[index]]
+
+            let amountMinor = abs(signedMinor)
+            let fxRate = defaultFXRateToCNY(currencyCode: "HKD")
+            rows.append(NJFinanceTransaction(transactionID: "octopus.\(fingerprint)", fingerprint: fingerprint, sourceType: "octopus", accountID: accountID, accountLabel: accountLabel, externalRef: "", occurredAtMs: occurredAtMs, dateKey: dateKey(fromMs: occurredAtMs), merchantName: merchant, amountMinor: amountMinor, currencyCode: "HKD", direction: direction, analysisNature: direction, category: suggestedCategory(sourceType: "octopus", merchantName: merchant, itemName: ""), tagText: "", fxRateToCNY: fxRate, amountCNYMinor: convertedToCNYMinor(amountMinor: amountMinor, fxRateToCNY: fxRate), status: "posted", counterparty: merchant, itemName: "", details: "", note: "", importBatchID: importBatchID, sourceFileName: sourceFileName, rawPayloadJSON: encodeJSON(payload), createdAtMs: nowMs, updatedAtMs: nowMs, deleted: 0))
+        }
+
+        return dedupe(rows)
+    }
+
+    private static func recognizeLines(cgImage: CGImage) async throws -> [String] {
+        try await withCheckedThrowingContinuation { continuation in
+            let request = VNRecognizeTextRequest { request, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                let observations = (request.results as? [VNRecognizedTextObservation]) ?? []
+                let items = observations.compactMap { obs -> (String, CGRect)? in
+                    guard let candidate = obs.topCandidates(1).first else { return nil }
+                    return (candidate.string, obs.boundingBox)
+                }
+                continuation.resume(returning: mergeRecognizedRows(items))
+            }
+            request.recognitionLevel = .accurate
+            request.usesLanguageCorrection = true
+            request.recognitionLanguages = ["en-US", "zh-Hans", "zh-Hant"]
+
+            DispatchQueue.global(qos: .userInitiated).async {
+                let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+                do {
+                    try handler.perform([request])
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    private static func mergeRecognizedRows(_ items: [(String, CGRect)]) -> [String] {
+        let sorted = items.sorted {
+            let dy = $0.1.midY - $1.1.midY
+            if abs(dy) > 0.012 { return $0.1.midY > $1.1.midY }
+            return $0.1.minX < $1.1.minX
+        }
+        var rows: [[(String, CGRect)]] = []
+        for item in sorted {
+            if let lastIndex = rows.indices.last,
+               let sample = rows[lastIndex].first,
+               abs(sample.1.midY - item.1.midY) < 0.012 {
+                rows[lastIndex].append(item)
+            } else {
+                rows.append([item])
+            }
+        }
+        return rows.map { row in
+            row.sorted { $0.1.minX < $1.1.minX }
+                .map { $0.0.replacingOccurrences(of: "\n", with: " ") }
+                .joined(separator: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }.filter { !$0.isEmpty }
+    }
+
+    private static func decodeText(_ data: Data) throws -> String {
+        if let text = String(data: data, encoding: .utf8), !text.isEmpty { return text }
+        if let text = String(data: data, encoding: .unicode), !text.isEmpty { return text }
+        for encoding in [CFStringEncodings.GB_18030_2000, .GBK_95] {
+            let nsEncoding = CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(encoding.rawValue))
+            if let text = String(data: data, encoding: String.Encoding(rawValue: nsEncoding)), !text.isEmpty {
+                return text
+            }
+        }
+        throw NSError(domain: "NJFinanceImport", code: 40, userInfo: [NSLocalizedDescriptionKey: "Unable to decode the file text encoding."])
+    }
+
+    private static func csvFields(from line: String) -> [String] {
+        var out: [String] = []
+        var current = ""
+        var inQuotes = false
+        for ch in line {
+            if ch == "\"" {
+                inQuotes.toggle()
+                continue
+            }
+            if ch == "," && !inQuotes {
+                out.append(current.trimmingCharacters(in: .whitespacesAndNewlines))
+                current.removeAll(keepingCapacity: true)
+            } else {
+                current.append(ch)
+            }
+        }
+        out.append(current.trimmingCharacters(in: .whitespacesAndNewlines))
+        return out
+    }
+
+    private static func keyedIndexes(_ headers: [String]) -> [String: Int] {
+        var out: [String: Int] = [:]
+        for (idx, raw) in headers.enumerated() {
+            out[normalizeHeader(raw)] = idx
+        }
+        return out
+    }
+
+    private static func field(named candidates: [String], indexes: [String: Int], fields: [String]) -> String {
+        for candidate in candidates {
+            if let index = indexes[normalizeHeader(candidate)], fields.indices.contains(index) {
+                return fields[index].trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        return ""
+    }
+
+    private static func normalizeHeader(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "（", with: "(")
+            .replacingOccurrences(of: "）", with: ")")
+            .replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "\t", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func bracketValue(from line: String) -> String {
+        guard let start = line.firstIndex(of: "["), let end = line.firstIndex(of: "]"), start < end else { return "" }
+        return String(line[line.index(after: start)..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func parseDateTimeMs(_ value: String) -> Int64? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 8)
+        for format in ["yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd HH:mm"] {
+            formatter.dateFormat = format
+            if let date = formatter.date(from: trimmed) {
+                return Int64(date.timeIntervalSince1970 * 1000.0)
+            }
+        }
+        return nil
+    }
+
+    private static func decimalMinor(from value: String) -> Int64 {
+        let cleaned = value.replacingOccurrences(of: ",", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let decimal = Decimal(string: cleaned) else { return 0 }
+        return NSDecimalNumber(decimal: decimal * Decimal(100)).int64Value
+    }
+
+    private static func amountMinorAtEnd(of line: String) -> Int64? {
+        guard let range = line.range(of: #"[-+]?\d+(?:\.\d{1,2})?$"#, options: .regularExpression) else { return nil }
+        return decimalMinor(from: String(line[range]))
+    }
+
+    private static func stripAmountSuffix(from line: String) -> String {
+        guard let range = line.range(of: #"[-+]?\d+(?:\.\d{1,2})?$"#, options: .regularExpression) else { return line }
+        var copy = line
+        copy.removeSubrange(range)
+        return copy.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func mapAlipayDirection(inOut: String, fundStatus: String, status: String) -> String {
+        let combined = "\(inOut)|\(fundStatus)|\(status)"
+        if combined.contains("退款") || combined.contains("已收入") { return "refund" }
+        if inOut.contains("不计收支") { return "ignore" }
+        if status.contains("关闭") || status.contains("等待付款") || status.contains("待付款") || status.contains("未付款") || status.contains("支付中") {
+            return "ignore"
+        }
+        if fundStatus.contains("待支出") || fundStatus.contains("未支出") {
+            return "ignore"
+        }
+        if inOut.contains("收入") { return "income" }
+        if inOut.contains("支出") { return "expense" }
+        return "expense"
+    }
+
+    private static func mapWeChatDirection(inOut: String, status: String) -> String {
+        if status.contains("退款") || inOut.contains("收入") { return "refund" }
+        if inOut.contains("支出") { return "expense" }
+        if status.contains("关闭") || status.contains("撤销") { return "ignore" }
+        return "expense"
+    }
+
+    private static func defaultFXRateToCNY(currencyCode: String) -> Double {
+        switch currencyCode.uppercased() {
+        case "HKD":
+            return 0.93
+        default:
+            return 1.0
+        }
+    }
+
+    private static func convertedToCNYMinor(amountMinor: Int64, fxRateToCNY: Double) -> Int64 {
+        Int64((Double(amountMinor) * fxRateToCNY).rounded())
+    }
+
+    private static func suggestedCategory(sourceType: String, merchantName: String, itemName: String) -> String {
+        let text = "\(merchantName) \(itemName)".lowercased()
+        if sourceType == "octopus" {
+            if text.contains("mtr") || text.contains("bus") || text.contains("minibus") || text.contains("trans-island") {
+                return "transport"
+            }
+            if text.contains("octopus cards limited") {
+                return "top_up"
+            }
+        }
+        if text.contains("cafe") || text.contains("starbucks") || text.contains("burger") || text.contains("shake shack") || text.contains("mcdonald") || text.contains("fairwood") || text.contains("mos") || text.contains("yoshinoya") || text.contains("hana-musubi") || text.contains("saint honore") || text.contains("satay king") || text.contains("pepper lunch") || text.contains("food republic") {
+            return "dining"
+        }
+        if text.contains("美团") || text.contains("美团外卖") || text.contains("饿了么") || text.contains("餐饮") || text.contains("餐厅") || text.contains("饭店") || text.contains("饭堂") || text.contains("食堂") || text.contains("快餐") || text.contains("外卖") || text.contains("奶茶") || text.contains("咖啡") || text.contains("烧味") || text.contains("烧腊") || text.contains("粥") || text.contains("粉") || text.contains("面") || text.contains("米线") || text.contains("米粉") || text.contains("肠粉") || text.contains("腸粉") || text.contains("云吞") || text.contains("餛飩") || text.contains("包子") || text.contains("饺子") || text.contains("餃子") || text.contains("茶餐厅") || text.contains("茶餐廳") || text.contains("小吃") || text.contains("麻辣烫") || text.contains("麻辣燙") || text.contains("火锅") || text.contains("火鍋") || text.contains("烤肉") || text.contains("汉堡") || text.contains("漢堡") || text.contains("pizza") || text.contains("pasta") {
+            return "dining"
+        }
+        if text.contains("manning") || text.contains("7-eleven") || text.contains("dai sang") || text.contains("grocer") || text.contains("hema") || text.contains("盒马") {
+            return "groceries"
+        }
+        if text.contains("超市") || text.contains("便利店") || text.contains("百货") || text.contains("百貨") || text.contains("生鲜") || text.contains("生鮮") || text.contains("菜市场") || text.contains("菜市場") || text.contains("果蔬") || text.contains("水果") || text.contains("杂货") || text.contains("雜貨") {
+            return "groceries"
+        }
+        if text.contains("mtr") || text.contains("bus") || text.contains("深圳通") || text.contains("地铁") {
+            return "transport"
+        }
+        if text.contains("打车") || text.contains("打車") || text.contains("出租车") || text.contains("出租車") || text.contains("滴滴") || text.contains("代驾") || text.contains("代駕") || text.contains("停车") || text.contains("停車") || text.contains("停车场") || text.contains("停車場") || text.contains("过路") || text.contains("過路") || text.contains("充电站") || text.contains("充電站") || text.contains("充电桩") || text.contains("充電樁") || text.contains("特来电") || text.contains("特來電") || text.contains("星星充电") || text.contains("星星充電") || text.contains("小桔充电") || text.contains("小桔充電") || text.contains("蔚来能源") || text.contains("蔚來能源") {
+            return "transport"
+        }
+        if text.contains("coca-cola") || text.contains("milk") {
+            return "groceries"
+        }
+        if text.contains("rehabilitation") || text.contains("psychiatric") || text.contains("hospital") || text.contains("clinic") || text.contains("药") {
+            return "health"
+        }
+        if text.contains("top up") || text.contains("充值") {
+            return "top_up"
+        }
+        return "shopping"
+    }
+
+    private static func transactionFingerprint(sourceType: String, accountID: String, externalRef: String, occurredAtMs: Int64, merchantName: String, amountMinor: Int64, currencyCode: String) -> String {
+        let parts = [sourceType.lowercased(), accountID.lowercased(), externalRef.lowercased(), String(occurredAtMs), merchantName.lowercased().trimmingCharacters(in: .whitespacesAndNewlines), String(amountMinor), currencyCode.uppercased()]
+        let data = Data(parts.joined(separator: "|").utf8)
+        return SHA256.hash(data: data).compactMap { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func dateKey(fromMs value: Int64) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 8)
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: Date(timeIntervalSince1970: TimeInterval(value) / 1000.0))
+    }
+
+    private static func encodeJSON(_ value: [String: String]) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
+              let text = String(data: data, encoding: .utf8) else { return "{}" }
+        return text
+    }
+
+    private static func dedupe(_ rows: [NJFinanceTransaction]) -> [NJFinanceTransaction] {
+        var out: [NJFinanceTransaction] = []
+        var seen: Set<String> = []
+        for row in rows where seen.insert(row.fingerprint).inserted {
+            out.append(row)
+        }
+        return out
+    }
+
+    private static func firstNonEmpty(_ values: [String]) -> String {
+        values.first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) ?? ""
     }
 }

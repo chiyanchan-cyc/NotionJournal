@@ -365,7 +365,9 @@ final class DBPlanningNoteTable {
             let rc1 = sqlite3_step(stmt)
             if rc1 != SQLITE_DONE { db.dbgErr(dbp, "planningNote.upsert.step", rc1) }
         }
-        enqueueDirty("planning_note", n.planningKey, "upsert", n.updatedAtMs)
+        if !DBDirtyQueueTable.isInPullScope() {
+            enqueueDirty("planning_note", n.planningKey, "upsert", n.updatedAtMs)
+        }
     }
 
     func markDeleted(kind: String, targetKey: String, nowMs: Int64) {
@@ -435,17 +437,62 @@ final class DBPlanningNoteTable {
             return ""
         }()
 
+        let existing = loadNoteByPlanningKeyIncludingDeleted(planningKey: planningKey)
+        let mergedNote: String = {
+            if !note.isEmpty { return note }
+            return existing?.note ?? ""
+        }()
+        let mergedProtonJSON: String = {
+            if !protonJSON.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return protonJSON }
+            return existing?.protonJSON ?? ""
+        }()
+
         let noteRow = NJPlanningNote(
             planningKey: planningKey,
             kind: resolvedKind,
             targetKey: resolvedTarget,
-            note: note,
-            protonJSON: protonJSON,
-            createdAtMs: createdAt > 0 ? createdAt : (loadNoteByPlanningKeyIncludingDeleted(planningKey: planningKey)?.createdAtMs ?? 0),
+            note: mergedNote,
+            protonJSON: mergedProtonJSON,
+            createdAtMs: createdAt > 0 ? createdAt : (existing?.createdAtMs ?? 0),
             updatedAtMs: updatedAt,
             deleted: deleted
         )
-        upsertNote(noteRow)
+
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            INSERT INTO nj_planning_note(
+                planning_key, kind, target_key, note, proton_json, created_at_ms, updated_at_ms, deleted
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(planning_key) DO UPDATE SET
+                kind = excluded.kind,
+                target_key = excluded.target_key,
+                note = excluded.note,
+                proton_json = excluded.proton_json,
+                created_at_ms = CASE
+                    WHEN nj_planning_note.created_at_ms IS NULL OR nj_planning_note.created_at_ms = 0
+                    THEN excluded.created_at_ms
+                    ELSE nj_planning_note.created_at_ms
+                END,
+                updated_at_ms = excluded.updated_at_ms,
+                deleted = excluded.deleted;
+            """
+            let rc0 = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
+            if rc0 != SQLITE_OK { db.dbgErr(dbp, "planningNote.applyRemote.prepare", rc0); return }
+            defer { sqlite3_finalize(stmt) }
+
+            sqlite3_bind_text(stmt, 1, noteRow.planningKey, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 2, noteRow.kind, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 3, noteRow.targetKey, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 4, noteRow.note, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 5, noteRow.protonJSON, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int64(stmt, 6, noteRow.createdAtMs)
+            sqlite3_bind_int64(stmt, 7, noteRow.updatedAtMs)
+            sqlite3_bind_int64(stmt, 8, Int64(noteRow.deleted))
+
+            let rc1 = sqlite3_step(stmt)
+            if rc1 != SQLITE_DONE { db.dbgErr(dbp, "planningNote.applyRemote.step", rc1) }
+        }
     }
 
     private func readRow(_ stmt: OpaquePointer?) -> NJPlanningNote {
@@ -1316,5 +1363,297 @@ final class DBFinanceSourceItemTable {
     }
     private func read(_ stmt: OpaquePointer?) -> NJFinanceSourceItem {
         NJFinanceSourceItem(sourceItemID: String(cString: sqlite3_column_text(stmt, 0)), sourceID: String(cString: sqlite3_column_text(stmt, 1)), sourceName: String(cString: sqlite3_column_text(stmt, 2)), sourceURL: String(cString: sqlite3_column_text(stmt, 3)), marketID: String(cString: sqlite3_column_text(stmt, 4)), premiseIDsJSON: String(cString: sqlite3_column_text(stmt, 5)), fetchedAtMs: sqlite3_column_int64(stmt, 6), publishedAtMs: sqlite3_column_int64(stmt, 7), contentHash: String(cString: sqlite3_column_text(stmt, 8)), rawExcerpt: String(cString: sqlite3_column_text(stmt, 9)), rawTextCKAssetPath: String(cString: sqlite3_column_text(stmt, 10)), rawJSON: String(cString: sqlite3_column_text(stmt, 11)), deleted: sqlite3_column_int64(stmt, 12))
+    }
+}
+
+final class DBFinanceTransactionTable {
+    let db: SQLiteDB
+    let enqueueDirty: (String, String, String, Int64) -> Void
+
+    init(db: SQLiteDB, enqueueDirty: @escaping (String, String, String, Int64) -> Void) {
+        self.db = db
+        self.enqueueDirty = enqueueDirty
+    }
+
+    func listRecent(limit: Int = 200) -> [NJFinanceTransaction] {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT transaction_id, fingerprint, source_type, account_id, account_label, external_ref,
+                   occurred_at_ms, date_key, merchant_name, amount_minor, currency_code, direction,
+                   analysis_nature, category, tag_text, fx_rate_to_cny, amount_cny_minor, status, counterparty,
+                   item_name, details, note, import_batch_id, source_file_name, raw_payload_json, created_at_ms,
+                   updated_at_ms, deleted
+            FROM nj_finance_transaction
+            WHERE deleted = 0
+            ORDER BY occurred_at_ms DESC, updated_at_ms DESC
+            LIMIT ?;
+            """
+            guard sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_int(stmt, 1, Int32(max(1, limit)))
+            var out: [NJFinanceTransaction] = []
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                out.append(read(stmt))
+            }
+            return out
+        }
+    }
+
+    func list(startKey: String, endKey: String) -> [NJFinanceTransaction] {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT transaction_id, fingerprint, source_type, account_id, account_label, external_ref,
+                   occurred_at_ms, date_key, merchant_name, amount_minor, currency_code, direction,
+                   analysis_nature, category, tag_text, fx_rate_to_cny, amount_cny_minor, status, counterparty,
+                   item_name, details, note, import_batch_id, source_file_name, raw_payload_json, created_at_ms,
+                   updated_at_ms, deleted
+            FROM nj_finance_transaction
+            WHERE deleted = 0 AND date_key BETWEEN ? AND ?
+            ORDER BY occurred_at_ms DESC, updated_at_ms DESC;
+            """
+            guard sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, startKey, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 2, endKey, -1, SQLITE_TRANSIENT)
+            var out: [NJFinanceTransaction] = []
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                out.append(read(stmt))
+            }
+            return out
+        }
+    }
+
+    func load(transactionID: String) -> NJFinanceTransaction? {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT transaction_id, fingerprint, source_type, account_id, account_label, external_ref,
+                   occurred_at_ms, date_key, merchant_name, amount_minor, currency_code, direction,
+                   analysis_nature, category, tag_text, fx_rate_to_cny, amount_cny_minor, status, counterparty,
+                   item_name, details, note, import_batch_id, source_file_name, raw_payload_json, created_at_ms,
+                   updated_at_ms, deleted
+            FROM nj_finance_transaction
+            WHERE transaction_id = ?
+            LIMIT 1;
+            """
+            guard sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, transactionID, -1, SQLITE_TRANSIENT)
+            guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+            return read(stmt)
+        }
+    }
+
+    func loadByFingerprint(_ fingerprint: String) -> NJFinanceTransaction? {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT transaction_id, fingerprint, source_type, account_id, account_label, external_ref,
+                   occurred_at_ms, date_key, merchant_name, amount_minor, currency_code, direction,
+                   analysis_nature, category, tag_text, fx_rate_to_cny, amount_cny_minor, status, counterparty,
+                   item_name, details, note, import_batch_id, source_file_name, raw_payload_json, created_at_ms,
+                   updated_at_ms, deleted
+            FROM nj_finance_transaction
+            WHERE fingerprint = ?
+            LIMIT 1;
+            """
+            guard sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, fingerprint, -1, SQLITE_TRANSIENT)
+            guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+            return read(stmt)
+        }
+    }
+
+    func upsert(_ row: NJFinanceTransaction, enqueue: Bool = true) {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            INSERT INTO nj_finance_transaction(
+                transaction_id, fingerprint, source_type, account_id, account_label, external_ref,
+                occurred_at_ms, date_key, merchant_name, amount_minor, currency_code, direction,
+                analysis_nature, category, tag_text, fx_rate_to_cny, amount_cny_minor, status, counterparty,
+                item_name, details, note, import_batch_id, source_file_name, raw_payload_json, created_at_ms,
+                updated_at_ms, deleted
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(transaction_id) DO UPDATE SET
+                fingerprint = excluded.fingerprint,
+                source_type = excluded.source_type,
+                account_id = excluded.account_id,
+                account_label = excluded.account_label,
+                external_ref = excluded.external_ref,
+                occurred_at_ms = excluded.occurred_at_ms,
+                date_key = excluded.date_key,
+                merchant_name = excluded.merchant_name,
+                amount_minor = excluded.amount_minor,
+                currency_code = excluded.currency_code,
+                direction = excluded.direction,
+                analysis_nature = excluded.analysis_nature,
+                category = excluded.category,
+                tag_text = excluded.tag_text,
+                fx_rate_to_cny = excluded.fx_rate_to_cny,
+                amount_cny_minor = excluded.amount_cny_minor,
+                status = excluded.status,
+                counterparty = excluded.counterparty,
+                item_name = excluded.item_name,
+                details = excluded.details,
+                note = excluded.note,
+                import_batch_id = excluded.import_batch_id,
+                source_file_name = excluded.source_file_name,
+                raw_payload_json = excluded.raw_payload_json,
+                created_at_ms = CASE
+                    WHEN nj_finance_transaction.created_at_ms IS NULL OR nj_finance_transaction.created_at_ms = 0
+                    THEN excluded.created_at_ms
+                    ELSE nj_finance_transaction.created_at_ms
+                END,
+                updated_at_ms = excluded.updated_at_ms,
+                deleted = excluded.deleted;
+            """
+            guard sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+            defer { sqlite3_finalize(stmt) }
+
+            sqlite3_bind_text(stmt, 1, row.transactionID, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 2, row.fingerprint, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 3, row.sourceType, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 4, row.accountID, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 5, row.accountLabel, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 6, row.externalRef, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int64(stmt, 7, row.occurredAtMs)
+            sqlite3_bind_text(stmt, 8, row.dateKey, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 9, row.merchantName, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int64(stmt, 10, row.amountMinor)
+            sqlite3_bind_text(stmt, 11, row.currencyCode, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 12, row.direction, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 13, row.analysisNature, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 14, row.category, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 15, row.tagText, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_double(stmt, 16, row.fxRateToCNY)
+            sqlite3_bind_int64(stmt, 17, row.amountCNYMinor)
+            sqlite3_bind_text(stmt, 18, row.status, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 19, row.counterparty, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 20, row.itemName, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 21, row.details, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 22, row.note, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 23, row.importBatchID, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 24, row.sourceFileName, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 25, row.rawPayloadJSON, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int64(stmt, 26, row.createdAtMs)
+            sqlite3_bind_int64(stmt, 27, row.updatedAtMs)
+            sqlite3_bind_int64(stmt, 28, row.deleted)
+            _ = sqlite3_step(stmt)
+        }
+        if enqueue {
+            enqueueDirty("finance_transaction", row.transactionID, "upsert", row.updatedAtMs)
+        }
+    }
+
+    func loadFields(transactionID: String) -> [String: Any]? {
+        guard let row = load(transactionID: transactionID) else { return nil }
+        return [
+            "transaction_id": row.transactionID,
+            "fingerprint": row.fingerprint,
+            "source_type": row.sourceType,
+            "account_id": row.accountID,
+            "account_label": row.accountLabel,
+            "external_ref": row.externalRef,
+            "occurred_at_ms": row.occurredAtMs,
+            "date_key": row.dateKey,
+            "merchant_name": row.merchantName,
+            "amount_minor": row.amountMinor,
+            "currency_code": row.currencyCode,
+            "direction": row.direction,
+            "analysis_nature": row.analysisNature,
+            "category": row.category,
+            "tag_text": row.tagText,
+            "fx_rate_to_cny": row.fxRateToCNY,
+            "amount_cny_minor": row.amountCNYMinor,
+            "status": row.status,
+            "counterparty": row.counterparty,
+            "item_name": row.itemName,
+            "details": row.details,
+            "note": row.note,
+            "import_batch_id": row.importBatchID,
+            "source_file_name": row.sourceFileName,
+            "raw_payload_json": row.rawPayloadJSON,
+            "created_at_ms": row.createdAtMs,
+            "updated_at_ms": row.updatedAtMs,
+            "deleted": row.deleted
+        ]
+    }
+
+    func applyRemote(_ fields: [String: Any]) {
+        let transactionID = (fields["transaction_id"] as? String) ?? (fields["transactionID"] as? String) ?? ""
+        guard !transactionID.isEmpty else { return }
+        upsert(
+            NJFinanceTransaction(
+                transactionID: transactionID,
+                fingerprint: (fields["fingerprint"] as? String) ?? "",
+                sourceType: (fields["source_type"] as? String) ?? (fields["sourceType"] as? String) ?? "",
+                accountID: (fields["account_id"] as? String) ?? (fields["accountID"] as? String) ?? "",
+                accountLabel: (fields["account_label"] as? String) ?? (fields["accountLabel"] as? String) ?? "",
+                externalRef: (fields["external_ref"] as? String) ?? (fields["externalRef"] as? String) ?? "",
+                occurredAtMs: (fields["occurred_at_ms"] as? Int64) ?? ((fields["occurred_at_ms"] as? NSNumber)?.int64Value ?? 0),
+                dateKey: (fields["date_key"] as? String) ?? (fields["dateKey"] as? String) ?? "",
+                merchantName: (fields["merchant_name"] as? String) ?? (fields["merchantName"] as? String) ?? "",
+                amountMinor: (fields["amount_minor"] as? Int64) ?? ((fields["amount_minor"] as? NSNumber)?.int64Value ?? 0),
+                currencyCode: (fields["currency_code"] as? String) ?? (fields["currencyCode"] as? String) ?? "",
+                direction: (fields["direction"] as? String) ?? "",
+                analysisNature: (fields["analysis_nature"] as? String) ?? (fields["analysisNature"] as? String) ?? "",
+                category: (fields["category"] as? String) ?? "",
+                tagText: (fields["tag_text"] as? String) ?? (fields["tagText"] as? String) ?? "",
+                fxRateToCNY: (fields["fx_rate_to_cny"] as? Double) ?? ((fields["fx_rate_to_cny"] as? NSNumber)?.doubleValue ?? 1.0),
+                amountCNYMinor: (fields["amount_cny_minor"] as? Int64) ?? ((fields["amount_cny_minor"] as? NSNumber)?.int64Value ?? 0),
+                status: (fields["status"] as? String) ?? "",
+                counterparty: (fields["counterparty"] as? String) ?? "",
+                itemName: (fields["item_name"] as? String) ?? (fields["itemName"] as? String) ?? "",
+                details: (fields["details"] as? String) ?? "",
+                note: (fields["note"] as? String) ?? "",
+                importBatchID: (fields["import_batch_id"] as? String) ?? (fields["importBatchID"] as? String) ?? "",
+                sourceFileName: (fields["source_file_name"] as? String) ?? (fields["sourceFileName"] as? String) ?? "",
+                rawPayloadJSON: (fields["raw_payload_json"] as? String) ?? (fields["rawPayloadJSON"] as? String) ?? "",
+                createdAtMs: (fields["created_at_ms"] as? Int64) ?? ((fields["created_at_ms"] as? NSNumber)?.int64Value ?? 0),
+                updatedAtMs: (fields["updated_at_ms"] as? Int64) ?? ((fields["updated_at_ms"] as? NSNumber)?.int64Value ?? 0),
+                deleted: (fields["deleted"] as? Int64) ?? ((fields["deleted"] as? NSNumber)?.int64Value ?? 0)
+            )
+        )
+    }
+
+    private func text(_ stmt: OpaquePointer?, _ column: Int32) -> String {
+        sqlite3_column_text(stmt, column).flatMap { String(cString: $0) } ?? ""
+    }
+
+    private func read(_ stmt: OpaquePointer?) -> NJFinanceTransaction {
+        NJFinanceTransaction(
+            transactionID: text(stmt, 0),
+            fingerprint: text(stmt, 1),
+            sourceType: text(stmt, 2),
+            accountID: text(stmt, 3),
+            accountLabel: text(stmt, 4),
+            externalRef: text(stmt, 5),
+            occurredAtMs: sqlite3_column_int64(stmt, 6),
+            dateKey: text(stmt, 7),
+            merchantName: text(stmt, 8),
+            amountMinor: sqlite3_column_int64(stmt, 9),
+            currencyCode: text(stmt, 10),
+            direction: text(stmt, 11),
+            analysisNature: text(stmt, 12),
+            category: text(stmt, 13),
+            tagText: text(stmt, 14),
+            fxRateToCNY: sqlite3_column_double(stmt, 15),
+            amountCNYMinor: sqlite3_column_int64(stmt, 16),
+            status: text(stmt, 17),
+            counterparty: text(stmt, 18),
+            itemName: text(stmt, 19),
+            details: text(stmt, 20),
+            note: text(stmt, 21),
+            importBatchID: text(stmt, 22),
+            sourceFileName: text(stmt, 23),
+            rawPayloadJSON: text(stmt, 24),
+            createdAtMs: sqlite3_column_int64(stmt, 25),
+            updatedAtMs: sqlite3_column_int64(stmt, 26),
+            deleted: sqlite3_column_int64(stmt, 27)
+        )
     }
 }

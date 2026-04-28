@@ -3,6 +3,7 @@ import UIKit
 
 struct NJBlockHostView: View {
     let index: Int
+    let blockID: String
 
     let createdAtMs: Int64?
     let domainPreview: String?
@@ -28,6 +29,8 @@ struct NJBlockHostView: View {
     let onMoveToClipboard: (() -> Void)?
     let headerBadgeSymbolName: String?
     let headerBadgeText: String?
+    let checklistChecked: Binding<Bool>?
+    let onToggleChecklistChecked: (() -> Void)?
 
     @Binding var isCollapsed: Bool
 
@@ -40,6 +43,7 @@ struct NJBlockHostView: View {
 
     @State private var didHydrate = false
     @State private var editorHeight: CGFloat = 44
+    @State private var suppressFocusForCurrentTap = false
     
     @State private var showClipMenu: Bool = false
     @State private var showCreatedAtSheet: Bool = false
@@ -53,6 +57,7 @@ struct NJBlockHostView: View {
 
     init(
         index: Int,
+        blockID: String,
         createdAtMs: Int64?,
         domainPreview: String?,
         onEditTags: (() -> Void)?,
@@ -74,6 +79,8 @@ struct NJBlockHostView: View {
         onMoveToClipboard: (() -> Void)? = nil,
         headerBadgeSymbolName: String? = nil,
         headerBadgeText: String? = nil,
+        checklistChecked: Binding<Bool>? = nil,
+        onToggleChecklistChecked: (() -> Void)? = nil,
         inheritedTags: [String] = [],
         editableTags: [String] = [],
         tagJSON: String? = nil,
@@ -81,6 +88,7 @@ struct NJBlockHostView: View {
         tagSuggestionsProvider: ((String, Int) -> [String])? = nil
     ) {
         self.index = index
+        self.blockID = blockID
         self.createdAtMs = createdAtMs
         self.domainPreview = domainPreview
         self.onEditTags = onEditTags
@@ -106,6 +114,8 @@ struct NJBlockHostView: View {
         self.onMoveToClipboard = onMoveToClipboard
         self.headerBadgeSymbolName = headerBadgeSymbolName
         self.headerBadgeText = headerBadgeText
+        self.checklistChecked = checklistChecked
+        self.onToggleChecklistChecked = onToggleChecklistChecked
         self.onDelete = onDelete
     }
 
@@ -129,14 +139,77 @@ struct NJBlockHostView: View {
         }
     }
 
+    @ViewBuilder
+    private func pdfBadgeView() -> some View {
+        if hasClipPDF {
+            Button {
+                onOpenClipPDF?()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "doc.richtext")
+                    Text("PDF")
+                }
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.orange)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(
+                    Capsule()
+                        .fill(Color.orange.opacity(0.14))
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(onOpenClipPDF == nil)
+        }
+    }
+
     private func oneLine(_ s: String) -> String {
         let t = s.replacingOccurrences(of: "\u{FFFC}", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
         if t.isEmpty { return "" }
         return t.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
     }
 
+    private func collapsedPreviewAttributedText() -> AttributedString {
+        let mutable = NSMutableAttributedString(attributedString: attr)
+        let full = NSRange(location: 0, length: mutable.length)
+        mutable.mutableString.replaceOccurrences(
+            of: "\u{FFFC}",
+            with: "",
+            options: [],
+            range: full
+        )
+
+        let raw = mutable.string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return AttributedString("") }
+
+        let firstLine = raw.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
+        guard !firstLine.isEmpty else { return AttributedString("") }
+
+        let ns = mutable.string as NSString
+        let lineRange = ns.range(of: firstLine)
+        guard lineRange.location != NSNotFound else {
+            return AttributedString(firstLine)
+        }
+
+        let preview = NJEditorNormalizeBodyText(
+            mutable.attributedSubstring(from: lineRange)
+        )
+        return (try? AttributedString(preview, including: \.uiKit)) ?? AttributedString(firstLine)
+    }
+
     private func normalizedTag(_ s: String) -> String {
         s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func requestFocusIfAllowed() {
+        guard !suppressFocusForCurrentTap else { return }
+        if !isFocused {
+            onFocus()
+        }
+    }
+
+    private func copyBlockID() {
+        UIPasteboard.general.string = blockID
     }
 
     private func uniqPreserveOrder(_ xs: [String]) -> [String] {
@@ -248,7 +321,13 @@ struct NJBlockHostView: View {
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             VStack(spacing: 2) {
-                Button { isCollapsed.toggle() } label: {
+                Button {
+                    suppressFocusForCurrentTap = true
+                    isCollapsed.toggle()
+                    DispatchQueue.main.async {
+                        suppressFocusForCurrentTap = false
+                    }
+                } label: {
                     Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.secondary)
@@ -261,6 +340,19 @@ struct NJBlockHostView: View {
                     .foregroundStyle(.secondary)
                     .baselineOffset(-2)
 
+                if let checklistChecked {
+                    Button {
+                        onToggleChecklistChecked?()
+                    } label: {
+                        Image(systemName: checklistChecked.wrappedValue ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(checklistChecked.wrappedValue ? .green : .secondary)
+                            .frame(width: 20, height: 20)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 4)
+                }
+
                 Spacer(minLength: 0)
             }
             .frame(width: 26)
@@ -271,16 +363,17 @@ struct NJBlockHostView: View {
                     VStack(alignment: .leading, spacing: 6) {
                         if isCollapsed {
                             HStack(alignment: .center, spacing: 8) {
-                                Text(oneLine(attr.string))
-                                    .font(.body.weight(.semibold))
-                                    .foregroundStyle(.primary)
+                                Text(collapsedPreviewAttributedText())
                                     .lineLimit(1)
                                     .truncationMode(.tail)
                                     .frame(maxWidth: .infinity, alignment: .leading)
+                                pdfBadgeView()
                                 headerBadgeView()
                             }
                             .contentShape(Rectangle())
-                            .onTapGesture { onFocus() }
+                            .onTapGesture {
+                                requestFocusIfAllowed()
+                            }
                         } else {
                             HStack(alignment: .center, spacing: 8) {
                                 if let ms = createdAtMs, ms > 0 {
@@ -290,6 +383,7 @@ struct NJBlockHostView: View {
                                         .padding(.top, 2)
                                 }
                                 Spacer(minLength: 0)
+                                pdfBadgeView()
                                 headerBadgeView()
                             }
 
@@ -301,9 +395,12 @@ struct NJBlockHostView: View {
                                 measuredHeight: $editorHeight,
                                 handle: protonHandle
                             )
-                            .frame(minHeight: editorHeight)
-                            .contentShape(Rectangle())
-                            .onTapGesture { onFocus() }
+                            .frame(height: max(44, editorHeight))
+                            .simultaneousGesture(
+                                TapGesture().onEnded {
+                                    requestFocusIfAllowed()
+                                }
+                            )
                             .onAppear {
                                 if !isCollapsed && !didHydrate {
                                     didHydrate = true
@@ -311,8 +408,9 @@ struct NJBlockHostView: View {
                                 }
                             }
 
-                            HStack {
+                            HStack(spacing: 8) {
                                 Spacer(minLength: 0)
+                                pdfBadgeView()
                                 if let raw = domainPreview {
                                     let s = domainBottom3(raw)
                                     if !s.isEmpty {
@@ -366,6 +464,12 @@ struct NJBlockHostView: View {
                         }
                         .disabled(onMoveToClipboard == nil)
 
+                        Button {
+                            copyBlockID()
+                        } label: {
+                            Label("Copy Block ID", systemImage: "number")
+                        }
+
                         Divider()
                         Button {
                             showClipMenu = true
@@ -395,7 +499,11 @@ struct NJBlockHostView: View {
             }
         }
         .contentShape(Rectangle())
-        .onTapGesture { onFocus() }
+        .simultaneousGesture(
+            TapGesture().onEnded {
+                requestFocusIfAllowed()
+            }
+        )
         .padding(.vertical, isCollapsed ? 2 : 6)
         
         
@@ -559,11 +667,6 @@ struct NJBlockHostView: View {
             if v {
                 didHydrate = false
                 protonHandle.invalidateHydration()
-            } else {
-                if !didHydrate {
-                    didHydrate = true
-                    DispatchQueue.main.async { onHydrateProton() }
-                }
             }
         }
     }

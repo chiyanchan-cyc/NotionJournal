@@ -15,17 +15,14 @@ extension NJNoteEditorContainerView {
         }
 
         handle.onUserTyped = { [weak p = persistence, weak handle] _, _ in
-            guard let p, let id = handle?.ownerBlockUUID else { return }
-            p.focusedBlockID = id
-            p.markDirty(id)
-            p.scheduleCommit(id)
+            guard let p, let handle, let id = handle.ownerBlockUUID else { return }
+            if handle.isRunningProgrammaticUpdate { return }
+            p.enqueueEditorChange(id, source: "container.onUserTyped.\(handle.userEditSourceHint)")
         }
 
-        handle.onSnapshot = { [weak p = persistence, weak handle] _, _ in
-            guard let p, let id = handle?.ownerBlockUUID else { return }
-            p.focusedBlockID = id
-            p.markDirty(id)
-            p.scheduleCommit(id)
+        handle.onSnapshot = { _, _ in
+            // Passive snapshots can be emitted by layout/hydration on idle devices.
+            // Only explicit user edits should enqueue a save.
         }
 
         return handle
@@ -76,7 +73,7 @@ extension NJNoteEditorContainerView {
 
         let inheritedTagJSON = inheritedNoteTagJSON()
 
-        let new = NJNoteEditorContainerPersistence.BlockState(
+        var new = NJNoteEditorContainerPersistence.BlockState(
             id: newID,
             blockID: UUID().uuidString,
             instanceID: "",
@@ -88,13 +85,14 @@ extension NJNoteEditorContainerView {
             isDirty: true,
             tagJSON: inheritedTagJSON
         )
+        applyCardDefaults(to: &new)
 
         persistence.blocks.insert(new, at: insertAt)
 
         pendingFocusID = new.id
         pendingFocusToStart = true
 
-        persistence.scheduleCommit(new.id)
+        persistence.scheduleCommit(new.id, source: "container.addBlock")
     }
 
     func addTaggedBlocks(after id: UUID?, goals: [NJGoalSummary]) {
@@ -142,7 +140,7 @@ extension NJNoteEditorContainerView {
         }()
         let attr = makeGoalReflectBlockAttr(goalName: trimmedGoalName, tag: trimmedTag)
 
-        let new = NJNoteEditorContainerPersistence.BlockState(
+        var new = NJNoteEditorContainerPersistence.BlockState(
             id: newID,
             blockID: UUID().uuidString,
             instanceID: "",
@@ -154,13 +152,14 @@ extension NJNoteEditorContainerView {
             isDirty: true,
             tagJSON: tagJSON
         )
+        applyCardDefaults(to: &new)
 
         persistence.blocks.insert(new, at: insertAt)
 
         pendingFocusID = new.id
         pendingFocusToStart = true
 
-        persistence.scheduleCommit(new.id)
+        persistence.scheduleCommit(new.id, source: "container.addTaggedBlock")
         return new.id
     }
 
@@ -202,7 +201,7 @@ extension NJNoteEditorContainerView {
             let handle = makeWiredHandle()
             handle.ownerBlockUUID = newID
 
-            let b = NJNoteEditorContainerPersistence.BlockState(
+            var b = NJNoteEditorContainerPersistence.BlockState(
                 id: newID,
                 blockID: UUID().uuidString,
                 instanceID: "",
@@ -213,16 +212,17 @@ extension NJNoteEditorContainerView {
                 protonHandle: handle,
                 isDirty: true
             )
+            applyCardDefaults(to: &b)
             persistence.blocks = [b]
             persistence.focusedBlockID = b.id
-            persistence.scheduleCommit(b.id)
+            persistence.scheduleCommit(b.id, source: "container.deleteBlock.createFallback")
             return
         }
 
         let nextID = persistence.blocks[min(i, persistence.blocks.count - 1)].id
         persistence.focusedBlockID = nextID
-        persistence.markDirty(nextID)
-        persistence.scheduleCommit(nextID)
+        persistence.markDirty(nextID, source: "container.deleteBlock.reorder")
+        persistence.scheduleCommit(nextID, source: "container.deleteBlock.reorder")
     }
 
     func splitBlock(_ id: UUID) {
@@ -244,12 +244,21 @@ extension NJNoteEditorContainerView {
 
 
         for i in persistence.blocks.indices {
+            if persistence.noteType == .card && persistence.blocks[i].cardRowID.isEmpty {
+                persistence.blocks[i].cardRowID = nextCardRowIDForDraft()
+            }
+            if persistence.noteType == .card && persistence.blocks[i].cardStatus.isEmpty {
+                persistence.blocks[i].cardStatus = "Pending"
+            }
+            if persistence.noteType == .card && persistence.blocks[i].cardPriority.isEmpty {
+                persistence.blocks[i].cardPriority = "Medium"
+            }
             persistence.blocks[i].protonHandle.ownerBlockUUID = persistence.blocks[i].id
         }
 
         if let fid = persistence.focusedBlockID {
-            persistence.markDirty(fid)
-            persistence.scheduleCommit(fid)
+            persistence.markDirty(fid, source: "container.splitBlock")
+            persistence.scheduleCommit(fid, source: "container.splitBlock")
         }
 
     }
@@ -273,4 +282,23 @@ extension NJNoteEditorContainerView {
         persistence.blocks = Array(persistence.blocks)
     }
 
+    private func nextCardRowIDForDraft() -> String {
+        let persistedMax = store.notes.nextCardRowID(noteID: noteID.raw)
+        let persistedValue = Int(persistedMax) ?? 1
+        let localMax = persistence.blocks.compactMap { Int($0.cardRowID) }.max() ?? 0
+        return String(max(localMax + 1, persistedValue))
+    }
+
+    private func applyCardDefaults(to block: inout NJNoteEditorContainerPersistence.BlockState) {
+        guard persistence.noteType == .card else { return }
+        if block.cardRowID.isEmpty {
+            block.cardRowID = nextCardRowIDForDraft()
+        }
+        if block.cardStatus.isEmpty {
+            block.cardStatus = "Pending"
+        }
+        if block.cardPriority.isEmpty {
+            block.cardPriority = "Medium"
+        }
+    }
 }

@@ -9,13 +9,15 @@ struct IPadWorkspaceView: View {
     @State private var selectedNoteID: NJNoteID? = nil
 
     private var notebookTabs: [String] {
-        if notebook == "self" { return ["self.reflection", "self.finance", "self.marriage"] }
+        if notebook == "self" { return ["self.reflection", "self.finance", "self.database"] }
         if notebook == "zz" { return ["zz.edu", "zz.adhd"] }
         return ["mushy.general"]
     }
 
     private var notesInTab: [NJNote] {
-        store.notes.listNotes(tabDomainKey: tabDomainKey).sorted {
+        (store.showFavoriteNotesOnly
+            ? store.notes.listFavoriteNotes(notebook: store.currentNotebookTitle)
+            : store.notes.listNotes(tabDomainKey: tabDomainKey)).sorted {
             if $0.pinned != $1.pinned { return $0.pinned > $1.pinned }
             if $0.updatedAtMs != $1.updatedAtMs { return $0.updatedAtMs > $1.updatedAtMs }
             return String(describing: $0.id) > String(describing: $1.id)
@@ -62,6 +64,11 @@ struct IPadWorkspaceView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             HStack(spacing: 6) {
                                 Text(n.title.isEmpty ? "Untitled" : n.title).font(.headline)
+                                if n.favorited > 0 {
+                                    Image(systemName: "star.fill")
+                                        .font(.caption)
+                                        .foregroundStyle(.yellow)
+                                }
                                 if n.pinned > 0 {
                                     Image(systemName: "pin.fill")
                                         .font(.caption)
@@ -74,7 +81,15 @@ struct IPadWorkspaceView: View {
                         .onTapGesture(count: 2) {
                             selectedNoteID = n.id
                         }
-                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button {
+                                store.notes.setFavorited(noteID: n.id.raw, favorited: n.favorited == 0)
+                                store.objectWillChange.send()
+                            } label: {
+                                Label(n.favorited == 0 ? "Star" : "Unstar", systemImage: n.favorited == 0 ? "star" : "star.slash")
+                            }
+                            .tint(n.favorited == 0 ? .yellow : .gray)
+
                             Button {
                                 store.notes.setPinned(noteID: n.id.raw, pinned: n.pinned == 0)
                                 store.objectWillChange.send()

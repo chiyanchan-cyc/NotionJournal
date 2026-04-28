@@ -8,12 +8,16 @@ enum NJTimeSlotCategoryIntent: String, AppEnum {
     case piano
     case exercise
     case personal
+    case programming
+    case videoEditing
 
     static var typeDisplayRepresentation: TypeDisplayRepresentation = "Time Slot Category"
     static var caseDisplayRepresentations: [NJTimeSlotCategoryIntent: DisplayRepresentation] = [
         .piano: "Piano",
         .exercise: "Exercise",
-        .personal: "Personal"
+        .personal: "Personal",
+        .programming: "Programming",
+        .videoEditing: "Video Editing"
     ]
 
     var toDomain: NJTimeSlotCategory {
@@ -21,6 +25,8 @@ enum NJTimeSlotCategoryIntent: String, AppEnum {
         case .piano: return .piano
         case .exercise: return .exercise
         case .personal: return .personal
+        case .programming: return .programming
+        case .videoEditing: return .videoEditing
         }
     }
 }
@@ -28,7 +34,7 @@ enum NJTimeSlotCategoryIntent: String, AppEnum {
 @available(iOS 16.0, watchOS 10.0, *)
 struct NJLogTimeSlotIntent: AppIntent {
     static var title: LocalizedStringResource = "Log Time Slot"
-    static var description = IntentDescription("Create a personal time slot quickly for piano, exercise, or personal focus.")
+    static var description = IntentDescription("Create a time slot quickly for personal work, programming, video editing, piano, or exercise.")
 
     @Parameter(title: "Category")
     var category: NJTimeSlotCategoryIntent
@@ -56,6 +62,8 @@ struct NJLogTimeSlotIntent: AppIntent {
             case .piano: return "Piano Practice"
             case .exercise: return "Exercise"
             case .personal: return "Personal Focus"
+            case .programming: return "Programming"
+            case .videoEditing: return "Video Editing"
             }
         }()
 

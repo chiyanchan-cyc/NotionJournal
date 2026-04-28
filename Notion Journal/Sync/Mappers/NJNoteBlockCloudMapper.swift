@@ -19,7 +19,7 @@ enum NJNoteBlockCloudMapper {
     ) -> Bool {
 
         switch key {
-        case "note_id", "block_id":
+        case "note_id", "block_id", "view_state_json":
             if let s = val as? String { f[key] = s; return true }
             if let ref = val as? CKRecord.Reference {
                 f[key] = ref.recordID.recordName
@@ -37,7 +37,7 @@ enum NJNoteBlockCloudMapper {
             if ms > 0 { f[key] = ms }
             return true
 
-        case "order_key", "deleted":
+        case "order_key", "deleted", "is_checked":
             f[key] = val
             return true
 

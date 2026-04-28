@@ -244,6 +244,8 @@ struct NJGoalDetailWorkspaceView: View {
                     timelineRow(blockID: item.blockID)
                 }
             }
+
+            NJBlockListBottomRunwayRow()
         }
         .listStyle(.plain)
     }
@@ -257,6 +259,7 @@ struct NJGoalDetailWorkspaceView: View {
 
         let view = NJBlockHostView(
             index: (persistence.progressBlocks.firstIndex(where: { $0.id == id }) ?? 0) + 1,
+            blockID: b.blockID,
             createdAtMs: b.createdAtMs,
             domainPreview: b.domainPreview,
             onEditTags: nil,
@@ -307,6 +310,7 @@ struct NJGoalDetailWorkspaceView: View {
 
         let view = NJBlockHostView(
             index: (persistence.timelineBlocks.firstIndex(where: { $0.id == id }) ?? 0) + 1,
+            blockID: b.blockID,
             createdAtMs: b.createdAtMs,
             domainPreview: b.domainPreview,
             onEditTags: nil,
@@ -367,13 +371,9 @@ struct NJGoalDetailWorkspaceView: View {
                 persistence.markTimelineDirty(id)
             }
         }
-        h.onSnapshot = { [weak persistence, weak h] _, _ in
-            guard let persistence, let id = h?.ownerBlockUUID else { return }
-            if persistence.progressBlocks.contains(where: { $0.id == id }) {
-                persistence.markProgressDirty(id, schedule: false)
-            } else if persistence.timelineBlocks.contains(where: { $0.id == id }) {
-                persistence.markTimelineDirty(id, schedule: false)
-            }
+        h.onSnapshot = { _, _ in
+            // Passive snapshots can be emitted by layout/hydration on idle devices.
+            // Only explicit user edits should mark goal blocks dirty.
         }
         return h
     }

@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct NJDebugSQLConsole: View {
+    @EnvironmentObject private var store: AppStore
     let db: SQLiteDB
 
     @State private var sql: String = "SELECT name FROM sqlite_master;"
@@ -12,6 +13,7 @@ struct NJDebugSQLConsole: View {
     @State private var copiedAt: Date?
 
     @State private var showNukeConfirm: Bool = false
+    @State private var showRecoverNotesConfirm: Bool = false
 
     @Environment(\.dismiss) private var dismiss
 
@@ -93,8 +95,16 @@ struct NJDebugSQLConsole: View {
                     Button("Copy") { copyOutput() }
                         .disabled(output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
-                    Button(role: .destructive) { showNukeConfirm = true } label: {
-                        Text("NUKE + CK RESET")
+                    Menu("Recovery") {
+                        Button("Recover Notes/Cards") {
+                            showRecoverNotesConfirm = true
+                        }
+
+                        Button(role: .destructive) {
+                            showNukeConfirm = true
+                        } label: {
+                            Text("NUKE + CK RESET")
+                        }
                     }
 
                     Spacer()
@@ -121,6 +131,12 @@ struct NJDebugSQLConsole: View {
             Button("NUKE", role: .destructive) { nukeAndResetCK() }
         } message: {
             Text("This wipes local tables and clears CK cursors so next bootstrap pulls everything from CloudKit again.")
+        }
+        .alert("Recover Notes/Cards from Cloud?", isPresented: $showRecoverNotesConfirm) {
+            Button("Cancel", role: .cancel) {}
+            Button("Recover", role: .destructive) { recoverNotesAndCardsFromCloud() }
+        } message: {
+            Text("This resets only the local pull cursors for notes, note blocks, blocks, and attachments, then re-downloads them from iCloud. It does not erase data from your other devices.")
         }
     }
 
@@ -171,6 +187,18 @@ struct NJDebugSQLConsole: View {
             "SELECT COUNT(*) AS cnt FROM nj_note;",
             "",
             "Then wait for CK bootstrap and re-check counts."
+        ].joined(separator: "\n")
+        ranAt = Date()
+    }
+
+    private func recoverNotesAndCardsFromCloud() {
+        store.recoverNotesAndCardsFromCloudNow()
+        output = [
+            "OK: Reset local CloudKit pull cursors for note-related entities.",
+            "Entities: note, block, note_block, attachment.",
+            "Requested re-download from iCloud.",
+            "",
+            "Watch the app logs for refreshed note pulls and then re-open the affected card."
         ].joined(separator: "\n")
         ranAt = Date()
     }

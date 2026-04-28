@@ -14,35 +14,83 @@ private let NJShortcutLog = Logger(subsystem: "NotionJournal", category: "Shortc
 struct NJReconstructedManualView: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
 
     // Reuse the existing Persistence class!
     @StateObject private var persistence: NJReconstructedNotePersistence
 
     // Inputs
-    @State private var tagInput: String = ""
+    @State private var filterInput: String = ""
+    @State private var includeMode: NJReconstructedIncludeMode = .any
     @State private var startDate: Date = Date()
     @State private var endDate: Date = Date()
     @State private var useDateRange: Bool = false
     @State private var pickedPhotoItem: PhotosPickerItem? = nil
 
     private let onTitleChange: ((String) -> Void)?
-    private let onTagChange: ((String) -> Void)?
+    private let onFilterChange: ((String) -> Void)?
     private let showsDismiss: Bool
 
     init(
         initialTag: String = "#REMIND",
+        initialConfig: NJInternalLinkedViewConfig? = nil,
         showsDismiss: Bool = true,
         onTitleChange: ((String) -> Void)? = nil,
         onTagChange: ((String) -> Void)? = nil
     ) {
-        let initialSpec = NJReconstructedSpec.tagPrefix(initialTag)
+        let effectiveConfig = initialConfig ?? NJInternalLinkedViewConfig(
+            kind: .reconstructedManual,
+            title: initialTag,
+            filterText: initialTag,
+            matchMode: .any,
+            startMs: nil,
+            endMs: nil
+        )
+        let initialSpec = NJReconstructedSpec.all(
+            startMs: effectiveConfig.startMs,
+            endMs: effectiveConfig.endMs,
+            limit: 500,
+            newestFirst: true,
+            includeTags: [],
+            includeMode: effectiveConfig.matchMode == .all ? .all : .any,
+            excludeTags: []
+        )
         _persistence = StateObject(wrappedValue: NJReconstructedNotePersistence(spec: initialSpec))
-        
-        // You need to initialize the state variable here
-        _tagInput = State(initialValue: initialTag)
+        _filterInput = State(initialValue: effectiveConfig.filterText)
+        _includeMode = State(initialValue: effectiveConfig.matchMode == .all ? .all : .any)
+        if let startMs = effectiveConfig.startMs {
+            _startDate = State(initialValue: Date(timeIntervalSince1970: TimeInterval(startMs) / 1000.0))
+        }
+        if let endMs = effectiveConfig.endMs {
+            _endDate = State(initialValue: Date(timeIntervalSince1970: TimeInterval(endMs) / 1000.0))
+        }
+        _useDateRange = State(initialValue: effectiveConfig.startMs != nil || effectiveConfig.endMs != nil)
         self.onTitleChange = onTitleChange
-        self.onTagChange = onTagChange
+        self.onFilterChange = onTagChange
         self.showsDismiss = showsDismiss
+    }
+
+    private func makeWiredHandle() -> NJProtonEditorHandle {
+        let h = NJProtonEditorHandle()
+        h.attachmentResolver = { [weak store] id in
+            store?.notes.attachmentByID(id)
+        }
+        h.attachmentThumbPathCleaner = { [weak store] id in
+            store?.notes.clearAttachmentThumbPath(attachmentID: id, nowMs: DBNoteRepository.nowMs())
+        }
+        h.onOpenFullPhoto = { id in
+            NJPhotoLibraryPresenter.presentFullPhoto(localIdentifier: id)
+        }
+        h.onUserTyped = { [weak persistence, weak h] _, _ in
+            guard let persistence, let handle = h, let id = handle.ownerBlockUUID else { return }
+            if handle.isRunningProgrammaticUpdate { return }
+            persistence.enqueueEditorChange(id, source: "recon.manual.onUserTyped.\(handle.userEditSourceHint)")
+        }
+        h.onSnapshot = { _, _ in
+            // Passive snapshots can be emitted by layout/hydration on idle devices.
+            // Only explicit user edits should enqueue a save.
+        }
+        return h
     }
 
     var body: some View {
@@ -54,6 +102,9 @@ struct NJReconstructedManualView: View {
                 .background(Color(UIColor.systemGroupedBackground))
 
             Divider()
+            if persistence.hasPendingRemoteRefresh {
+                remoteRefreshStrip()
+            }
 
             // 2. The List (Reused from NJReconstructedNoteView)
             list()
@@ -81,14 +132,43 @@ struct NJReconstructedManualView: View {
             performSearch()
         }
         .onDisappear {
-            // Commit any pending changes
-            if let id = persistence.focusedBlockID {
-                persistence.forceEndEditingAndCommitNow(id)
+            persistence.forceEndEditingAndCommitAllDirtyNow()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .inactive || phase == .background {
+                persistence.forceEndEditingAndCommitAllDirtyNow()
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
+            persistence.forceEndEditingAndCommitAllDirtyNow()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+            persistence.forceEndEditingAndCommitAllDirtyNow()
         }
         // Reuse the presentation style
         .presentationDetents([.height(600), .large])
         .presentationDragIndicator(.visible)
+    }
+
+    private func remoteRefreshStrip() -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "lock.trianglebadge.exclamationmark")
+            Text("Remote update detected. This device will not save over it until you reload.")
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 8)
+            Button {
+                performSearch()
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .buttonStyle(.borderless)
+        }
+        .font(.caption2)
+        .foregroundStyle(.orange)
+        .padding(.horizontal, 12)
+        .frame(height: 26)
+        .background(.ultraThinMaterial)
     }
 
     // MARK: - UI Helpers
@@ -99,9 +179,20 @@ struct NJReconstructedManualView: View {
                 Image(systemName: "tag.fill")
                     .foregroundColor(.accentColor)
                     .frame(width: 20)
-                TextField("Tag (e.g. #meeting or work)", text: $tagInput)
+                TextField("Filters (e.g. zz.edu, #remind)", text: $filterInput)
                     .textFieldStyle(RoundedBorderTextFieldStyle())
                     .onSubmit { performSearch() }
+            }
+
+            HStack {
+                Text("Match")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Picker("Match", selection: $includeMode) {
+                    Text("Any").tag(NJReconstructedIncludeMode.any)
+                    Text("All").tag(NJReconstructedIncludeMode.all)
+                }
+                .pickerStyle(.segmented)
             }
 
             // Date Toggle
@@ -144,6 +235,8 @@ struct NJReconstructedManualView: View {
                 // We can reuse the row logic from the other file, but for clarity I'll put it here
                 row(b)
             }
+
+            NJBlockListBottomRunwayRow()
         }
         .listStyle(.plain)
     }
@@ -161,11 +254,12 @@ struct NJReconstructedManualView: View {
                 arr[i].tagJSON = newJSON
                 persistence.blocks = arr
             }
-            persistence.markDirty(id)
-            persistence.scheduleCommit(id)
+            persistence.markDirty(id, source: "recon.manual.saveTags")
+            persistence.scheduleCommit(id, source: "recon.manual.saveTags")
         }
         return NJBlockHostView(
             index: 1, // Simplified index
+            blockID: b.blockID,
             createdAtMs: b.createdAtMs,
             domainPreview: b.domainPreview,
             onEditTags: { },
@@ -184,8 +278,6 @@ struct NJReconstructedManualView: View {
                         if persistence.focusedBlockID != arr[i].id { persistence.focusedBlockID = arr[i].id }
                         arr[i].attr = v
                         persistence.blocks = arr
-                        persistence.markDirty(id)
-                        persistence.scheduleCommit(id)
                     }
                 }
             ),
@@ -210,8 +302,9 @@ struct NJReconstructedManualView: View {
             onDelete: { },
             onHydrateProton: { persistence.hydrateProton(id) },
             onCommitProton: {
-                persistence.markDirty(id)
-                persistence.scheduleCommit(id)
+                if persistence.blocks.first(where: { $0.id == id })?.isDirty == true {
+                    persistence.scheduleCommit(id, source: "recon.manual.onCommitProton.alreadyDirty")
+                }
             },
             onMoveToClipboard: nil,
             inheritedTags: [],
@@ -222,20 +315,10 @@ struct NJReconstructedManualView: View {
                 store.notes.listTagSuggestions(prefix: prefix, limit: limit)
             }
         )
-        .id("\(id.uuidString)-\(collapsedBinding.wrappedValue ? "c" : "e")")
+        .fixedSize(horizontal: false, vertical: true)
         .listRowInsets(EdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 12))
         .listRowBackground(persistence.rowBackgroundColor(blockID: b.blockID))
         .listRowSeparator(.hidden)
-        .onAppear { persistence.hydrateProton(id) }
-        .onChange(of: collapsedBinding.wrappedValue) { _, v in
-            guard !v else { return }
-            DispatchQueue.main.async {
-                persistence.hydrateProton(id)
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-                persistence.hydrateProton(id)
-            }
-        }
     }
 
     // Logic to bridge UI inputs to the Spec
@@ -251,22 +334,41 @@ struct NJReconstructedManualView: View {
             let e = Int64(endExclusive.timeIntervalSince1970 * 1000) - 1
             return (s, e)
         }()
-        let tag = tagInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let filterText = filterInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let terms = filterText
+            .split(separator: ",")
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
 
         let newSpec: NJReconstructedSpec = {
-            if tag.isEmpty {
+            if terms.isEmpty {
                 return NJReconstructedSpec.all(
                     startMs: startMs,
                     endMs: endMs,
                     limit: 500,
                     newestFirst: true,
+                    includeMode: includeMode,
                     excludeTags: []
                 )
             }
 
-            if tag.hasPrefix("#") {
+            if terms.count > 1 {
+                return NJReconstructedSpec.all(
+                    startMs: startMs,
+                    endMs: endMs,
+                    limit: 500,
+                    newestFirst: true,
+                    includeTags: terms,
+                    includeMode: includeMode,
+                    excludeTags: []
+                )
+            }
+
+            let term = terms[0]
+
+            if term.hasPrefix("#") {
                 return NJReconstructedSpec.tagExact(
-                    tag,
+                    term,
                     startMs: startMs,
                     endMs: endMs,
                     timeField: .blockCreatedAtMs,
@@ -274,8 +376,8 @@ struct NJReconstructedManualView: View {
                 )
             }
 
-            if tag.contains("*") {
-                let prefix = tag.replacingOccurrences(of: "*", with: "")
+            if term.contains("*") {
+                let prefix = term.replacingOccurrences(of: "*", with: "")
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 if prefix.isEmpty {
                     return NJReconstructedSpec.all(
@@ -283,6 +385,7 @@ struct NJReconstructedManualView: View {
                         endMs: endMs,
                         limit: 500,
                         newestFirst: true,
+                        includeMode: includeMode,
                         excludeTags: []
                     )
                 }
@@ -296,7 +399,7 @@ struct NJReconstructedManualView: View {
             }
 
             return NJReconstructedSpec.tagExact(
-                tag,
+                term,
                 startMs: startMs,
                 endMs: endMs,
                 timeField: .blockCreatedAtMs,
@@ -306,23 +409,11 @@ struct NJReconstructedManualView: View {
 
         // Update the title shown in the header
         persistence.updateSpec(newSpec)
-        let title = tag.isEmpty ? "ALL" : tag
+        let title = filterText.isEmpty ? "ALL" : filterText
         onTitleChange?(title)
-        onTagChange?(tag)
+        onFilterChange?(filterText)
         // Trigger the reload using the existing Persistence logic
-        persistence.reload(makeHandle: {
-            let h = NJProtonEditorHandle()
-            h.attachmentResolver = { [weak store] id in
-                store?.notes.attachmentByID(id)
-            }
-            h.attachmentThumbPathCleaner = { [weak store] id in
-                store?.notes.clearAttachmentThumbPath(attachmentID: id, nowMs: DBNoteRepository.nowMs())
-            }
-            h.onOpenFullPhoto = { id in
-                NJPhotoLibraryPresenter.presentFullPhoto(localIdentifier: id)
-            }
-            return h
-        })
+        persistence.reload(makeHandle: makeWiredHandle)
     }
 
     @ToolbarContentBuilder
@@ -372,12 +463,6 @@ private struct NJHiddenShortcuts: View {
             Button("") { fire { $0.toggleStrike() } }
                 .keyboardShortcut("x", modifiers: [.command, .shift])
 
-            Button("") { fire { $0.toggleBullet() } }
-                .keyboardShortcut("7", modifiers: .command)
-
-            Button("") { fire { $0.toggleNumber() } }
-                .keyboardShortcut("8", modifiers: .command)
-
             Button("") { fire { $0.indent() } }
                 .keyboardShortcut("]", modifiers: .command)
 
@@ -404,7 +489,7 @@ private struct NJHiddenShortcuts: View {
 
         NJShortcutLog.info("SHORTCUT: has handle owner=\(String(describing: h.ownerBlockUUID)) editor_nil=\(h.editor == nil) tv_nil=\(h.textView == nil)")
         f(h)
-        h.snapshot()
+        h.snapshot(markUserEdit: true)
     }
 
 }

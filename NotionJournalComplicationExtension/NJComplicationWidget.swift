@@ -11,40 +11,58 @@ private struct NJWidgetTimeSlot: Codable {
     let notes: String
 }
 
+struct NJWidgetActiveTracker: Codable {
+    let title: String
+    let startDate: Date
+    let notes: String
+}
+
+private func elapsedMinutesText(since startDate: Date, now: Date) -> String {
+    let elapsedSeconds = max(0, Int(now.timeIntervalSince(startDate)))
+    let minutes = max(1, elapsedSeconds / 60)
+    return "\(minutes)m"
+}
+
+private func elapsedClockText(since startDate: Date, now: Date) -> String {
+    let elapsedSeconds = max(0, Int(now.timeIntervalSince(startDate)))
+    let minutes = elapsedSeconds / 60
+    let seconds = elapsedSeconds % 60
+    return String(format: "%d:%02d", minutes, seconds)
+}
+
 @available(watchOS 10.0, *)
 struct NJComplicationEntry: TimelineEntry {
     let date: Date
-    let todayCount: Int
+    let activeTracker: NJWidgetActiveTracker?
 }
 
 @available(watchOS 10.0, *)
 struct NJComplicationProvider: TimelineProvider {
     func placeholder(in context: Context) -> NJComplicationEntry {
-        NJComplicationEntry(date: Date(), todayCount: 0)
+        NJComplicationEntry(
+            date: Date(),
+            activeTracker: NJWidgetActiveTracker(title: "Piano", startDate: Date().addingTimeInterval(-15 * 60), notes: "")
+        )
     }
 
     func getSnapshot(in context: Context, completion: @escaping (NJComplicationEntry) -> Void) {
-        completion(NJComplicationEntry(date: Date(), todayCount: loadTodayCount()))
+        completion(NJComplicationEntry(date: Date(), activeTracker: loadActiveTracker()))
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<NJComplicationEntry>) -> Void) {
         let now = Date()
-        let entry = NJComplicationEntry(date: now, todayCount: loadTodayCount())
-        let next = Calendar.current.date(byAdding: .minute, value: 20, to: now) ?? now.addingTimeInterval(1200)
+        let entry = NJComplicationEntry(date: now, activeTracker: loadActiveTracker())
+        let next = Calendar.current.date(byAdding: .minute, value: 1, to: now) ?? now.addingTimeInterval(60)
         completion(Timeline(entries: [entry], policy: .after(next)))
     }
 
-    private func loadTodayCount() -> Int {
+    private func loadActiveTracker() -> NJWidgetActiveTracker? {
         guard let defaults = UserDefaults(suiteName: "group.com.CYC.NotionJournal"),
-              let data = defaults.data(forKey: "nj_time_module_slots_v1"),
-              let slots = try? JSONDecoder().decode([NJWidgetTimeSlot].self, from: data) else {
-            return 0
+              let data = defaults.data(forKey: "nj_watch_active_tracker_v1"),
+              let tracker = try? JSONDecoder().decode(NJWidgetActiveTracker.self, from: data) else {
+            return nil
         }
-
-        let cal = Calendar.current
-        let start = cal.startOfDay(for: Date())
-        let end = cal.date(byAdding: .day, value: 1, to: start) ?? start
-        return slots.filter { $0.startDate >= start && $0.startDate < end }.count
+        return tracker
     }
 }
 
@@ -57,25 +75,51 @@ struct NJComplicationWidgetView: View {
         Group {
             switch family {
             case .accessoryInline:
-                Text("Time \(entry.todayCount)")
+                if let tracker = entry.activeTracker {
+                    Text("NJ \(elapsedClockText(since: tracker.startDate, now: entry.date))")
+                } else {
+                    Text("NJ Idle")
+                }
             case .accessoryCircular:
                 ZStack {
                     Circle()
                         .fill(.tertiary)
-                    VStack(spacing: 1) {
-                        Text("Time")
-                            .font(.system(size: 7, weight: .medium))
-                        Text("\(entry.todayCount)")
-                            .font(.system(size: 15, weight: .bold))
+                    VStack(spacing: 2) {
+                        Text("NJ")
+                            .font(.system(size: 11, weight: .black, design: .rounded))
+                        if let tracker = entry.activeTracker {
+                            Text(elapsedClockText(since: tracker.startDate, now: entry.date))
+                                .font(.system(size: 10, weight: .bold))
+                                .monospacedDigit()
+                        } else {
+                            Text("Idle")
+                                .font(.system(size: 9, weight: .bold))
+                        }
                     }
                 }
             case .accessoryRectangular:
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Time")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    Text("Today \(entry.todayCount)")
-                        .font(.headline)
+                    HStack(spacing: 6) {
+                        Text("NJ")
+                            .font(.system(size: 14, weight: .black, design: .rounded))
+                            .frame(width: 18, height: 18)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Notion Journal")
+                                .font(.caption2)
+                                .lineLimit(1)
+                            if let tracker = entry.activeTracker {
+                                Text(tracker.title)
+                                    .font(.headline)
+                                    .lineLimit(1)
+                                Text(elapsedClockText(since: tracker.startDate, now: entry.date))
+                                    .font(.caption)
+                                    .monospacedDigit()
+                            } else {
+                                Text("No Active Timer")
+                                    .font(.headline)
+                            }
+                        }
+                    }
                     HStack(spacing: 8) {
                         Button(intent: quickIntent(.piano, title: "Piano Practice")) {
                             Image(systemName: "pianokeys")
@@ -89,7 +133,11 @@ struct NJComplicationWidgetView: View {
                     }
                 }
             default:
-                Text("Time \(entry.todayCount)")
+                if let tracker = entry.activeTracker {
+                    Text(elapsedClockText(since: tracker.startDate, now: entry.date))
+                } else {
+                    Text("NJ")
+                }
             }
         }
         .containerBackground(.fill.tertiary, for: .widget)

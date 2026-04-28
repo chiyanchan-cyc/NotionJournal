@@ -20,6 +20,11 @@ enum NJReconstructedTimeField: Equatable {
     case tagCreatedAtMs
 }
 
+enum NJReconstructedIncludeMode: String, Equatable, Codable {
+    case any
+    case all
+}
+
 struct NJReconstructedSpec: Equatable, Identifiable {
     let id: String
 
@@ -35,6 +40,7 @@ struct NJReconstructedSpec: Equatable, Identifiable {
     var limit: Int
     var newestFirst: Bool
     var includeTags: [String]
+    var includeMode: NJReconstructedIncludeMode
     var excludeTags: [String]
 
     var isWeekly: Bool {
@@ -71,6 +77,7 @@ struct NJReconstructedSpec: Equatable, Identifiable {
             limit: 500,
             newestFirst: false,
             includeTags: [],
+            includeMode: .any,
             excludeTags: []
         )
     }
@@ -87,6 +94,7 @@ struct NJReconstructedSpec: Equatable, Identifiable {
             limit: limit,
             newestFirst: newestFirst,
             includeTags: includeTags,
+            includeMode: .any,
             excludeTags: excludeTags
         )
     }
@@ -103,15 +111,16 @@ struct NJReconstructedSpec: Equatable, Identifiable {
             limit: limit,
             newestFirst: newestFirst,
             includeTags: includeTags,
+            includeMode: .any,
             excludeTags: excludeTags
         )
     }
 
-    static func all(startMs: Int64? = nil, endMs: Int64? = nil, limit: Int = 1000, newestFirst: Bool = true, includeTags: [String] = [], excludeTags: [String] = []) -> NJReconstructedSpec {
+    static func all(startMs: Int64? = nil, endMs: Int64? = nil, limit: Int = 1000, newestFirst: Bool = true, includeTags: [String] = [], includeMode: NJReconstructedIncludeMode = .any, excludeTags: [String] = []) -> NJReconstructedSpec {
         let includeKey = includeTags.map { $0.lowercased() }.joined(separator: "|")
         let excludeKey = excludeTags.map { $0.lowercased() }.joined(separator: "|")
         return NJReconstructedSpec(
-            id: "recon:all:\(startMs ?? 0):\(endMs ?? 0):\(includeKey):\(excludeKey)",
+            id: "recon:all:\(startMs ?? 0):\(endMs ?? 0):\(includeMode.rawValue):\(includeKey):\(excludeKey)",
             title: "ALL",
             tab: "RECONSTRUCTED",
             match: .all,
@@ -121,6 +130,7 @@ struct NJReconstructedSpec: Equatable, Identifiable {
             limit: limit,
             newestFirst: newestFirst,
             includeTags: includeTags,
+            includeMode: includeMode,
             excludeTags: excludeTags
         )
     }
@@ -143,6 +153,7 @@ struct NJReconstructedSpec: Equatable, Identifiable {
             limit: limit,
             newestFirst: newestFirst,
             includeTags: [],
+            includeMode: .any,
             excludeTags: []
         )
     }

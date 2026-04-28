@@ -12,9 +12,7 @@ struct NJHabitWidgetRow: Codable, Hashable, Identifiable {
     let id: String
     let name: String
     let subtitle: String
-    let filledDayKeys: [String]
-
-    var filledDayKeySet: Set<String> { Set(filledDayKeys) }
+    let dayMinutes: [String: Int]
 }
 
 struct NJHabitWidgetSnapshot: Codable, Hashable {
@@ -39,7 +37,42 @@ private final class NJHabitWidgetProvider {
               let snapshot = try? JSONDecoder().decode(NJHabitWidgetSnapshot.self, from: data) else {
             throw NSError(domain: "NJHabitWidget", code: 1, userInfo: [NSLocalizedDescriptionKey: "Local habit snapshot unavailable"])
         }
+        return sanitizedSnapshot(snapshot, now: now)
+    }
+
+    private func sanitizedSnapshot(_ snapshot: NJHabitWidgetSnapshot, now: Date) -> NJHabitWidgetSnapshot {
+        let currentDays = currentWeekDays(now: now)
+        let currentKeys = currentDays.map(\.key)
+        let snapshotKeys = snapshot.days.map(\.key)
+        guard snapshotKeys == currentKeys else {
+            return NJHabitWidgetSnapshot(days: currentDays, rows: [], generatedAt: now)
+        }
         return snapshot
+    }
+
+    private func currentWeekDays(now: Date) -> [NJHabitWidgetDay] {
+        var calendar = Calendar.current
+        calendar.firstWeekday = 2
+        let formatter = DateFormatter()
+        formatter.locale = Locale.current
+        formatter.dateFormat = "E"
+
+        let today = calendar.startOfDay(for: now)
+        let weekday = calendar.component(.weekday, from: today)
+        let delta = (weekday - calendar.firstWeekday + 7) % 7
+        let weekStart = calendar.date(byAdding: .day, value: -delta, to: today) ?? today
+
+        let keyFormatter = DateFormatter()
+        keyFormatter.locale = Locale(identifier: "en_US_POSIX")
+        keyFormatter.dateFormat = "yyyy-MM-dd"
+
+        return (0..<7).compactMap { offset in
+            guard let date = calendar.date(byAdding: .day, value: offset, to: weekStart) else { return nil }
+            return NJHabitWidgetDay(
+                key: keyFormatter.string(from: date),
+                shortLabel: formatter.string(from: date)
+            )
+        }
     }
 }
 
@@ -58,8 +91,8 @@ struct NJHabitTimelineProvider: TimelineProvider {
                     NJHabitWidgetDay(key: "2026-04-12", shortLabel: "Sun")
                 ],
                 rows: [
-                    NJHabitWidgetRow(id: "piano|piano", name: "Piano", subtitle: "Piano • 2h 30m", filledDayKeys: ["2026-04-06", "2026-04-08", "2026-04-10"]),
-                    NJHabitWidgetRow(id: "run|exercise", name: "Run", subtitle: "Exercise • 1h 20m", filledDayKeys: ["2026-04-07", "2026-04-09"])
+                    NJHabitWidgetRow(id: "piano|piano", name: "Piano", subtitle: "Piano • Week: 2h 30m", dayMinutes: ["2026-04-06": 60, "2026-04-08": 45, "2026-04-10": 45]),
+                    NJHabitWidgetRow(id: "outdoor-jog|fitness", name: "Outdoor Jog", subtitle: "Fitness • Week: 1h 20m", dayMinutes: ["2026-04-07": 35, "2026-04-09": 45])
                 ],
                 generatedAt: Date()
             ),
@@ -91,7 +124,7 @@ struct NJHabitWidget: Widget {
         StaticConfiguration(kind: kind, provider: NJHabitTimelineProvider()) { entry in
             NJHabitWidgetView(entry: entry)
         }
-        .configurationDisplayName("Habit")
+        .configurationDisplayName("Time")
         .description("Distinct time slots and total time for this week.")
         .supportedFamilies([.systemMedium, .systemLarge])
     }
@@ -104,10 +137,10 @@ private struct NJHabitWidgetView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
-                Text("Habit")
+                Text("Time")
                     .font(.system(size: 12, weight: .semibold))
                 Spacer(minLength: 0)
-                Text("This week total")
+                Text("Week time")
                     .font(.system(size: 9))
                     .foregroundStyle(.secondary)
             }
@@ -158,13 +191,13 @@ private struct NJHabitWidgetView: View {
                     .frame(width: labelWidth, alignment: .leading)
 
                     ForEach(entry.snapshot.days) { day in
-                        let filled = row.filledDayKeySet.contains(day.key)
+                        let minutes = row.dayMinutes[day.key] ?? 0
                         ZStack {
                             RoundedRectangle(cornerRadius: 4)
-                                .fill(filled ? Color.orange.opacity(0.24) : Color(.secondarySystemBackground))
-                            if filled {
-                                Image(systemName: "checkmark")
-                                    .font(.system(size: 7, weight: .bold))
+                                .fill(minutes > 0 ? Color.orange.opacity(0.18) : Color(.secondarySystemBackground))
+                            if minutes > 0 {
+                                Text("\(minutes)")
+                                    .font(.system(size: minuteFontSize, weight: .semibold))
                                     .foregroundStyle(Color.orange)
                             } else {
                                 Text(" ")
@@ -185,5 +218,6 @@ private struct NJHabitWidgetView: View {
     private var labelWidth: CGFloat { family == .systemLarge ? 120 : 102 }
     private var cellWidth: CGFloat { family == .systemLarge ? 24 : 20 }
     private var rowHeight: CGFloat { family == .systemLarge ? 20 : 18 }
+    private var minuteFontSize: CGFloat { family == .systemLarge ? 8 : 7 }
     private var maxRows: Int { 10 }
 }

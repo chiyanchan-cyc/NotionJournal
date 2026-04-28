@@ -146,9 +146,19 @@ enum DBSchemaInstaller {
                     notebook TEXT NOT NULL,
                     tab_domain TEXT NOT NULL,
                     title TEXT NOT NULL,
+                    note_type TEXT NOT NULL DEFAULT 'note',
+                    dominance_mode TEXT NOT NULL DEFAULT 'block',
+                    is_checklist INTEGER NOT NULL DEFAULT 0,
+                    card_id TEXT NOT NULL DEFAULT '',
+                    card_category TEXT NOT NULL DEFAULT '',
+                    card_area TEXT NOT NULL DEFAULT '',
+                    card_context TEXT NOT NULL DEFAULT '',
+                    card_status TEXT NOT NULL DEFAULT '',
+                    card_priority TEXT NOT NULL DEFAULT '',
                     created_at_ms INTEGER NOT NULL,
                     updated_at_ms INTEGER NOT NULL,
                     pinned INTEGER NOT NULL DEFAULT 0,
+                    favorited INTEGER NOT NULL DEFAULT 0,
                     deleted INTEGER NOT NULL DEFAULT 0
                 );
                 """,
@@ -157,13 +167,52 @@ enum DBSchemaInstaller {
                     ColumnSpec(name: "notebook", declForAlter: "TEXT NOT NULL DEFAULT ''"),
                     ColumnSpec(name: "tab_domain", declForAlter: "TEXT NOT NULL DEFAULT ''"),
                     ColumnSpec(name: "title", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "note_type", declForAlter: "TEXT NOT NULL DEFAULT 'note'"),
+                    ColumnSpec(name: "dominance_mode", declForAlter: "TEXT NOT NULL DEFAULT 'block'"),
+                    ColumnSpec(name: "is_checklist", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "card_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "card_category", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "card_area", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "card_context", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "card_status", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "card_priority", declForAlter: "TEXT NOT NULL DEFAULT ''"),
                     ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
                     ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
                     ColumnSpec(name: "pinned", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "favorited", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
                     ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
                 ],
                 indexes: [
                     "CREATE INDEX IF NOT EXISTS idx_nj_note_tab_updated ON nj_note(tab_domain, updated_at_ms DESC);"
+                ]
+            ),
+
+            TableSpec(
+                name: "nj_table",
+                createSQL: """
+                CREATE TABLE IF NOT EXISTS nj_table (
+                    table_id TEXT PRIMARY KEY,
+                    short_id TEXT NOT NULL DEFAULT '',
+                    name TEXT NOT NULL DEFAULT '',
+                    canonical_json TEXT NOT NULL DEFAULT '{}',
+                    created_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL,
+                    deleted INTEGER NOT NULL DEFAULT 0
+                );
+                """,
+                columns: [
+                    ColumnSpec(name: "table_id", declForAlter: "TEXT"),
+                    ColumnSpec(name: "short_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "name", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "canonical_json", declForAlter: "TEXT NOT NULL DEFAULT '{}'"),
+                    ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
+                ],
+                indexes: [
+                    "CREATE INDEX IF NOT EXISTS idx_nj_table_updated ON nj_table(updated_at_ms DESC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_table_short_id ON nj_table(short_id);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_table_name ON nj_table(name);"
                 ]
             ),
 
@@ -341,6 +390,50 @@ enum DBSchemaInstaller {
                 ]
             ),
             TableSpec(
+                name: "nj_renewal_item",
+                createSQL: """
+                CREATE TABLE IF NOT EXISTS nj_renewal_item (
+                    renewal_item_id TEXT PRIMARY KEY,
+                    owner_scope TEXT NOT NULL DEFAULT 'ME',
+                    person_name TEXT NOT NULL DEFAULT '',
+                    document_name TEXT NOT NULL DEFAULT '',
+                    document_type TEXT NOT NULL DEFAULT '',
+                    jurisdiction TEXT NOT NULL DEFAULT '',
+                    document_number_hint TEXT NOT NULL DEFAULT '',
+                    expiry_date_key TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT '',
+                    priority TEXT NOT NULL DEFAULT '',
+                    reminder_offsets_json TEXT NOT NULL DEFAULT '[]',
+                    notes TEXT NOT NULL DEFAULT '',
+                    created_at_ms INTEGER NOT NULL DEFAULT 0,
+                    updated_at_ms INTEGER NOT NULL DEFAULT 0,
+                    deleted INTEGER NOT NULL DEFAULT 0
+                );
+                """,
+                columns: [
+                    ColumnSpec(name: "renewal_item_id", declForAlter: "TEXT"),
+                    ColumnSpec(name: "owner_scope", declForAlter: "TEXT NOT NULL DEFAULT 'ME'"),
+                    ColumnSpec(name: "person_name", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "document_name", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "document_type", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "jurisdiction", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "document_number_hint", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "expiry_date_key", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "status", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "priority", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "reminder_offsets_json", declForAlter: "TEXT NOT NULL DEFAULT '[]'"),
+                    ColumnSpec(name: "notes", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
+                ],
+                indexes: [
+                    "CREATE INDEX IF NOT EXISTS idx_nj_renewal_item_expiry ON nj_renewal_item(expiry_date_key ASC, updated_at_ms DESC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_renewal_item_person ON nj_renewal_item(person_name ASC, document_type ASC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_renewal_item_updated ON nj_renewal_item(updated_at_ms DESC);"
+                ]
+            ),
+            TableSpec(
                 name: "nj_finance_research_session",
                 createSQL: """
                 CREATE TABLE IF NOT EXISTS nj_finance_research_session (
@@ -445,6 +538,102 @@ enum DBSchemaInstaller {
                 ]
             ),
             TableSpec(
+                name: "nj_agent_heartbeat_run",
+                createSQL: """
+                CREATE TABLE IF NOT EXISTS nj_agent_heartbeat_run (
+                    run_id TEXT PRIMARY KEY,
+                    heartbeat_key TEXT NOT NULL DEFAULT '',
+                    scheduled_for_ms INTEGER NOT NULL DEFAULT 0,
+                    started_at_ms INTEGER NOT NULL DEFAULT 0,
+                    completed_at_ms INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT '',
+                    coverage_start_ms INTEGER NOT NULL DEFAULT 0,
+                    coverage_end_ms INTEGER NOT NULL DEFAULT 0,
+                    date_key TEXT NOT NULL DEFAULT '',
+                    market_session TEXT NOT NULL DEFAULT '',
+                    output_ref TEXT NOT NULL DEFAULT '',
+                    error_summary TEXT NOT NULL DEFAULT '',
+                    source_refs_json TEXT NOT NULL DEFAULT '',
+                    created_at_ms INTEGER NOT NULL DEFAULT 0,
+                    updated_at_ms INTEGER NOT NULL DEFAULT 0,
+                    deleted INTEGER NOT NULL DEFAULT 0
+                );
+                """,
+                columns: [
+                    ColumnSpec(name: "run_id", declForAlter: "TEXT"),
+                    ColumnSpec(name: "heartbeat_key", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "scheduled_for_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "started_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "completed_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "status", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "coverage_start_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "coverage_end_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "date_key", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "market_session", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "output_ref", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "error_summary", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "source_refs_json", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
+                ],
+                indexes: [
+                    "CREATE INDEX IF NOT EXISTS idx_nj_agent_heartbeat_run_key_schedule ON nj_agent_heartbeat_run(heartbeat_key ASC, scheduled_for_ms ASC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_agent_heartbeat_run_status ON nj_agent_heartbeat_run(status ASC, scheduled_for_ms ASC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_agent_heartbeat_run_updated ON nj_agent_heartbeat_run(updated_at_ms DESC);"
+                ]
+            ),
+            TableSpec(
+                name: "nj_agent_backfill_task",
+                createSQL: """
+                CREATE TABLE IF NOT EXISTS nj_agent_backfill_task (
+                    task_id TEXT PRIMARY KEY,
+                    heartbeat_key TEXT NOT NULL DEFAULT '',
+                    missed_run_id TEXT NOT NULL DEFAULT '',
+                    target_run_id TEXT NOT NULL DEFAULT '',
+                    date_key TEXT NOT NULL DEFAULT '',
+                    market_session TEXT NOT NULL DEFAULT '',
+                    coverage_start_ms INTEGER NOT NULL DEFAULT 0,
+                    coverage_end_ms INTEGER NOT NULL DEFAULT 0,
+                    reason TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT '',
+                    priority INTEGER NOT NULL DEFAULT 0,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    last_attempt_at_ms INTEGER NOT NULL DEFAULT 0,
+                    result_ref TEXT NOT NULL DEFAULT '',
+                    result_summary TEXT NOT NULL DEFAULT '',
+                    created_at_ms INTEGER NOT NULL DEFAULT 0,
+                    updated_at_ms INTEGER NOT NULL DEFAULT 0,
+                    deleted INTEGER NOT NULL DEFAULT 0
+                );
+                """,
+                columns: [
+                    ColumnSpec(name: "task_id", declForAlter: "TEXT"),
+                    ColumnSpec(name: "heartbeat_key", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "missed_run_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "target_run_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "date_key", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "market_session", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "coverage_start_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "coverage_end_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "reason", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "status", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "priority", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "attempt_count", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "last_attempt_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "result_ref", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "result_summary", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
+                ],
+                indexes: [
+                    "CREATE INDEX IF NOT EXISTS idx_nj_agent_backfill_task_status ON nj_agent_backfill_task(status ASC, priority DESC, coverage_start_ms ASC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_agent_backfill_task_heartbeat ON nj_agent_backfill_task(heartbeat_key ASC, coverage_start_ms ASC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_agent_backfill_task_updated ON nj_agent_backfill_task(updated_at_ms DESC);"
+                ]
+            ),
+            TableSpec(
                 name: "nj_finance_finding",
                 createSQL: """
                 CREATE TABLE IF NOT EXISTS nj_finance_finding (
@@ -544,6 +733,79 @@ enum DBSchemaInstaller {
                 indexes: [
                     "CREATE INDEX IF NOT EXISTS idx_nj_finance_source_item_market ON nj_finance_source_item(market_id ASC, fetched_at_ms DESC);",
                     "CREATE INDEX IF NOT EXISTS idx_nj_finance_source_item_source ON nj_finance_source_item(source_id ASC, fetched_at_ms DESC);"
+                ]
+            ),
+            TableSpec(
+                name: "nj_finance_transaction",
+                createSQL: """
+                CREATE TABLE IF NOT EXISTS nj_finance_transaction (
+                    transaction_id TEXT PRIMARY KEY,
+                    fingerprint TEXT NOT NULL DEFAULT '',
+                    source_type TEXT NOT NULL DEFAULT '',
+                    account_id TEXT NOT NULL DEFAULT '',
+                    account_label TEXT NOT NULL DEFAULT '',
+                    external_ref TEXT NOT NULL DEFAULT '',
+                    occurred_at_ms INTEGER NOT NULL DEFAULT 0,
+                    date_key TEXT NOT NULL DEFAULT '',
+                    merchant_name TEXT NOT NULL DEFAULT '',
+                    amount_minor INTEGER NOT NULL DEFAULT 0,
+                    currency_code TEXT NOT NULL DEFAULT '',
+                    direction TEXT NOT NULL DEFAULT '',
+                    analysis_nature TEXT NOT NULL DEFAULT '',
+                    category TEXT NOT NULL DEFAULT '',
+                    tag_text TEXT NOT NULL DEFAULT '',
+                    fx_rate_to_cny REAL NOT NULL DEFAULT 1.0,
+                    amount_cny_minor INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT '',
+                    counterparty TEXT NOT NULL DEFAULT '',
+                    item_name TEXT NOT NULL DEFAULT '',
+                    details TEXT NOT NULL DEFAULT '',
+                    note TEXT NOT NULL DEFAULT '',
+                    import_batch_id TEXT NOT NULL DEFAULT '',
+                    source_file_name TEXT NOT NULL DEFAULT '',
+                    raw_payload_json TEXT NOT NULL DEFAULT '',
+                    created_at_ms INTEGER NOT NULL DEFAULT 0,
+                    updated_at_ms INTEGER NOT NULL DEFAULT 0,
+                    deleted INTEGER NOT NULL DEFAULT 0
+                );
+                """,
+                columns: [
+                    ColumnSpec(name: "transaction_id", declForAlter: "TEXT"),
+                    ColumnSpec(name: "fingerprint", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "source_type", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "account_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "account_label", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "external_ref", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "occurred_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "date_key", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "merchant_name", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "amount_minor", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "currency_code", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "direction", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "analysis_nature", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "category", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "tag_text", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "fx_rate_to_cny", declForAlter: "REAL NOT NULL DEFAULT 1.0"),
+                    ColumnSpec(name: "amount_cny_minor", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "status", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "counterparty", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "item_name", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "details", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "note", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "import_batch_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "source_file_name", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "raw_payload_json", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
+                ],
+                indexes: [
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_nj_finance_transaction_fingerprint ON nj_finance_transaction(fingerprint);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_finance_transaction_date ON nj_finance_transaction(date_key ASC, occurred_at_ms DESC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_finance_transaction_source ON nj_finance_transaction(source_type ASC, account_id ASC, occurred_at_ms DESC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_finance_transaction_category ON nj_finance_transaction(category ASC, analysis_nature ASC, occurred_at_ms DESC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_finance_transaction_tag ON nj_finance_transaction(tag_text ASC, occurred_at_ms DESC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_finance_transaction_updated ON nj_finance_transaction(updated_at_ms DESC);"
                 ]
             ),
             TableSpec(
@@ -660,6 +922,14 @@ enum DBSchemaInstaller {
                     note_id TEXT NOT NULL,
                     block_id TEXT NOT NULL,
                     order_key REAL NOT NULL,
+                    is_checked INTEGER NOT NULL DEFAULT 0,
+                    card_row_id TEXT NOT NULL DEFAULT '',
+                    card_status TEXT NOT NULL DEFAULT '',
+                    card_priority TEXT NOT NULL DEFAULT '',
+                    card_category TEXT NOT NULL DEFAULT '',
+                    card_area TEXT NOT NULL DEFAULT '',
+                    card_context TEXT NOT NULL DEFAULT '',
+                    card_title TEXT NOT NULL DEFAULT '',
                     view_state_json TEXT NOT NULL DEFAULT '',
                     created_at_ms INTEGER NOT NULL,
                     updated_at_ms INTEGER NOT NULL,
@@ -671,6 +941,14 @@ enum DBSchemaInstaller {
                     ColumnSpec(name: "note_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
                     ColumnSpec(name: "block_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
                     ColumnSpec(name: "order_key", declForAlter: "REAL NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "is_checked", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "card_row_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "card_status", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "card_priority", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "card_category", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "card_area", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "card_context", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "card_title", declForAlter: "TEXT NOT NULL DEFAULT ''"),
                     ColumnSpec(name: "view_state_json", declForAlter: "TEXT NOT NULL DEFAULT ''"),
                     ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
                     ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
@@ -678,6 +956,120 @@ enum DBSchemaInstaller {
                 ],
                 indexes: [
                     "CREATE INDEX IF NOT EXISTS idx_nj_note_block_note_order ON nj_note_block(note_id, deleted, order_key);"
+                ]
+            ),
+
+            TableSpec(
+                name: "nj_card_schema",
+                createSQL: """
+                CREATE TABLE IF NOT EXISTS nj_card_schema (
+                    schema_key TEXT PRIMARY KEY,
+                    display_name TEXT NOT NULL DEFAULT '',
+                    category TEXT NOT NULL DEFAULT '',
+                    field_defs_json TEXT NOT NULL DEFAULT '',
+                    view_defs_json TEXT NOT NULL DEFAULT '',
+                    version INTEGER NOT NULL DEFAULT 1,
+                    created_at_ms INTEGER NOT NULL DEFAULT 0,
+                    updated_at_ms INTEGER NOT NULL DEFAULT 0,
+                    deleted INTEGER NOT NULL DEFAULT 0
+                );
+                """,
+                columns: [
+                    ColumnSpec(name: "schema_key", declForAlter: "TEXT"),
+                    ColumnSpec(name: "display_name", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "category", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "field_defs_json", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "view_defs_json", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "version", declForAlter: "INTEGER NOT NULL DEFAULT 1"),
+                    ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
+                ],
+                indexes: [
+                    "CREATE INDEX IF NOT EXISTS idx_nj_card_schema_updated ON nj_card_schema(updated_at_ms DESC);"
+                ]
+            ),
+
+            TableSpec(
+                name: "nj_card",
+                createSQL: """
+                CREATE TABLE IF NOT EXISTS nj_card (
+                    card_id TEXT PRIMARY KEY,
+                    schema_key TEXT NOT NULL DEFAULT '',
+                    title TEXT NOT NULL DEFAULT '',
+                    subtitle TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT '',
+                    priority TEXT NOT NULL DEFAULT '',
+                    area TEXT NOT NULL DEFAULT '',
+                    context TEXT NOT NULL DEFAULT '',
+                    owner_scope TEXT NOT NULL DEFAULT 'ME',
+                    source_entity TEXT NOT NULL DEFAULT '',
+                    source_id TEXT NOT NULL DEFAULT '',
+                    note_id TEXT NOT NULL DEFAULT '',
+                    payload_json TEXT NOT NULL DEFAULT '',
+                    created_at_ms INTEGER NOT NULL DEFAULT 0,
+                    updated_at_ms INTEGER NOT NULL DEFAULT 0,
+                    deleted INTEGER NOT NULL DEFAULT 0
+                );
+                """,
+                columns: [
+                    ColumnSpec(name: "card_id", declForAlter: "TEXT"),
+                    ColumnSpec(name: "schema_key", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "title", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "subtitle", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "status", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "priority", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "area", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "context", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "owner_scope", declForAlter: "TEXT NOT NULL DEFAULT 'ME'"),
+                    ColumnSpec(name: "source_entity", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "source_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "note_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "payload_json", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
+                ],
+                indexes: [
+                    "CREATE INDEX IF NOT EXISTS idx_nj_card_schema_status ON nj_card(schema_key, status, updated_at_ms DESC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_card_owner_area ON nj_card(owner_scope, area, updated_at_ms DESC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_card_source ON nj_card(source_entity, source_id);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_card_updated ON nj_card(updated_at_ms DESC);"
+                ]
+            ),
+
+            TableSpec(
+                name: "nj_card_field_value",
+                createSQL: """
+                CREATE TABLE IF NOT EXISTS nj_card_field_value (
+                    card_id TEXT NOT NULL,
+                    field_key TEXT NOT NULL,
+                    value_type TEXT NOT NULL DEFAULT 'string',
+                    string_value TEXT NOT NULL DEFAULT '',
+                    number_value REAL NOT NULL DEFAULT 0,
+                    date_value TEXT NOT NULL DEFAULT '',
+                    bool_value INTEGER NOT NULL DEFAULT 0,
+                    json_value TEXT NOT NULL DEFAULT '',
+                    updated_at_ms INTEGER NOT NULL DEFAULT 0,
+                    deleted INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY(card_id, field_key)
+                );
+                """,
+                columns: [
+                    ColumnSpec(name: "card_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "field_key", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "value_type", declForAlter: "TEXT NOT NULL DEFAULT 'string'"),
+                    ColumnSpec(name: "string_value", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "number_value", declForAlter: "REAL NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "date_value", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "bool_value", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "json_value", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
+                ],
+                indexes: [
+                    "CREATE INDEX IF NOT EXISTS idx_nj_card_field_lookup ON nj_card_field_value(field_key, string_value, date_value);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_card_field_card ON nj_card_field_value(card_id);"
                 ]
             ),
 

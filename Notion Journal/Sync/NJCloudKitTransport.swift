@@ -3,6 +3,9 @@ import CloudKit
 import Network
 
 final class NJCloudKitTransport {
+    private let entitiesUsingFullScanPull: Set<String> = [
+        "finance_transaction"
+    ]
 
     let recordDirtyError: (
         _ entity: String,
@@ -111,19 +114,27 @@ final class NJCloudKitTransport {
         var newMax: Int64 = sinceMs
 
         var cursor: CKQueryOperation.Cursor? = nil
-        var useFallbackQuery = false
+        var useFallbackQuery = entitiesUsingFullScanPull.contains(entity)
         var didRetryFallback = false
+        let shouldReturnAllRowsFromFullScan = entity == "table"
 
 
         while true {
             let op: CKQueryOperation
+            let queryMode: String
             if let c = cursor {
+                queryMode = useFallbackQuery ? "cursor_full_scan" : "cursor_updated_since"
                 op = CKQueryOperation(cursor: c)
             } else {
                 let pred: NSPredicate
-                if sinceMs > 0, !useFallbackQuery {
+                if useFallbackQuery {
+                    queryMode = "full_scan"
+                    pred = NSPredicate(value: true)
+                } else if sinceMs > 0 {
+                    queryMode = "updated_since"
                     pred = NSPredicate(format: "updated_at_ms > %@", NSNumber(value: sinceMs))
                 } else {
+                    queryMode = "initial_full"
                     pred = NSPredicate(value: true)
                 }
 
@@ -132,6 +143,10 @@ final class NJCloudKitTransport {
                     q.sortDescriptors = [NSSortDescriptor(key: "updated_at_ms", ascending: true)]
                 }
                 op = CKQueryOperation(query: q)
+            }
+
+            if cursor == nil {
+                print("NJ_CK_QUERY_START entity=\(entity) recordType=\(recordType) mode=\(queryMode) since=\(sinceMs)")
             }
 
             op.resultsLimit = 200
@@ -159,24 +174,24 @@ final class NJCloudKitTransport {
                     !didRetryFallback &&
                     !useFallbackQuery &&
                     nse.domain == CKError.errorDomain &&
-                    nse.code == CKError.Code.invalidArguments.rawValue &&
-                    nse.localizedDescription.localizedCaseInsensitiveContains("recordname")
+                    nse.code == CKError.Code.invalidArguments.rawValue
 
                 if shouldFallback {
                     didRetryFallback = true
                     useFallbackQuery = true
                     cursor = nil
+                    print("NJ_CK_QUERY_FALLBACK entity=\(entity) reason=invalidArguments desc=\(nse.localizedDescription)")
                     continue
                 }
 
-                print("NJ_CK_QUERY_ERR entity=\(entity) err=\(err)")
+                print("NJ_CK_QUERY_ERR entity=\(entity) mode=\(queryMode) since=\(sinceMs) err=\(err)")
                 break
             }
 
             for r in batch {
                 var u = updatedMs(for: entity, record: r)
                 if u == 0 { continue }
-                if u <= sinceMs { continue }
+                if !shouldReturnAllRowsFromFullScan && u <= sinceMs { continue }
 
                 let f = recordToFields(entity: entity, record: r)
 
@@ -193,6 +208,51 @@ final class NJCloudKitTransport {
         }
 
         return (rows, newMax)
+    }
+
+    func fetchEntityRecords(entity: String, recordType: String, ids: [String]) async -> [[String: Any]] {
+        let cleanIDs = Array(Set(ids.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }))
+        guard !cleanIDs.isEmpty else { return [] }
+
+        let recordIDs = cleanIDs.map { CKRecord.ID(recordName: $0) }
+        var rows: [[String: Any]] = []
+        rows.reserveCapacity(recordIDs.count)
+
+        for chunkStart in stride(from: 0, to: recordIDs.count, by: 100) {
+            let chunk = Array(recordIDs[chunkStart..<min(chunkStart + 100, recordIDs.count)])
+            let op = CKFetchRecordsOperation(recordIDs: chunk)
+
+            var fetched: [CKRecord] = []
+            op.perRecordResultBlock = { _, result in
+                if case .success(let record) = result {
+                    fetched.append(record)
+                }
+            }
+
+            let err = await withCheckedContinuation { (cont: CheckedContinuation<Error?, Never>) in
+                op.fetchRecordsResultBlock = { result in
+                    switch result {
+                    case .success:
+                        cont.resume(returning: nil)
+                    case .failure(let e):
+                        cont.resume(returning: e)
+                    }
+                }
+                self.db.add(op)
+            }
+
+            if let err {
+                print("NJ_CK_FETCH_RECORDS_ERR entity=\(entity) ids=\(chunk.count) err=\(err)")
+                continue
+            }
+
+            for record in fetched where record.recordType == recordType {
+                rows.append(recordToFields(entity: entity, record: record))
+            }
+        }
+
+        print("NJ_CK_FETCH_RECORDS_OK entity=\(entity) requested=\(cleanIDs.count) rows=\(rows.count)")
+        return rows
     }
 
 

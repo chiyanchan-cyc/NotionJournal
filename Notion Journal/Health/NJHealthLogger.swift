@@ -31,6 +31,9 @@ final class NJHealthLogger: NSObject, ObservableObject {
     private let defaultsKey = "NJHealthLogger.enabled.v1"
     private let lastSyncKey = "NJHealthLogger.lastSyncMs.v1"
     private let medDoseEnabledKey = "NJHealthLogger.medicationDoseEnabled.v1"
+    private let workoutCloudBackfillKey = "NJHealthLogger.workoutCloudBackfillLastQueuedMs.v2"
+    private let workoutCloudBackfillDays = 365
+    private let workoutCloudBackfillIntervalMs: Int64 = 24 * 60 * 60 * 1000
 
     private let containerID = "iCloud.com.CYC.NotionJournal"
     private let lockRel = "Health/health_logger_lock.json"
@@ -57,6 +60,7 @@ final class NJHealthLogger: NSObject, ObservableObject {
     func configure(db: SQLiteDB) {
         if self.db != nil { return }
         self.db = db
+        enqueueExistingWorkoutRowsToCloudIfStale(db: db)
     }
 
     func setEnabled(_ on: Bool) {
@@ -149,6 +153,35 @@ final class NJHealthLogger: NSObject, ObservableObject {
         }
     }
 
+    func repushWorkoutsToCloud() {
+        Task { @MainActor in
+            await repushWorkoutBackfillToCloud()
+        }
+    }
+
+    private func enqueueExistingWorkoutRowsToCloudIfStale(db: SQLiteDB) {
+        let nowMs = nowMs()
+        let lastWorkoutCloudQueueMs = Int64(UserDefaults.standard.double(forKey: workoutCloudBackfillKey))
+        guard lastWorkoutCloudQueueMs == 0 || (nowMs - lastWorkoutCloudQueueMs) > workoutCloudBackfillIntervalMs else {
+            return
+        }
+
+        let endMs = nowMs
+        let startMs = endMs - Int64(workoutCloudBackfillDays) * 24 * 60 * 60 * 1000
+        let queued = DBHealthSampleCloudTable(
+            db: db,
+            enqueueDirty: { entity, id, op, ms in
+                DBDirtyQueueTable(db: db).enqueueDirty(entity: entity, entityID: id, op: op, updatedAtMs: ms)
+            }
+        )
+        .enqueueWorkoutSamplesForCloud(startMs: startMs, endMs: endMs)
+
+        if queued > 0 {
+            UserDefaults.standard.set(Double(nowMs), forKey: workoutCloudBackfillKey)
+            lastSyncSummary = "Queued \(queued) existing workouts for cloud"
+        }
+    }
+
     func resetHealthSamplesAndResync() {
         guard let db else { return }
         db.exec("DELETE FROM health_samples;")
@@ -231,8 +264,14 @@ final class NJHealthLogger: NSObject, ObservableObject {
         let now = Date()
         let start = initialSyncStartDate()
 
-        let samplesTable = DBHealthSamplesTable(db: db)
+        let samplesTable = DBHealthSamplesTable(
+            db: db,
+            enqueueDirty: { entity, id, op, ms in
+                DBDirtyQueueTable(db: db).enqueueDirty(entity: entity, entityID: id, op: op, updatedAtMs: ms)
+            }
+        )
         var inserted = 0
+        var queuedWorkouts = 0
 
         let qtyTypes = quantityTypes()
         for qt in qtyTypes {
@@ -248,6 +287,19 @@ final class NJHealthLogger: NSObject, ObservableObject {
 
         let workouts = await fetchWorkouts(start: start, end: now)
         inserted += samplesTable.insert(workoutSamples: workouts)
+        let lastWorkoutCloudQueueMs = Int64(UserDefaults.standard.double(forKey: workoutCloudBackfillKey))
+        if lastWorkoutCloudQueueMs == 0 || (nowMs() - lastWorkoutCloudQueueMs) > workoutCloudBackfillIntervalMs {
+            let backfillStart = Calendar.current.date(
+                byAdding: .day,
+                value: -workoutCloudBackfillDays,
+                to: now
+            ) ?? start
+            let backfillWorkouts = await fetchWorkouts(start: backfillStart, end: now)
+            inserted += samplesTable.insert(workoutSamples: backfillWorkouts)
+            let queued = samplesTable.enqueueWorkoutSamplesForCloud(start: backfillStart, end: now)
+            queuedWorkouts += queued
+            UserDefaults.standard.set(Double(nowMs()), forKey: workoutCloudBackfillKey)
+        }
 
         if medicationDoseEnabled, supportsMedicationDose() {
             if #available(iOS 26.0, *) {
@@ -258,8 +310,57 @@ final class NJHealthLogger: NSObject, ObservableObject {
 
         lastSyncTsMs = nowMs()
         UserDefaults.standard.set(Double(lastSyncTsMs), forKey: lastSyncKey)
-        lastSyncSummary = "Inserted \(inserted) samples"
+        if queuedWorkouts > 0 {
+            lastSyncSummary = "Inserted \(inserted) samples, queued \(queuedWorkouts) workouts for cloud"
+        } else {
+            lastSyncSummary = "Inserted \(inserted) samples"
+        }
         medicationDoseCount7d = countMedicationDoseSamplesRecent(days: 7)
+        bumpHeartbeat()
+        #else
+        lastError = "HealthKit not available on this platform"
+        lastSyncSummary = ""
+        #endif
+    }
+
+    @MainActor
+    private func repushWorkoutBackfillToCloud() async {
+        #if canImport(HealthKit)
+        guard enabled else {
+            lastError = "Turn on Health Logger first"
+            return
+        }
+        await refreshAuthority()
+        guard auth == .authorized else {
+            lastError = "Health access is not authorized"
+            return
+        }
+        guard let db else { return }
+
+        lastError = ""
+        lastSyncSummary = "Re-pushing workouts..."
+
+        let now = Date()
+        let start = Calendar.current.date(
+            byAdding: .day,
+            value: -workoutCloudBackfillDays,
+            to: now
+        ) ?? now
+
+        let samplesTable = DBHealthSamplesTable(
+            db: db,
+            enqueueDirty: { entity, id, op, ms in
+                DBDirtyQueueTable(db: db).enqueueDirty(entity: entity, entityID: id, op: op, updatedAtMs: ms)
+            }
+        )
+        let workouts = await fetchWorkouts(start: start, end: now)
+        let inserted = samplesTable.insert(workoutSamples: workouts)
+        let queued = samplesTable.enqueueWorkoutSamplesForCloud(start: start, end: now)
+        UserDefaults.standard.set(Double(nowMs()), forKey: workoutCloudBackfillKey)
+
+        lastSyncTsMs = nowMs()
+        UserDefaults.standard.set(Double(lastSyncTsMs), forKey: lastSyncKey)
+        lastSyncSummary = "Workouts fetched \(workouts.count), inserted \(inserted), queued \(queued) for cloud"
         bumpHeartbeat()
         #else
         lastError = "HealthKit not available on this platform"
@@ -392,7 +493,6 @@ final class NJHealthLogger: NSObject, ObservableObject {
         if let weight = HKObjectType.quantityType(forIdentifier: .bodyMass) {
             types.insert(weight)
         }
-
         types.insert(HKObjectType.workoutType())
 
         return types
@@ -511,9 +611,14 @@ final class NJHealthLogger: NSObject, ObservableObject {
 #if canImport(HealthKit)
 final class DBHealthSamplesTable {
     private let db: SQLiteDB
+    private let enqueueDirty: ((String, String, String, Int64) -> Void)?
 
-    init(db: SQLiteDB) {
+    init(
+        db: SQLiteDB,
+        enqueueDirty: ((String, String, String, Int64) -> Void)? = nil
+    ) {
         self.db = db
+        self.enqueueDirty = enqueueDirty
     }
 
     func insert(quantitySamples: [HKQuantitySample]) -> Int {
@@ -625,12 +730,16 @@ final class DBHealthSamplesTable {
             }
             defer { sqlite3_finalize(stmt) }
 
+            var insertedWorkoutIDs: [(String, Int64)] = []
+
             for w in workoutSamples {
                 sqlite3_reset(stmt)
                 let meta = workoutMetadataJSON(w)
                 let duration = w.duration
+                let sampleID = w.uuid.uuidString.lowercased()
+                let insertedAtMs = Int64(Date().timeIntervalSince1970 * 1000.0)
 
-                bindText(stmt, 1, w.uuid.uuidString.lowercased())
+                bindText(stmt, 1, sampleID)
                 bindText(stmt, 2, "workout")
                 sqlite3_bind_int64(stmt, 3, Int64(w.startDate.timeIntervalSince1970 * 1000.0))
                 sqlite3_bind_int64(stmt, 4, Int64(w.endDate.timeIntervalSince1970 * 1000.0))
@@ -640,15 +749,40 @@ final class DBHealthSamplesTable {
                 bindText(stmt, 8, w.sourceRevision.source.name)
                 bindText(stmt, 9, meta)
                 bindText(stmt, 10, UIDevice.current.identifierForVendor?.uuidString ?? "unknown")
-                sqlite3_bind_int64(stmt, 11, Int64(Date().timeIntervalSince1970 * 1000.0))
+                sqlite3_bind_int64(stmt, 11, insertedAtMs)
 
                 let rc = sqlite3_step(stmt)
-                if rc == SQLITE_DONE { inserted += Int(sqlite3_changes(dbp)) }
+                if rc == SQLITE_DONE {
+                    let changes = Int(sqlite3_changes(dbp))
+                    inserted += changes
+                    if changes > 0 { insertedWorkoutIDs.append((sampleID, insertedAtMs)) }
+                }
             }
 
             db.exec("COMMIT;")
+            for (sampleID, insertedAtMs) in insertedWorkoutIDs {
+                enqueueDirty?(
+                    NJHealthSampleCloudMapper.entity,
+                    sampleID,
+                    "upsert",
+                    insertedAtMs
+                )
+            }
             return inserted
         }
+    }
+
+    @discardableResult
+    func enqueueWorkoutSamplesForCloud(start: Date, end: Date) -> Int {
+        guard let enqueueDirty else { return 0 }
+        return DBHealthSampleCloudTable(
+            db: db,
+            enqueueDirty: enqueueDirty
+        )
+        .enqueueWorkoutSamplesForCloud(
+            startMs: Int64(start.timeIntervalSince1970 * 1000.0),
+            endMs: Int64(end.timeIntervalSince1970 * 1000.0)
+        )
     }
 
     @available(iOS 12.0, *)

@@ -35,6 +35,10 @@ struct NJHealthLoggerPage: View {
                     NJHealthLogger.shared.syncNow()
                 }
 
+                Button("Re-push Workouts to Cloud") {
+                    NJHealthLogger.shared.repushWorkoutsToCloud()
+                }
+
                 Button("Reset & Resync (Clears Health Samples)") {
                     NJHealthLogger.shared.resetHealthSamplesAndResync()
                 }

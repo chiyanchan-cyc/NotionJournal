@@ -3881,6 +3881,8 @@ struct NJOutlineNodeDetailWindowView: View {
                     reconstructedRow(b)
                 }
             }
+
+            NJBlockListBottomRunwayRow()
         }
         .listStyle(.plain)
     }
@@ -3902,6 +3904,7 @@ struct NJOutlineNodeDetailWindowView: View {
 
         return NJBlockHostView(
             index: 1,
+            blockID: b.blockID,
             createdAtMs: b.createdAtMs,
             domainPreview: b.domainPreview,
             onEditTags: { },
@@ -3996,7 +3999,7 @@ struct NJOutlineNodeDetailWindowView: View {
 
         if cleanRules.isEmpty && attachedIDs.isEmpty {
             persistence.updateSpec(.custom(title: titleDraft.isEmpty ? "Node" : titleDraft, ids: [], limit: 1, newestFirst: true))
-            persistence.reload(makeHandle: { NJProtonEditorHandle() })
+            persistence.reload(makeHandle: { persistence.makeWiredHandle() })
             return
         }
 
@@ -4009,7 +4012,7 @@ struct NJOutlineNodeDetailWindowView: View {
         )
         let ids = Array(NSOrderedSet(array: attachedIDs + filteredIDs)) as? [String] ?? (attachedIDs + filteredIDs)
         persistence.updateSpec(.custom(title: titleDraft.isEmpty ? "Node" : titleDraft, ids: ids, limit: max(ids.count, 1), newestFirst: true))
-        persistence.reload(makeHandle: { NJProtonEditorHandle() })
+        persistence.reload(makeHandle: { persistence.makeWiredHandle() })
     }
 
     private func saveAll() {

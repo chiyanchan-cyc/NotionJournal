@@ -308,3 +308,196 @@ final class DBPersonalGoalTable {
         )
     }
 }
+
+final class DBRenewalItemTable {
+    let db: SQLiteDB
+    let enqueueDirty: (String, String, String, Int64) -> Void
+
+    init(db: SQLiteDB, enqueueDirty: @escaping (String, String, String, Int64) -> Void) {
+        self.db = db
+        self.enqueueDirty = enqueueDirty
+    }
+
+    func list(ownerScope: String = "ME") -> [NJRenewalItemRecord] {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT renewal_item_id, owner_scope, person_name, document_name, document_type, jurisdiction,
+                   document_number_hint, expiry_date_key, status, priority, reminder_offsets_json, notes,
+                   created_at_ms, updated_at_ms, deleted
+            FROM nj_renewal_item
+            WHERE deleted = 0 AND owner_scope = ?
+            ORDER BY
+                CASE WHEN trim(expiry_date_key) = '' THEN 1 ELSE 0 END ASC,
+                expiry_date_key ASC,
+                person_name COLLATE NOCASE ASC,
+                updated_at_ms DESC;
+            """
+            guard sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, ownerScope, -1, SQLITE_TRANSIENT)
+
+            var out: [NJRenewalItemRecord] = []
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                out.append(readRow(stmt))
+            }
+            return out
+        }
+    }
+
+    func upsert(_ row: NJRenewalItemRecord) {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            INSERT INTO nj_renewal_item(
+                renewal_item_id, owner_scope, person_name, document_name, document_type, jurisdiction,
+                document_number_hint, expiry_date_key, status, priority, reminder_offsets_json, notes,
+                created_at_ms, updated_at_ms, deleted
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(renewal_item_id) DO UPDATE SET
+                owner_scope = excluded.owner_scope,
+                person_name = excluded.person_name,
+                document_name = excluded.document_name,
+                document_type = excluded.document_type,
+                jurisdiction = excluded.jurisdiction,
+                document_number_hint = excluded.document_number_hint,
+                expiry_date_key = excluded.expiry_date_key,
+                status = excluded.status,
+                priority = excluded.priority,
+                reminder_offsets_json = excluded.reminder_offsets_json,
+                notes = excluded.notes,
+                created_at_ms = CASE
+                    WHEN nj_renewal_item.created_at_ms IS NULL OR nj_renewal_item.created_at_ms = 0
+                    THEN excluded.created_at_ms
+                    ELSE nj_renewal_item.created_at_ms
+                END,
+                updated_at_ms = excluded.updated_at_ms,
+                deleted = excluded.deleted;
+            """
+            guard sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+            defer { sqlite3_finalize(stmt) }
+
+            sqlite3_bind_text(stmt, 1, row.renewalItemID, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 2, row.ownerScope, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 3, row.personName, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 4, row.documentName, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 5, row.documentType, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 6, row.jurisdiction, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 7, row.documentNumberHint, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 8, row.expiryDateKey, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 9, row.status, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 10, row.priority, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 11, row.reminderOffsetsJSON, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 12, row.notes, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int64(stmt, 13, row.createdAtMs)
+            sqlite3_bind_int64(stmt, 14, row.updatedAtMs)
+            sqlite3_bind_int64(stmt, 15, row.deleted)
+            _ = sqlite3_step(stmt)
+        }
+        enqueueDirty("renewal_item", row.renewalItemID, "upsert", row.updatedAtMs)
+    }
+
+    func markDeleted(renewalItemID: String, nowMs: Int64) {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            UPDATE nj_renewal_item
+            SET deleted = 1, updated_at_ms = ?
+            WHERE renewal_item_id = ?;
+            """
+            guard sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_int64(stmt, 1, nowMs)
+            sqlite3_bind_text(stmt, 2, renewalItemID, -1, SQLITE_TRANSIENT)
+            _ = sqlite3_step(stmt)
+        }
+        enqueueDirty("renewal_item", renewalItemID, "upsert", nowMs)
+    }
+
+    func loadFields(renewalItemID: String) -> [String: Any]? {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT renewal_item_id, owner_scope, person_name, document_name, document_type, jurisdiction,
+                   document_number_hint, expiry_date_key, status, priority, reminder_offsets_json, notes,
+                   created_at_ms, updated_at_ms, deleted
+            FROM nj_renewal_item
+            WHERE renewal_item_id = ?
+            LIMIT 1;
+            """
+            guard sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, renewalItemID, -1, SQLITE_TRANSIENT)
+            guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+            let row = readRow(stmt)
+            return [
+                "renewal_item_id": row.renewalItemID,
+                "owner_scope": row.ownerScope,
+                "person_name": row.personName,
+                "document_name": row.documentName,
+                "document_type": row.documentType,
+                "jurisdiction": row.jurisdiction,
+                "document_number_hint": row.documentNumberHint,
+                "expiry_date_key": row.expiryDateKey,
+                "status": row.status,
+                "priority": row.priority,
+                "reminder_offsets_json": row.reminderOffsetsJSON,
+                "notes": row.notes,
+                "created_at_ms": row.createdAtMs,
+                "updated_at_ms": row.updatedAtMs,
+                "deleted": row.deleted
+            ]
+        }
+    }
+
+    func applyRemote(_ fields: [String: Any]) {
+        let renewalItemID = (fields["renewal_item_id"] as? String) ?? (fields["renewalItemID"] as? String) ?? ""
+        guard !renewalItemID.isEmpty else { return }
+
+        let existing = loadFields(renewalItemID: renewalItemID)
+        let incomingUpdatedAt = (fields["updated_at_ms"] as? Int64) ?? ((fields["updated_at_ms"] as? NSNumber)?.int64Value ?? 0)
+        let existingUpdatedAt = (existing?["updated_at_ms"] as? Int64) ?? ((existing?["updated_at_ms"] as? NSNumber)?.int64Value ?? 0)
+        if existingUpdatedAt > incomingUpdatedAt, incomingUpdatedAt > 0 {
+            return
+        }
+
+        let row = NJRenewalItemRecord(
+            renewalItemID: renewalItemID,
+            ownerScope: (fields["owner_scope"] as? String) ?? "ME",
+            personName: (fields["person_name"] as? String) ?? "",
+            documentName: (fields["document_name"] as? String) ?? "",
+            documentType: (fields["document_type"] as? String) ?? "",
+            jurisdiction: (fields["jurisdiction"] as? String) ?? "",
+            documentNumberHint: (fields["document_number_hint"] as? String) ?? "",
+            expiryDateKey: (fields["expiry_date_key"] as? String) ?? "",
+            status: (fields["status"] as? String) ?? "",
+            priority: (fields["priority"] as? String) ?? "",
+            reminderOffsetsJSON: (fields["reminder_offsets_json"] as? String) ?? "[]",
+            notes: (fields["notes"] as? String) ?? "",
+            createdAtMs: (fields["created_at_ms"] as? Int64) ?? ((fields["created_at_ms"] as? NSNumber)?.int64Value ?? 0),
+            updatedAtMs: incomingUpdatedAt,
+            deleted: (fields["deleted"] as? Int64) ?? ((fields["deleted"] as? NSNumber)?.int64Value ?? 0)
+        )
+        upsert(row)
+    }
+
+    private func readRow(_ stmt: OpaquePointer?) -> NJRenewalItemRecord {
+        NJRenewalItemRecord(
+            renewalItemID: String(cString: sqlite3_column_text(stmt, 0)),
+            ownerScope: String(cString: sqlite3_column_text(stmt, 1)),
+            personName: String(cString: sqlite3_column_text(stmt, 2)),
+            documentName: String(cString: sqlite3_column_text(stmt, 3)),
+            documentType: String(cString: sqlite3_column_text(stmt, 4)),
+            jurisdiction: String(cString: sqlite3_column_text(stmt, 5)),
+            documentNumberHint: String(cString: sqlite3_column_text(stmt, 6)),
+            expiryDateKey: String(cString: sqlite3_column_text(stmt, 7)),
+            status: String(cString: sqlite3_column_text(stmt, 8)),
+            priority: String(cString: sqlite3_column_text(stmt, 9)),
+            reminderOffsetsJSON: String(cString: sqlite3_column_text(stmt, 10)),
+            notes: String(cString: sqlite3_column_text(stmt, 11)),
+            createdAtMs: sqlite3_column_int64(stmt, 12),
+            updatedAtMs: sqlite3_column_int64(stmt, 13),
+            deleted: sqlite3_column_int64(stmt, 14)
+        )
+    }
+}

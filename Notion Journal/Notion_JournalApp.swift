@@ -13,6 +13,8 @@ private extension NJTimeSlotCategory {
         case "piano": return .piano
         case "exercise": return .exercise
         case "personal": return .personal
+        case "programming": return .programming
+        case "video editing", "video_editing", "video-editing": return .videoEditing
         default: return nil
         }
     }
@@ -33,6 +35,7 @@ final class NJPhoneWatchSyncManager: NSObject, WCSessionDelegate {
     private let slotKey = "nj_time_module_slots_v1"
     private let trainingWeekKey = "nj_training_week_snapshot_v1"
     private let groupID = NJTimeSlotStore.appGroupID
+    private let reminderSyncNotification = Notification.Name("nj_time_slot_inbox_did_change")
 
     private override init() {
         super.init()
@@ -80,7 +83,8 @@ final class NJPhoneWatchSyncManager: NSObject, WCSessionDelegate {
     }
 
     func session(_ session: WCSession, didReceiveUserInfo userInfo: [String : Any] = [:]) {
-        guard let kind = userInfo["kind"] as? String, kind == "NJTimeSlot" else { return }
+        guard let kind = userInfo["kind"] as? String else { return }
+        guard kind == "NJTimeSlot" else { return }
         guard let id = userInfo["id"] as? String,
               let title = userInfo["title"] as? String,
               let category = userInfo["category"] as? String,
@@ -134,8 +138,12 @@ final class NJPhoneWatchSyncManager: NSObject, WCSessionDelegate {
                 deleted: 0
             )
         )
+        NJTimeSlotReminderScheduler.reschedule(
+            slots: repo.listTimeSlots(ownerScope: "ME").filter { $0.deleted == 0 },
+            now: Date()
+        )
         DispatchQueue.main.async {
-            NotificationCenter.default.post(name: .njTimeSlotInboxDidChange, object: nil)
+            NotificationCenter.default.post(name: self.reminderSyncNotification, object: nil)
         }
     }
 
@@ -151,7 +159,38 @@ final class NJPhoneWatchSyncManager: NSObject, WCSessionDelegate {
             defaults.set(out, forKey: slotKey)
         }
         DispatchQueue.main.async {
-            NotificationCenter.default.post(name: .njTimeSlotInboxDidChange, object: nil)
+            NotificationCenter.default.post(name: self.reminderSyncNotification, object: nil)
+        }
+    }
+
+}
+
+private enum NJAppURLAction {
+    static func handle(_ url: URL, store: AppStore) -> Bool {
+        if NJAudioShareReceiver.handleIncomingURL(url) != nil {
+            store.runAudioIngestIfNeeded()
+            return true
+        }
+
+        guard let scheme = url.scheme?.lowercased(), scheme == "notionjournal" else {
+            return false
+        }
+
+        let host = url.host?.lowercased() ?? ""
+        let path = url.path.lowercased()
+
+        switch (host, path) {
+        case ("sync-now", _), ("sync", "/now"):
+            store.forceSyncNow()
+            return true
+        case ("pull-now", _), ("pull", "/now"):
+            store.forcePullNow(forceSinceZero: false)
+            return true
+        case ("recover-cloud", _), ("cloud", "/recover"):
+            store.recoverFromCloudNow()
+            return true
+        default:
+            return false
         }
     }
 }
@@ -174,9 +213,7 @@ struct Notion_JournalApp: App {
                     store.publishTrainingWeekSnapshotToWidget(referenceDate: Date())
                 }
                 .onOpenURL { url in
-                    if NJAudioShareReceiver.handleIncomingURL(url) != nil {
-                        store.runAudioIngestIfNeeded()
-                    }
+                    _ = NJAppURLAction.handle(url, store: store)
                 }
         }
 
@@ -197,8 +234,14 @@ struct Notion_JournalApp: App {
         }
 
         WindowGroup(id: "reconstructed-manual", for: String.self) { tag in
-            NJReconstructedManualView(initialTag: tag.wrappedValue ?? "#REMIND")
-                .environmentObject(store)
+            if let value = tag.wrappedValue,
+               let config = NJInternalLinkedViewConfig.fromWindowValue(value) {
+                NJReconstructedManualView(initialTag: config.filterText, initialConfig: config)
+                    .environmentObject(store)
+            } else {
+                NJReconstructedManualView(initialTag: tag.wrappedValue ?? "#REMIND")
+                    .environmentObject(store)
+            }
         }
 
         WindowGroup(id: "calendar") {

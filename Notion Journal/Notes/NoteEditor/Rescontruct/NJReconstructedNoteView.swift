@@ -359,10 +359,12 @@ private final class NJWeeklyWeatherForecastProvider: NSObject, ObservableObject,
 struct NJReconstructedNoteView: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     
     let spec: NJReconstructedSpec
     
     @StateObject private var persistence: NJReconstructedNotePersistence
+    @AppStorage("nj_reconstructed_weekly_show_past_days") private var showPastDays = false
     
     @State private var loaded = false
     @State private var pendingFocusID: UUID? = nil
@@ -379,6 +381,9 @@ struct NJReconstructedNoteView: View {
         VStack(spacing: 0) {
             header()
             Divider()
+            if persistence.hasPendingRemoteRefresh {
+                remoteRefreshStrip()
+            }
             list()
         }
         .overlay(NJHiddenShortcuts(getHandle: { focusedHandle() }))
@@ -400,7 +405,18 @@ struct NJReconstructedNoteView: View {
         .onChange(of: store.sync.initialPullCompleted) { _ in
             onLoadOnce()
         }
-        .onDisappear { forceCommitFocusedIfAny() }
+        .onDisappear { persistence.forceEndEditingAndCommitAllDirtyNow() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .inactive || phase == .background {
+                persistence.forceEndEditingAndCommitAllDirtyNow()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
+            persistence.forceEndEditingAndCommitAllDirtyNow()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+            persistence.forceEndEditingAndCommitAllDirtyNow()
+        }
         // Add these lines to allow it to resize/popup on iPadOS
         .presentationDetents([.height(600), .large])
         .presentationDragIndicator(.visible)
@@ -430,6 +446,10 @@ struct NJReconstructedNoteView: View {
                 Text(weeklyWeather.statusText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                Toggle("Show past days", isOn: $showPastDays)
+                    .toggleStyle(.switch)
+                    .font(.subheadline)
             }
         }
         .padding(.horizontal, 12)
@@ -438,9 +458,11 @@ struct NJReconstructedNoteView: View {
     
     private func list() -> some View {
         List {
-            ForEach(persistence.blocks, id: \.id) { b in
+            ForEach(displayedBlocks, id: \.id) { b in
                 row(b)
             }
+
+            NJBlockListBottomRunwayRow()
         }
         .listStyle(.plain)
     }
@@ -459,12 +481,13 @@ struct NJReconstructedNoteView: View {
                 arr[i].tagJSON = newJSON
                 persistence.blocks = arr
             }
-            persistence.markDirty(id)
-            persistence.scheduleCommit(id)
+            persistence.markDirty(id, source: "recon.view.saveTags")
+            persistence.scheduleCommit(id, source: "recon.view.saveTags")
         }
         
         return NJBlockHostView(
                 index: rowIndex,
+                blockID: b.blockID,
                 createdAtMs: b.createdAtMs,
                 domainPreview: b.domainPreview,
                 onEditTags: { },
@@ -483,8 +506,9 @@ struct NJReconstructedNoteView: View {
                         persistence.forceEndEditingAndCommitNow(prev)
                     }
                     persistence.focusedBlockID = id
-                    persistence.hydrateProton(id)
-                    h.focus()
+                    if !collapsedBinding.wrappedValue {
+                        h.focus()
+                    }
                 },
                 onCtrlReturn: {
                     persistence.forceEndEditingAndCommitNow(id)
@@ -492,8 +516,9 @@ struct NJReconstructedNoteView: View {
                 onDelete: { },
                 onHydrateProton: { persistence.hydrateProton(id) },
                 onCommitProton: {
-                    persistence.markDirty(id)
-                    persistence.scheduleCommit(id)
+                    if persistence.blocks.first(where: { $0.id == id })?.isDirty == true {
+                        persistence.scheduleCommit(id, source: "recon.view.onCommitProton.alreadyDirty")
+                    }
                 },
                 onMoveToClipboard: nil,
                 headerBadgeSymbolName: weatherBadge?.symbolName,
@@ -506,13 +531,11 @@ struct NJReconstructedNoteView: View {
                     store.notes.listTagSuggestions(prefix: prefix, limit: limit)
                 }
             )
-        .id("\(id.uuidString)-\(collapsedBinding.wrappedValue ? "c" : "e")")
         .fixedSize(horizontal: false, vertical: true)
         .listRowInsets(EdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 12))
         .listRowBackground(persistence.rowBackgroundColor(blockID: b.blockID))
         .listRowSeparator(.hidden)
         .onAppear {
-            persistence.hydrateProton(id)
             if pendingFocusID == id {
                 if pendingFocusToStart, let i = persistence.blocks.firstIndex(where: { $0.id == id }) {
                     var arr = persistence.blocks
@@ -525,15 +548,27 @@ struct NJReconstructedNoteView: View {
                 h.focus()
             }
         }
-        .onChange(of: collapsedBinding.wrappedValue) { _, v in
-            guard !v else { return }
-            DispatchQueue.main.async {
-                persistence.hydrateProton(id)
+    }
+
+    private func remoteRefreshStrip() -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "lock.trianglebadge.exclamationmark")
+            Text("Remote update detected. This device will not save over it until you reload.")
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 8)
+            Button {
+                reloadNow()
+            } label: {
+                Image(systemName: "arrow.clockwise")
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-                persistence.hydrateProton(id)
-            }
+            .buttonStyle(.borderless)
         }
+        .font(.caption2)
+        .foregroundStyle(.orange)
+        .padding(.horizontal, 12)
+        .frame(height: 26)
+        .background(.ultraThinMaterial)
     }
 
     @ToolbarContentBuilder
@@ -562,19 +597,7 @@ struct NJReconstructedNoteView: View {
         if spec.isWeekly {
             weeklyWeather.refresh()
         }
-        persistence.reload(makeHandle: {
-            let h = NJProtonEditorHandle()
-            h.attachmentResolver = { [weak store] id in
-                store?.notes.attachmentByID(id)
-            }
-            h.attachmentThumbPathCleaner = { [weak store] id in
-                store?.notes.clearAttachmentThumbPath(attachmentID: id, nowMs: DBNoteRepository.nowMs())
-            }
-            h.onOpenFullPhoto = { id in
-                NJPhotoLibraryPresenter.presentFullPhoto(localIdentifier: id)
-            }
-            return h
-        })
+        persistence.reload(makeHandle: makeWiredHandle)
     }
     
     private func onLoadOnce() {
@@ -584,23 +607,36 @@ struct NJReconstructedNoteView: View {
         persistence.configure(store: store)
         NJLocalBLRunner(db: store.db).run(.deriveBlockTagIndexAndDomainV1)
         persistence.updateSpec(spec)
-        persistence.reload(makeHandle: {
-            let h = NJProtonEditorHandle()
-            h.attachmentResolver = { [weak store] id in
-                store?.notes.attachmentByID(id)
-            }
-            h.attachmentThumbPathCleaner = { [weak store] id in
-                store?.notes.clearAttachmentThumbPath(attachmentID: id, nowMs: DBNoteRepository.nowMs())
-            }
-            h.onOpenFullPhoto = { id in
-                NJPhotoLibraryPresenter.presentFullPhoto(localIdentifier: id)
-            }
-            return h
-        })
+        persistence.reload(makeHandle: makeWiredHandle)
+    }
+
+    private func makeWiredHandle() -> NJProtonEditorHandle {
+        let h = NJProtonEditorHandle()
+        h.attachmentResolver = { [weak store] id in
+            store?.notes.attachmentByID(id)
+        }
+        h.attachmentThumbPathCleaner = { [weak store] id in
+            store?.notes.clearAttachmentThumbPath(attachmentID: id, nowMs: DBNoteRepository.nowMs())
+        }
+        h.onOpenFullPhoto = { id in
+            NJPhotoLibraryPresenter.presentFullPhoto(localIdentifier: id)
+        }
+        h.onUserTyped = { [weak persistence, weak h] _, _ in
+            guard let persistence, let handle = h, let id = handle.ownerBlockUUID else { return }
+            if handle.isRunningProgrammaticUpdate { return }
+            persistence.enqueueEditorChange(id, source: "recon.view.onUserTyped.\(handle.userEditSourceHint)")
+        }
+        h.onSnapshot = { _, _ in
+            // Passive snapshots can be emitted by layout/hydration on idle devices.
+            // Only explicit user edits should enqueue a save.
+        }
+        return h
     }
     
     private func forceCommitFocusedIfAny() {
         if let id = persistence.focusedBlockID {
+            guard let block = persistence.blocks.first(where: { $0.id == id }) else { return }
+            guard block.isDirty || block.protonHandle.isEditing else { return }
             persistence.forceEndEditingAndCommitNow(id)
         }
     }
@@ -624,13 +660,8 @@ struct NJReconstructedNoteView: View {
                         persistence.focusedBlockID = arr[i].id
                     }
                     if !arr[i].attr.isEqual(to: v) {
-                        let shouldPersistAsDirty = arr[i].protonHandle.isEditing
                         arr[i].attr = v
                         persistence.blocks = arr
-                        if shouldPersistAsDirty {
-                            persistence.markDirty(id)
-                            persistence.scheduleCommit(id)
-                        }
                     }
                 }
             }
@@ -655,6 +686,54 @@ struct NJReconstructedNoteView: View {
         return persistence.blocks.first(where: { $0.id == id })?.protonHandle
     }
 
+    private var displayedBlocks: [NJNoteEditorContainerPersistence.BlockState] {
+        guard spec.isWeekly, !showPastDays else { return persistence.blocks }
+        return persistence.blocks.filter { !shouldHidePastWeeklyDayRow($0) }
+    }
+
+    private func shouldHidePastWeeklyDayRow(_ block: NJNoteEditorContainerPersistence.BlockState) -> Bool {
+        guard !isWeeklyMarkerRow(block) else { return false }
+        guard isDailyFocusRow(block) else { return false }
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+
+        let blockDate = Date(timeIntervalSince1970: TimeInterval(block.createdAtMs) / 1000.0)
+        let startOfBlockDay = calendar.startOfDay(for: blockDate)
+        let startOfToday = calendar.startOfDay(for: Date())
+        return startOfBlockDay < startOfToday
+    }
+
+    private func isWeeklyMarkerRow(_ block: NJNoteEditorContainerPersistence.BlockState) -> Bool {
+        let tags = decodeTagJSON(block.tagJSON)
+        let normalized = Set(tags.map { $0.uppercased() })
+        return normalized.contains("#YEAR") || normalized.contains("#MONTH")
+    }
+
+    private func isDailyFocusRow(_ block: NJNoteEditorContainerPersistence.BlockState) -> Bool {
+        let title = firstLineText(block).lowercased()
+        return title.contains("daily focus")
+    }
+
+    private func firstLineText(_ block: NJNoteEditorContainerPersistence.BlockState) -> String {
+        block.attr.string
+            .replacingOccurrences(of: "\u{FFFC}", with: "")
+            .replacingOccurrences(of: "\u{200B}", with: "")
+            .split(whereSeparator: \.isNewline)
+            .first
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""
+    }
+
+    private func decodeTagJSON(_ json: String) -> [String] {
+        guard let data = json.data(using: .utf8),
+              let raw = try? JSONSerialization.jsonObject(with: data) as? [Any] else {
+            return []
+        }
+        return raw.compactMap { $0 as? String }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
     
 }
 
@@ -676,12 +755,6 @@ private struct NJHiddenShortcuts: View {
 
             Button("") { fire { $0.toggleStrike() } }
                 .keyboardShortcut("x", modifiers: [.command, .shift])
-
-            Button("") { fire { $0.toggleBullet() } }
-                .keyboardShortcut("7", modifiers: .command)
-
-            Button("") { fire { $0.toggleNumber() } }
-                .keyboardShortcut("8", modifiers: .command)
 
             Button("") { fire { $0.indent() } }
                 .keyboardShortcut("]", modifiers: .command)
@@ -710,7 +783,7 @@ private struct NJHiddenShortcuts: View {
         NJShortcutLog.info("SHORTCUT: has handle owner=\(String(describing: h.ownerBlockUUID)) editor_nil=\(h.editor == nil) tv_nil=\(h.textView == nil)")
         h.isEditing = true
         f(h)
-        h.snapshot()
+        h.snapshot(markUserEdit: true)
     }
 
 }

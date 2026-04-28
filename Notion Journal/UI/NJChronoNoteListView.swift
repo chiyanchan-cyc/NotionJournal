@@ -89,6 +89,8 @@ struct NJChronoNoteListView: View {
                     row(b)
                 }
             }
+
+            NJBlockListBottomRunwayRow()
         }
         .listStyle(.plain)
     }
@@ -112,6 +114,7 @@ struct NJChronoNoteListView: View {
 
         return NJBlockHostView(
             index: rowIndex,
+            blockID: b.blockID,
             createdAtMs: b.createdAtMs,
             domainPreview: b.domainPreview,
             onEditTags: { },
@@ -151,13 +154,11 @@ struct NJChronoNoteListView: View {
                 store.notes.listTagSuggestions(prefix: prefix, limit: limit)
             }
         )
-        .id("\(id.uuidString)-\(collapsedBinding.wrappedValue ? "c" : "e")")
         .fixedSize(horizontal: false, vertical: true)
         .listRowInsets(EdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 12))
         .listRowBackground(persistence.rowBackgroundColor(blockID: b.blockID))
         .listRowSeparator(.hidden)
         .onAppear {
-            persistence.hydrateProton(id)
             if pendingFocusID == id {
                 if pendingFocusToStart, let i = persistence.blocks.firstIndex(where: { $0.id == id }) {
                     var arr = persistence.blocks
@@ -168,15 +169,6 @@ struct NJChronoNoteListView: View {
                 pendingFocusID = nil
                 pendingFocusToStart = false
                 h.focus()
-            }
-        }
-        .onChange(of: collapsedBinding.wrappedValue) { _, v in
-            guard !v else { return }
-            DispatchQueue.main.async {
-                persistence.hydrateProton(id)
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-                persistence.hydrateProton(id)
             }
         }
     }
@@ -207,19 +199,7 @@ struct NJChronoNoteListView: View {
             excludeTags: excludeTags
         )
         persistence.updateSpec(spec)
-        persistence.reload(makeHandle: {
-            let h = NJProtonEditorHandle()
-            h.attachmentResolver = { [weak store] id in
-                store?.notes.attachmentByID(id)
-            }
-            h.attachmentThumbPathCleaner = { [weak store] id in
-                store?.notes.clearAttachmentThumbPath(attachmentID: id, nowMs: DBNoteRepository.nowMs())
-            }
-            h.onOpenFullPhoto = { id in
-                NJPhotoLibraryPresenter.presentFullPhoto(localIdentifier: id)
-            }
-            return h
-        })
+        persistence.reload(makeHandle: { persistence.makeWiredHandle() })
     }
 
     private func forceCommitFocusedIfAny() {
@@ -322,12 +302,6 @@ private struct NJHiddenShortcuts: View {
 
             Button("") { fire { $0.toggleStrike() } }
                 .keyboardShortcut("x", modifiers: [.command, .shift])
-
-            Button("") { fire { $0.toggleBullet() } }
-                .keyboardShortcut("7", modifiers: .command)
-
-            Button("") { fire { $0.toggleNumber() } }
-                .keyboardShortcut("8", modifiers: .command)
 
             Button("") { fire { $0.indent() } }
                 .keyboardShortcut("]", modifiers: .command)

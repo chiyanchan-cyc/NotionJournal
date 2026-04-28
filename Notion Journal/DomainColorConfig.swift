@@ -11,7 +11,7 @@ enum NJDomainColorConfig {
     // Ordered list of the second-tier domains you want to standardize.
     static let orderedSecondTierDomains: [String] = [
         "me.finance",
-        "me.rel",
+        "me.database",
         "zz.edu",
         "zz.music",
         "zz.sport",
@@ -24,7 +24,7 @@ enum NJDomainColorConfig {
     // Feel free to tweak these to taste.
     static let pastelByDomain: [String: Color] = [
         "me.finance": Color(red: 0.78, green: 0.92, blue: 0.86),
-        "me.rel": Color(red: 0.98, green: 0.86, blue: 0.78),
+        "me.database": Color(red: 0.98, green: 0.86, blue: 0.78),
         "zz.edu": Color(red: 0.86, green: 0.84, blue: 0.96),
         "zz.music": Color(red: 0.80, green: 0.90, blue: 0.98),
         "zz.sport": Color(red: 0.98, green: 0.95, blue: 0.76),

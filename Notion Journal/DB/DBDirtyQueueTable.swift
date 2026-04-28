@@ -379,6 +379,19 @@ final class DBDirtyQueueTable {
             print("NJ_DIRTY_CLEAR_MISS entity=\(entity) id=\(entityID) strict=\(strict) nocase=\(nocase) entityOnly=\(anyEnt)")
         }
     }
+
+    func pendingCount() -> Int {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = "SELECT COUNT(*) FROM nj_dirty WHERE ignore = 0;"
+            let rc0 = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
+            if rc0 != SQLITE_OK { db.dbgErr(dbp, "pendingCount.prepare", rc0); return 0 }
+            defer { sqlite3_finalize(stmt) }
+            let rc1 = sqlite3_step(stmt)
+            if rc1 != SQLITE_ROW { db.dbgErr(dbp, "pendingCount.step", rc1); return 0 }
+            return Int(sqlite3_column_int64(stmt, 0))
+        }
+    }
 }
 
 extension Notification.Name {

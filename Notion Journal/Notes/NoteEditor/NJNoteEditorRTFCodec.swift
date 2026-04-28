@@ -18,7 +18,7 @@ func baseAttrs() -> [NSAttributedString.Key: Any] {
     p.headIndent = 0
     p.tailIndent = 0
     return [
-        .font: UIFont.systemFont(ofSize: 17),
+        .font: NJEditorCanonicalBodyFont(size: 17),
         .foregroundColor: UIColor.label,
         .paragraphStyle: p
     ]

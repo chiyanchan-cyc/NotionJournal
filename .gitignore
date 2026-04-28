@@ -1,0 +1,4 @@
+.nj_semantic_memory/
+vectorization/__pycache__/
+*.pyc
+build/

@@ -1,5 +1,29 @@
 import Foundation
 
+enum NJNoteType: String, Codable, Hashable, CaseIterable {
+    case note = "note"
+    case card = "card"
+
+    var title: String {
+        switch self {
+        case .note: return "Note"
+        case .card: return "Card"
+        }
+    }
+}
+
+enum NJNoteDominanceMode: String, Codable, Hashable, CaseIterable {
+    case note = "note"
+    case block = "block"
+
+    var title: String {
+        switch self {
+        case .note: return "Note dominate"
+        case .block: return "Block dominate"
+        }
+    }
+}
+
 struct NJNoteID: Hashable, Codable, Identifiable {
     let raw: String
     var id: String { raw }
@@ -16,6 +40,26 @@ struct NJNote: Identifiable, Codable, Hashable {
     var rtfData: Data
     var deleted: Int64
     var pinned: Int64
+    var favorited: Int64
+    var noteTypeRaw: String
+    var dominanceModeRaw: String
+    var isChecklist: Int64
+    var cardID: String
+    var cardCategory: String
+    var cardArea: String
+    var cardContext: String
+    var cardStatus: String
+    var cardPriority: String
+
+    var noteType: NJNoteType {
+        get { NJNoteType(rawValue: noteTypeRaw) ?? .note }
+        set { noteTypeRaw = newValue.rawValue }
+    }
+
+    var dominanceMode: NJNoteDominanceMode {
+        get { NJNoteDominanceMode(rawValue: dominanceModeRaw) ?? .block }
+        set { dominanceModeRaw = newValue.rawValue }
+    }
 
     init(
         id: NJNoteID,
@@ -26,7 +70,17 @@ struct NJNote: Identifiable, Codable, Hashable {
         title: String,
         rtfData: Data,
         deleted: Int64,
-        pinned: Int64 = 0
+        pinned: Int64 = 0,
+        favorited: Int64 = 0,
+        noteTypeRaw: String = NJNoteType.note.rawValue,
+        dominanceModeRaw: String = NJNoteDominanceMode.block.rawValue,
+        isChecklist: Int64 = 0,
+        cardID: String = "",
+        cardCategory: String = "",
+        cardArea: String = "",
+        cardContext: String = "",
+        cardStatus: String = "",
+        cardPriority: String = ""
     ) {
         self.id = id
         self.createdAtMs = createdAtMs
@@ -37,6 +91,16 @@ struct NJNote: Identifiable, Codable, Hashable {
         self.rtfData = rtfData
         self.deleted = deleted
         self.pinned = pinned
+        self.favorited = favorited
+        self.noteTypeRaw = noteTypeRaw
+        self.dominanceModeRaw = dominanceModeRaw
+        self.isChecklist = isChecklist
+        self.cardID = cardID
+        self.cardCategory = cardCategory
+        self.cardArea = cardArea
+        self.cardContext = cardContext
+        self.cardStatus = cardStatus
+        self.cardPriority = cardPriority
     }
 
     init(
@@ -46,7 +110,17 @@ struct NJNote: Identifiable, Codable, Hashable {
         title: String,
         createdAtMs: Int64,
         updatedAtMs: Int64,
-        pinned: Int64 = 0
+        pinned: Int64 = 0,
+        favorited: Int64 = 0,
+        noteTypeRaw: String = NJNoteType.note.rawValue,
+        dominanceModeRaw: String = NJNoteDominanceMode.block.rawValue,
+        isChecklist: Int64 = 0,
+        cardID: String = "",
+        cardCategory: String = "",
+        cardArea: String = "",
+        cardContext: String = "",
+        cardStatus: String = "",
+        cardPriority: String = ""
     ) {
         self.id = id
         self.notebook = notebook
@@ -57,6 +131,16 @@ struct NJNote: Identifiable, Codable, Hashable {
         self.rtfData = Data()
         self.deleted = 0
         self.pinned = pinned
+        self.favorited = favorited
+        self.noteTypeRaw = noteTypeRaw
+        self.dominanceModeRaw = dominanceModeRaw
+        self.isChecklist = isChecklist
+        self.cardID = cardID
+        self.cardCategory = cardCategory
+        self.cardArea = cardArea
+        self.cardContext = cardContext
+        self.cardStatus = cardStatus
+        self.cardPriority = cardPriority
     }
 }
 
@@ -201,6 +285,50 @@ struct NJFinanceResearchTask: Identifiable, Codable, Hashable {
     var id: String { taskID }
 }
 
+struct NJAgentHeartbeatRun: Identifiable, Codable, Hashable {
+    var runID: String
+    var heartbeatKey: String
+    var scheduledForMs: Int64
+    var startedAtMs: Int64
+    var completedAtMs: Int64
+    var status: String
+    var coverageStartMs: Int64
+    var coverageEndMs: Int64
+    var dateKey: String
+    var marketSession: String
+    var outputRef: String
+    var errorSummary: String
+    var sourceRefsJSON: String
+    var createdAtMs: Int64
+    var updatedAtMs: Int64
+    var deleted: Int64
+
+    var id: String { runID }
+}
+
+struct NJAgentBackfillTask: Identifiable, Codable, Hashable {
+    var taskID: String
+    var heartbeatKey: String
+    var missedRunID: String
+    var targetRunID: String
+    var dateKey: String
+    var marketSession: String
+    var coverageStartMs: Int64
+    var coverageEndMs: Int64
+    var reason: String
+    var status: String
+    var priority: Int64
+    var attemptCount: Int64
+    var lastAttemptAtMs: Int64
+    var resultRef: String
+    var resultSummary: String
+    var createdAtMs: Int64
+    var updatedAtMs: Int64
+    var deleted: Int64
+
+    var id: String { taskID }
+}
+
 struct NJFinanceFinding: Identifiable, Codable, Hashable {
     var findingID: String
     var sessionID: String
@@ -246,6 +374,47 @@ struct NJFinanceSourceItem: Identifiable, Codable, Hashable {
     var deleted: Int64
 
     var id: String { sourceItemID }
+}
+
+struct NJFinanceTransaction: Identifiable, Codable, Hashable {
+    var transactionID: String
+    var fingerprint: String
+    var sourceType: String
+    var accountID: String
+    var accountLabel: String
+    var externalRef: String
+    var occurredAtMs: Int64
+    var dateKey: String
+    var merchantName: String
+    var amountMinor: Int64
+    var currencyCode: String
+    var direction: String
+    var analysisNature: String
+    var category: String
+    var tagText: String
+    var fxRateToCNY: Double
+    var amountCNYMinor: Int64
+    var status: String
+    var counterparty: String
+    var itemName: String
+    var details: String
+    var note: String
+    var importBatchID: String
+    var sourceFileName: String
+    var rawPayloadJSON: String
+    var createdAtMs: Int64
+    var updatedAtMs: Int64
+    var deleted: Int64
+
+    var id: String { transactionID }
+
+    var signedAmount: Decimal {
+        Decimal(amountMinor) / Decimal(100)
+    }
+
+    var signedAmountCNY: Decimal {
+        Decimal(amountCNYMinor) / Decimal(100)
+    }
 }
 
 struct NJGoalSummary: Identifiable, Hashable {
@@ -473,4 +642,24 @@ struct NJPersonalGoalRecord: Identifiable, Codable, Hashable {
     var deleted: Int64
 
     var id: String { goalID }
+}
+
+struct NJRenewalItemRecord: Identifiable, Codable, Hashable {
+    var renewalItemID: String
+    var ownerScope: String
+    var personName: String
+    var documentName: String
+    var documentType: String
+    var jurisdiction: String
+    var documentNumberHint: String
+    var expiryDateKey: String
+    var status: String
+    var priority: String
+    var reminderOffsetsJSON: String
+    var notes: String
+    var createdAtMs: Int64
+    var updatedAtMs: Int64
+    var deleted: Int64
+
+    var id: String { renewalItemID }
 }
