@@ -67,7 +67,7 @@ struct NJBlockExporter {
         return try JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys])
     }
 
-    private static func plainTextFromPayloadJSON(_ s: String) -> String {
+    static func plainTextFromPayloadJSON(_ s: String) -> String {
         guard let data = s.data(using: .utf8) else { return "" }
         guard let root = try? JSONSerialization.jsonObject(with: data) else { return "" }
 

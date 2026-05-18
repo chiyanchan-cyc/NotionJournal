@@ -41,6 +41,8 @@ struct NJNote: Identifiable, Codable, Hashable {
     var deleted: Int64
     var pinned: Int64
     var favorited: Int64
+    var pinnedUpdatedAtMs: Int64
+    var favoritedUpdatedAtMs: Int64
     var noteTypeRaw: String
     var dominanceModeRaw: String
     var isChecklist: Int64
@@ -72,6 +74,8 @@ struct NJNote: Identifiable, Codable, Hashable {
         deleted: Int64,
         pinned: Int64 = 0,
         favorited: Int64 = 0,
+        pinnedUpdatedAtMs: Int64 = 0,
+        favoritedUpdatedAtMs: Int64 = 0,
         noteTypeRaw: String = NJNoteType.note.rawValue,
         dominanceModeRaw: String = NJNoteDominanceMode.block.rawValue,
         isChecklist: Int64 = 0,
@@ -92,6 +96,8 @@ struct NJNote: Identifiable, Codable, Hashable {
         self.deleted = deleted
         self.pinned = pinned
         self.favorited = favorited
+        self.pinnedUpdatedAtMs = pinnedUpdatedAtMs > 0 ? pinnedUpdatedAtMs : (pinned != 0 ? updatedAtMs : 0)
+        self.favoritedUpdatedAtMs = favoritedUpdatedAtMs > 0 ? favoritedUpdatedAtMs : (favorited != 0 ? updatedAtMs : 0)
         self.noteTypeRaw = noteTypeRaw
         self.dominanceModeRaw = dominanceModeRaw
         self.isChecklist = isChecklist
@@ -112,6 +118,8 @@ struct NJNote: Identifiable, Codable, Hashable {
         updatedAtMs: Int64,
         pinned: Int64 = 0,
         favorited: Int64 = 0,
+        pinnedUpdatedAtMs: Int64 = 0,
+        favoritedUpdatedAtMs: Int64 = 0,
         noteTypeRaw: String = NJNoteType.note.rawValue,
         dominanceModeRaw: String = NJNoteDominanceMode.block.rawValue,
         isChecklist: Int64 = 0,
@@ -132,6 +140,8 @@ struct NJNote: Identifiable, Codable, Hashable {
         self.deleted = 0
         self.pinned = pinned
         self.favorited = favorited
+        self.pinnedUpdatedAtMs = pinnedUpdatedAtMs > 0 ? pinnedUpdatedAtMs : (pinned != 0 ? updatedAtMs : 0)
+        self.favoritedUpdatedAtMs = favoritedUpdatedAtMs > 0 ? favoritedUpdatedAtMs : (favorited != 0 ? updatedAtMs : 0)
         self.noteTypeRaw = noteTypeRaw
         self.dominanceModeRaw = dominanceModeRaw
         self.isChecklist = isChecklist
@@ -204,11 +214,48 @@ struct NJFinanceMacroEvent: Identifiable, Codable, Hashable {
     var impact: String
     var source: String
     var notes: String
+    var analysisSummary: String
+    var analysisUpdatedAtMs: Int64
+    var refreshRequestedAtMs: Int64
     var createdAtMs: Int64
     var updatedAtMs: Int64
     var deleted: Int64
 
     var id: String { eventID }
+
+    init(
+        eventID: String,
+        dateKey: String,
+        title: String,
+        category: String,
+        region: String,
+        timeText: String,
+        impact: String,
+        source: String,
+        notes: String,
+        analysisSummary: String = "",
+        analysisUpdatedAtMs: Int64 = 0,
+        refreshRequestedAtMs: Int64 = 0,
+        createdAtMs: Int64,
+        updatedAtMs: Int64,
+        deleted: Int64
+    ) {
+        self.eventID = eventID
+        self.dateKey = dateKey
+        self.title = title
+        self.category = category
+        self.region = region
+        self.timeText = timeText
+        self.impact = impact
+        self.source = source
+        self.notes = notes
+        self.analysisSummary = analysisSummary
+        self.analysisUpdatedAtMs = analysisUpdatedAtMs
+        self.refreshRequestedAtMs = refreshRequestedAtMs
+        self.createdAtMs = createdAtMs
+        self.updatedAtMs = updatedAtMs
+        self.deleted = deleted
+    }
 }
 
 struct NJFinanceDailyBrief: Identifiable, Codable, Hashable {
@@ -415,6 +462,57 @@ struct NJFinanceTransaction: Identifiable, Codable, Hashable {
     var signedAmountCNY: Decimal {
         Decimal(amountCNYMinor) / Decimal(100)
     }
+}
+
+struct NJInvestmentLedgerTransaction: Identifiable, Codable, Hashable {
+    var ledgerTransactionID: String
+    var transactionNumber: Int64
+    var tradeDateKey: String
+    var occurredAtMs: Int64
+    var institution: String
+    var accountID: String
+    var accountLabel: String
+    var brokerReference: String
+    var symbol: String
+    var instrumentName: String
+    var assetClass: String
+    var region: String
+    var tradeCode: String
+    var tradeThesis: String
+    var side: String
+    var quantity: Double
+    var price: Double
+    var currencyCode: String
+    var grossAmount: Double
+    var fees: Double
+    var netAmount: Double
+    var fxRateToBase: Double
+    var baseCurrencyCode: String
+    var status: String
+    var sourceType: String
+    var sourceFileName: String
+    var rawPayloadJSON: String
+    var note: String
+    var createdAtMs: Int64
+    var updatedAtMs: Int64
+    var deleted: Int64
+
+    var id: String { ledgerTransactionID }
+}
+
+struct NJInvestmentChartDrawing: Identifiable, Codable, Hashable {
+    var drawingID: String
+    var symbolKey: String
+    var drawingType: String
+    var startX: Double
+    var startY: Double
+    var endX: Double
+    var endY: Double
+    var createdAtMs: Int64
+    var updatedAtMs: Int64
+    var deleted: Int64
+
+    var id: String { drawingID }
 }
 
 struct NJGoalSummary: Identifiable, Hashable {

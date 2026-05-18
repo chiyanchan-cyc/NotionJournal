@@ -165,6 +165,27 @@ final class NJPhoneWatchSyncManager: NSObject, WCSessionDelegate {
 
 }
 
+private struct NJInvestmentDetachedWorkspaceView: View {
+    @EnvironmentObject private var store: AppStore
+    @State private var selectedNoteID: NJNoteID?
+    @State private var splitViewVisibility: NavigationSplitViewVisibility = .all
+
+    var body: some View {
+        NavigationSplitView(columnVisibility: $splitViewVisibility) {
+            Sidebar(
+                selectedNoteID: $selectedNoteID,
+                onRequestDetailFocus: {
+                    splitViewVisibility = .detailOnly
+                },
+                lockedModule: .investment
+            )
+        } detail: {
+            NJInvestmentModuleView()
+                .environmentObject(store)
+        }
+    }
+}
+
 private enum NJAppURLAction {
     static func handle(_ url: URL, store: AppStore) -> Bool {
         if NJAudioShareReceiver.handleIncomingURL(url) != nil {
@@ -189,9 +210,18 @@ private enum NJAppURLAction {
         case ("recover-cloud", _), ("cloud", "/recover"):
             store.recoverFromCloudNow()
             return true
+        case ("investment", "/shortcut"), ("investment", "/smart-menu"):
+            store.presentInvestmentShortcutMenu(market: investmentShortcutMarket(from: url))
+            return true
         default:
             return false
         }
+    }
+
+    private static func investmentShortcutMarket(from url: URL) -> NJInvestmentShortcutMarket {
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        let rawMarket = components?.queryItems?.first(where: { $0.name.lowercased() == "market" })?.value
+        return NJInvestmentShortcutMarket.from(rawValue: rawMarket)
     }
 }
 
@@ -211,6 +241,9 @@ struct Notion_JournalApp: App {
                 .environmentObject(store)
                 .onAppear {
                     store.publishTrainingWeekSnapshotToWidget(referenceDate: Date())
+                    if ProcessInfo.processInfo.environment["NJ_RUN_BOOKS_PROBE"] == "1" {
+                        _ = NJAppleBooksProbe.run()
+                    }
                 }
                 .onOpenURL { url in
                     _ = NJAppURLAction.handle(url, store: store)
@@ -256,6 +289,21 @@ struct Notion_JournalApp: App {
 
         WindowGroup(id: "goals") {
             NJGoalWorkspaceView()
+                .environmentObject(store)
+        }
+
+        WindowGroup(id: "investment-trading-journal") {
+            NJInvestmentTradingJournalWindowView()
+                .environmentObject(store)
+        }
+
+        WindowGroup(id: "investment-module") {
+            NJInvestmentDetachedWorkspaceView()
+                .environmentObject(store)
+        }
+
+        WindowGroup(id: "investment-watch-research", for: String.self) { payload in
+            NJInvestmentWatchResearchWindow(payload: payload.wrappedValue)
                 .environmentObject(store)
         }
 

@@ -28,6 +28,8 @@ final class DBNotebookTable {
             let sql = """
             SELECT notebook_id, title, color_hex, created_at_ms, updated_at_ms, is_archived
             FROM nj_notebook
+            WHERE deleted = 0
+              AND is_archived = 0
             ORDER BY updated_at_ms DESC;
             """
             let rc0 = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
@@ -53,6 +55,8 @@ final class DBNotebookTable {
             let sql = """
             SELECT notebook_id, title, color_hex, created_at_ms, updated_at_ms, is_archived
             FROM nj_notebook
+            WHERE deleted = 0
+              AND is_archived = 0
             ORDER BY title COLLATE NOCASE ASC;
             """
             let rc0 = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)

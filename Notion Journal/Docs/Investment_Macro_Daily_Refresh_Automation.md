@@ -2,6 +2,14 @@
 
 Purpose: run one daily Codex heartbeat that refreshes the Investment Macro module, writes the latest market data and signal notes back into Notion Journal / CloudKit, and creates research tasks for anything that needs deeper follow-up.
 
+Important product rule:
+
+- The macro calendar should only show important dates and their analysis state.
+- Daily market-index moves, yields, FX closes, and commodity / crypto closes should be scraped into market-snapshot lines, not stored as macro-calendar agenda items.
+- Important company earnings from the trade-thesis watchlists should appear on the calendar as event rows.
+- Each important event should carry a reusable analysis summary, not just a one-time prompt.
+- Company events can be manually queued for the next Codex run from the app UI. Macro events such as PCE, CPI, payrolls, FOMC, BOJ, ECB, BOE, Treasury refunding, and China activity / inflation data should be reviewed daily and reanalyzed whenever the base case or source inputs change.
+
 ## Schedule
 
 Run twice per day so the module has both a clean Asia close read and a clean US close read.
@@ -17,6 +25,13 @@ Run intent:
 
 - `20:30 Asia/Shanghai`: Asia close heartbeat. Prioritize HK / China, Japan, commodity / crypto, macro calendar, forecast updates, and US pre-market / last-close context.
 - `05:30 Asia/Shanghai`: US close heartbeat. Prioritize final US cash close, Treasury curve, VIX / MOVE, US credit and breadth, US catalyst forecast changes, and spillover implications for the next Asia session.
+
+Important scope clarification:
+
+- The official heartbeat cadence today is `Asia close` plus `US close`.
+- The core heartbeat is not yet a separate `HK / China midday` run.
+- When the Asia close heartbeat can retrieve clean midday context for HK / China or Japan, it should compare midday versus close and say whether money accelerated into or out of a sector into the close.
+- If midday data is not cleanly available, the heartbeat should say so explicitly instead of implying a midday read existed.
 
 ## Automation Prompt
 
@@ -47,11 +62,22 @@ Refresh these areas:
 - Hang Seng / HKSE: level, percent change, source, timestamp.
 - Shanghai A / Shanghai Composite: level, percent change, source, timestamp.
 - Check USDCNH, USDHKD, HIBOR / HK liquidity, China credit or property stress headlines.
+- If retrievable, compare HK / China midday versus close and state whether leadership strengthened, faded, or reversed into the close.
+- Always include a short `money rotation` read:
+  - Which sector(s) money rotated into.
+  - Which sector(s) money rotated out of.
+  - Whether the move looked defensive, cyclical, policy-driven, commodity-linked, AI-linked, or short-covering.
+- Always include `abnormal mover` checks for major HK / China blue chips:
+  - Flag sudden price movement, unusually high turnover / volume, or large close-to-close gaps.
+  - Prioritize large benchmark names and thesis-linked names such as HSBC, Tencent, Alibaba, Meituan, Xiaomi, BYD, AIA, ICBC, CCB, BOC, PetroChina, CNOOC, China Mobile, SMIC, and other session leaders/laggards that materially moved the tape.
+  - If a blue chip has an unusual move, write a one-line alert telling me to look into it and why it matters.
 
 3. Japan snapshot
 - Nikkei 225 / Tokyo equity market: level, percent change, source, timestamp.
 - 10Y JGB: yield, daily basis-point move, source, timestamp.
 - Check USDJPY, BOJ headlines, JGB auction stress, and carry-trade stress.
+- Include the same `money rotation` read for Japan: what sectors or factor groups money rotated into or out of by the close.
+- Flag any major Japanese blue chip or index-heavy name with sudden price, volume, or news-driven movement.
 
 4. Commodity / Crypto snapshot
 - Bitcoin: price and 24h percent change.
@@ -65,9 +91,12 @@ Refresh these areas:
 5. Calendar
 - Add or update any major macro events in the next 45 days.
 - Mark market-closed days for US, HK/China, and Japan if missing.
+- Keep this calendar focused on important dates only. Do not treat daily market moves as calendar entries for end-user review.
+- Include important company earnings from the active watchlists when the result date is known.
 - For each important event, include expected value, prior value, why it matters, likely market impact, and source links.
 - Refresh the forecast for each high-impact upcoming event. Include consensus/expected value, prior value, market-implied expectation when available, the heartbeat's base case, upside/downside scenarios, likely affected markets, and what would confirm or invalidate the base case.
 - For central-bank and policy events such as BOJ, FOMC, Fed-chair transition, Treasury refunding, and major China policy meetings, include a probability-weighted scenario table instead of a single-point forecast.
+- If an event has a pending manual refresh request from the app UI, prioritize it in the next run and clear the request once the event analysis has been updated.
 
 6. Macro dashboard scorecard
 Update status, note, and next catalyst for:
@@ -95,6 +124,12 @@ Write the result back to Notion Journal / CloudKit as structured rows where poss
 Also produce a concise daily note with:
 - One-line macro verdict.
 - Top 3 changes since yesterday.
+- A `Money Rotation` section for every covered session:
+  - US close heartbeat: where money rotated inside US and any relevant Europe / Asia spillover.
+  - Asia close heartbeat: where money rotated inside HK / China and Japan, plus Europe if meaningful during the overlap.
+- An `Abnormal Movers / Blue-Chip Alerts` section:
+  - Call out any large-cap or index-heavy stock with unusual move, unusual volume, sharp intraday reversal, or surprise leadership breakdown / breakout.
+  - Tell me plainly which names deserve follow-up research.
 - Signals that confirm the current thesis.
 - Signals that invalidate or weaken the current thesis.
 - Forecast updates for the highest-impact events in the next 45 days.
@@ -108,7 +143,7 @@ Also produce a concise daily note with:
 - For US-listed symbols, refresh on the US close heartbeat. For HK/China/Japan/Europe symbols, refresh on the Asia close heartbeat when the local market has closed, or mark as delayed / last-close if the source lags.
 - If a quote source fails, keep the prior value visible and create a follow-up task for that symbol instead of displaying a full row of `Needs refresh`.
 - Current trade watch-list universes include:
-  - SaaS Overshoot: DDOG, MDB, TEAM, NET, SNOW.
+  - 2026 Q1 SaaS overshoot: DDOG, MDB, TEAM, NET, SNOW.
   - China AI: BIDU, BABA, 0700 HK, 002230 CN, 0981 HK, 688256 CN, 600584 CN, 002156 CN, 002185 CN, USD/CNH.
   - Global AI Infrastructure: FCX, SCCO, 2899 HK, NEE, DUK, VST, ETN, SU FP, ENR GR, 6501 JP, VRT, JCI, TT.
 
@@ -128,10 +163,24 @@ If data is not available from a reliable source, mark it as "needs refresh" and 
 - Never mix intraday and close data without labeling it.
 - If a market is closed, show the most recent close and mark `market_closed`.
 - If a price is delayed, mark `delayed`.
+- If a `midday versus close` comparison is included, both timestamps must be labeled clearly.
+- Never infer sector rotation or abnormal-volume claims without a source or an explicit statement that it is an inference from price action plus market coverage.
 
 ## Write-Back Targets
 
 Current UI is partly static. Until the dedicated market snapshot and macro signal tables are implemented, the heartbeat should write results into a daily note or CK task answer.
+
+Important app-side analysis fields on `nj_finance_macro_event`:
+
+- `analysis_summary`
+- `analysis_updated_at_ms`
+- `refresh_requested_at_ms`
+
+Automation expectations:
+
+- Read `refresh_requested_at_ms` at the start of each run.
+- For any event with `refresh_requested_at_ms > 0`, refresh the analysis in that run and then clear or reset the request marker by writing a fresh event row with updated analysis fields.
+- For macro events without manual requests, still refresh analysis when new official guidance, consensus, pricing, or scenario risk changes the base case.
 
 Future database targets:
 
@@ -238,6 +287,19 @@ One sentence.
 | Commodity / Crypto | WTI | | | | |
 | Commodity / Crypto | Gold | | | | |
 | Commodity / Crypto | Silver | | | | |
+
+## Money Rotation
+
+- HK / China:
+- Japan:
+- US / Europe spillover:
+
+## Abnormal Movers / Blue-Chip Alerts
+
+- Name / ticker:
+- What moved:
+- Why it matters:
+- Follow-up:
 
 ## Scorecard
 

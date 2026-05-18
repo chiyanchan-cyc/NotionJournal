@@ -112,6 +112,11 @@ final class NJReconstructedNotePersistence: ObservableObject {
             if handle.isRunningProgrammaticUpdate { return }
             self.enqueueEditorChange(id, source: "recon.persistence.onUserTyped.\(handle.userEditSourceHint)")
         }
+        h.onEndEditing = { [weak self, weak h] _, _ in
+            guard let self, let handle = h, let id = handle.ownerBlockUUID else { return }
+            if handle.isRunningProgrammaticUpdate { return }
+            self.forceEndEditingAndCommitNow(id)
+        }
         h.onSnapshot = { _, _ in
             // Passive snapshots can be emitted by layout/hydration on idle devices.
             // Only explicit user edits should enqueue a save.
@@ -412,6 +417,21 @@ final class NJReconstructedNotePersistence: ObservableObject {
         store.sync.schedulePush(debounceMs: 0)
     }
 
+    private func expireEditorLease(for index: Int, source: String) {
+        guard let store, blocks.indices.contains(index) else { return }
+        let instanceID = noteBlockInstanceID(for: index)
+        guard !instanceID.isEmpty else { return }
+        let nowMs = DBNoteRepository.nowMs()
+        store.notes.updateNoteBlockEditorLease(
+            instanceID: instanceID,
+            deviceID: localEditorDeviceID,
+            nowMs: nowMs,
+            expiresAtMs: nowMs - 1
+        )
+        print("NJ_BLOCK_EDITOR_LEASE_EXPIRE source=\(source) block_id=\(blocks[index].blockID) instance_id=\(instanceID) device_id=\(localEditorDeviceID) expires_at_ms=\(nowMs - 1)")
+        store.sync.schedulePush(debounceMs: 0)
+    }
+
     private func shouldAbortForRemoteEditorLease(index: Int) -> Bool {
         guard let store, blocks.indices.contains(index) else { return false }
         let nowMs = DBNoteRepository.nowMs()
@@ -490,7 +510,7 @@ final class NJReconstructedNotePersistence: ObservableObject {
             let d = Date(timeIntervalSince1970: Double(ms) / 1000.0)
             return "\(ms) (\(d))"
         }
-        print("NJ_RECON_SPEC id=\(spec.id) match=\(spec.match) timeField=\(spec.timeField) startMs=\(fmt(startMs)) endMs=\(fmt(endMs)) timeExpr=\(timeExpr) include=\(spec.includeTags) include_mode=\(spec.includeMode) exclude=\(spec.excludeTags)")
+        // print("NJ_RECON_SPEC id=\(spec.id) match=\(spec.match) timeField=\(spec.timeField) startMs=\(fmt(startMs)) endMs=\(fmt(endMs)) timeExpr=\(timeExpr) include=\(spec.includeTags) include_mode=\(spec.includeMode) exclude=\(spec.excludeTags)")
 
         switch spec.match {
         case .exact(let tagRaw):
@@ -500,11 +520,11 @@ final class NJReconstructedNotePersistence: ObservableObject {
                 return "#\(tagRaw)"
             }()
             var whereParts: [String] = []
-            whereParts.append("(lower(t.tag)=lower(?) OR lower(t.tag)=lower(?))")
+            whereParts.append("(t.tag = ? COLLATE NOCASE OR t.tag = ? COLLATE NOCASE)")
             if startMs != nil { whereParts.append("\(timeExpr) >= ?") }
             if endMs != nil { whereParts.append("\(timeExpr) <= ?") }
             for _ in spec.excludeTags {
-                whereParts.append("t.block_id NOT IN (SELECT block_id FROM nj_block_tag WHERE lower(tag)=lower(?))")
+                whereParts.append("t.block_id NOT IN (SELECT block_id FROM nj_block_tag WHERE tag = ? COLLATE NOCASE)")
             }
             let whereSQL = whereParts.joined(separator: " AND ")
             let binder: (OpaquePointer?) -> Void = { stmt in
@@ -522,7 +542,7 @@ final class NJReconstructedNotePersistence: ObservableObject {
                     sqlite3_bind_text(stmt, i, t, -1, SQLITE_TRANSIENT); i += 1
                 }
             }
-            print("NJ_RECON_WHERE exact sql=\(whereSQL) tagA=\(tagA) tagB=\(tagB)")
+            // print("NJ_RECON_WHERE exact sql=\(whereSQL) tagA=\(tagA) tagB=\(tagB)")
             return (whereSQL, binder)
 
         case .prefix(let prefixRaw):
@@ -532,11 +552,11 @@ final class NJReconstructedNotePersistence: ObservableObject {
             let like2 = pHash + "%"
 
             var whereParts: [String] = []
-            whereParts.append("(lower(t.tag) LIKE ? OR lower(t.tag) LIKE ?)")
+            whereParts.append("(t.tag LIKE ? COLLATE NOCASE OR t.tag LIKE ? COLLATE NOCASE)")
             if startMs != nil { whereParts.append("\(timeExpr) >= ?") }
             if endMs != nil { whereParts.append("\(timeExpr) <= ?") }
             for _ in spec.excludeTags {
-                whereParts.append("t.block_id NOT IN (SELECT block_id FROM nj_block_tag WHERE lower(tag)=lower(?))")
+                whereParts.append("t.block_id NOT IN (SELECT block_id FROM nj_block_tag WHERE tag = ? COLLATE NOCASE)")
             }
             let whereSQL = whereParts.joined(separator: " AND ")
             let binder: (OpaquePointer?) -> Void = { stmt in
@@ -554,7 +574,7 @@ final class NJReconstructedNotePersistence: ObservableObject {
                     sqlite3_bind_text(stmt, i, t, -1, SQLITE_TRANSIENT); i += 1
                 }
             }
-            print("NJ_RECON_WHERE prefix sql=\(whereSQL) like1=\(like1) like2=\(like2)")
+            // print("NJ_RECON_WHERE prefix sql=\(whereSQL) like1=\(like1) like2=\(like2)")
             return (whereSQL, binder)
         case .all:
             var whereParts: [String] = []
@@ -564,15 +584,15 @@ final class NJReconstructedNotePersistence: ObservableObject {
             if !spec.includeTags.isEmpty {
                 if spec.includeMode == .all {
                     for _ in spec.includeTags {
-                        whereParts.append("b.block_id IN (SELECT ti.block_id FROM nj_block_tag ti WHERE lower(ti.tag)=lower(?))")
+                        whereParts.append("b.block_id IN (SELECT ti.block_id FROM nj_block_tag ti WHERE ti.tag = ? COLLATE NOCASE)")
                     }
                 } else {
-                    let ors = spec.includeTags.map { _ in "lower(ti.tag)=lower(?)" }.joined(separator: " OR ")
+                    let ors = spec.includeTags.map { _ in "ti.tag = ? COLLATE NOCASE" }.joined(separator: " OR ")
                     whereParts.append("b.block_id IN (SELECT ti.block_id FROM nj_block_tag ti WHERE \(ors))")
                 }
             }
             for _ in spec.excludeTags {
-                whereParts.append("b.block_id NOT IN (SELECT block_id FROM nj_block_tag WHERE lower(tag)=lower(?))")
+                whereParts.append("b.block_id NOT IN (SELECT block_id FROM nj_block_tag WHERE tag = ? COLLATE NOCASE)")
             }
             let whereSQL = whereParts.joined(separator: " AND ")
             let binder: (OpaquePointer?) -> Void = { stmt in
@@ -758,7 +778,7 @@ final class NJReconstructedNotePersistence: ObservableObject {
                 ORDER BY b.created_at_ms \(orderSQL)
                 LIMIT ?;
                 """
-                print("NJ_RECON_QUERY all sql=\(sql) limit=\(spec.limit) newestFirst=\(spec.newestFirst)")
+                // print("NJ_RECON_QUERY all sql=\(sql) limit=\(spec.limit) newestFirst=\(spec.newestFirst)")
                 let rc0 = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
                 if rc0 != SQLITE_OK {
                     let msg = String(cString: sqlite3_errmsg(dbp))
@@ -788,34 +808,15 @@ final class NJReconstructedNotePersistence: ObservableObject {
                 let sql = """
                 SELECT t.block_id
                 FROM nj_block_tag t
-                LEFT JOIN nj_block b
-                  ON b.block_id = t.block_id COLLATE NOCASE
+                JOIN nj_block b
+                  ON b.block_id = t.block_id
+                 AND b.deleted = 0
                 WHERE \(whereSQL)
                 GROUP BY t.block_id
                 ORDER BY \(timeExpr) \(orderSQL)
                 LIMIT ?;
                 """
-                print("NJ_RECON_QUERY sql=\(sql) limit=\(spec.limit) newestFirst=\(spec.newestFirst)")
-
-                // Debug counts for tag-only vs tag+time
-                do {
-                    var stmtCount: OpaquePointer?
-                    let countSQL = """
-                    SELECT COUNT(*)
-                    FROM nj_block_tag t
-                    LEFT JOIN nj_block b
-                      ON b.block_id = t.block_id COLLATE NOCASE
-                    WHERE \(whereSQL);
-                    """
-                    if sqlite3_prepare_v2(dbp, countSQL, -1, &stmtCount, nil) == SQLITE_OK {
-                        defer { sqlite3_finalize(stmtCount) }
-                        binder(stmtCount)
-                        if sqlite3_step(stmtCount) == SQLITE_ROW {
-                            let c = sqlite3_column_int64(stmtCount, 0)
-                            print("NJ_RECON_COUNT where_count=\(c)")
-                        }
-                    }
-                }
+                // print("NJ_RECON_QUERY sql=\(sql) limit=\(spec.limit) newestFirst=\(spec.newestFirst)")
 
                 let rc0 = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
                 if rc0 != SQLITE_OK {
@@ -839,7 +840,7 @@ final class NJReconstructedNotePersistence: ObservableObject {
             }
 
             if out.isEmpty {
-                print("NJ_RECON IDS_EMPTY spec=\(spec.id)")
+                // print("NJ_RECON IDS_EMPTY spec=\(spec.id)")
             }
 
             return out
@@ -906,10 +907,10 @@ final class NJReconstructedNotePersistence: ObservableObject {
             let sql = """
             SELECT DISTINCT t.block_id
             FROM nj_block_tag t
-            LEFT JOIN nj_block b
-              ON b.block_id = t.block_id COLLATE NOCASE
-            WHERE lower(t.tag)=lower(?)
-              AND (b.deleted IS NULL OR b.deleted = 0)
+            JOIN nj_block b
+              ON b.block_id = t.block_id
+             AND b.deleted = 0
+            WHERE t.tag = ? COLLATE NOCASE
             ORDER BY b.created_at_ms DESC;
             """
             guard sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
@@ -1302,7 +1303,7 @@ final class NJReconstructedNotePersistence: ObservableObject {
 
     func markDirty(_ id: UUID, source: String = "unknown") {
         guard let i = blocks.firstIndex(where: { $0.id == id }) else { return }
-        print("NJ_BLOCK_MARK_DIRTY source=\(source) block_id=\(blocks[i].blockID) id=\(id.uuidString)")
+        // print("NJ_BLOCK_MARK_DIRTY source=\(source) block_id=\(blocks[i].blockID) id=\(id.uuidString)")
         if !blocks[i].isDirty { blocks[i].isDirty = true }
     }
 
@@ -1326,7 +1327,7 @@ final class NJReconstructedNotePersistence: ObservableObject {
         let w = DispatchWorkItem { [weak self] in self?.commitBlockNow(id) }
         commitWork[id] = w
         if let i = blocks.firstIndex(where: { $0.id == id }) {
-            print("NJ_BLOCK_SCHEDULE_COMMIT source=\(source) block_id=\(blocks[i].blockID) id=\(id.uuidString) debounce=\(debounce)")
+            // print("NJ_BLOCK_SCHEDULE_COMMIT source=\(source) block_id=\(blocks[i].blockID) id=\(id.uuidString) debounce=\(debounce)")
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + debounce, execute: w)
     }
@@ -1338,6 +1339,7 @@ final class NJReconstructedNotePersistence: ObservableObject {
         guard let i = blocks.firstIndex(where: { $0.id == id }) else { return }
         let shouldCommit = blocks[i].isDirty || blocks[i].verifiedLocalEditAtMs > 0
         blocks[i].protonHandle.isEditing = false
+        expireEditorLease(for: i, source: "forceEndEditingAndCommitNow")
         guard shouldCommit else { return }
         commitBlockNow(id, force: true)
     }
@@ -1348,6 +1350,10 @@ final class NJReconstructedNotePersistence: ObservableObject {
         let commitIDs = blocks
             .filter { $0.isDirty || $0.verifiedLocalEditAtMs > 0 }
             .map(\.id)
+
+        for index in blocks.indices {
+            expireEditorLease(for: index, source: "forceEndEditingAndCommitAllDirtyNow")
+        }
 
         for id in commitIDs {
             commitWork[id]?.cancel()
@@ -1623,4 +1629,5 @@ final class NJReconstructedNotePersistence: ObservableObject {
             return 0
         }
     }
+
 }

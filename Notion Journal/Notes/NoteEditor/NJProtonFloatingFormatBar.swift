@@ -59,12 +59,12 @@ struct NJProtonFloatingFormatBar: View {
     }
 
     private func resolvedHandle() -> NJProtonEditorHandle? {
-        NJProtonEditorHandle.firstResponderHandle() ?? currentHandle?() ?? NJProtonEditorHandle.activeHandle() ?? handle
+        currentHandle?() ?? NJProtonEditorHandle.firstResponderHandle() ?? NJProtonEditorHandle.activeHandle() ?? handle
     }
 
     private func withHandle(_ action: (NJProtonEditorHandle) -> Void) {
         guard let h = resolvedHandle() else { return }
-        print("NJ_PHOTO_BAR_HANDLE owner=\(String(describing: h.ownerBlockUUID))")
+        // print("NJ_PHOTO_BAR_HANDLE owner=\(String(describing: h.ownerBlockUUID))")
         action(h)
     }
 
@@ -122,6 +122,13 @@ struct NJProtonFloatingFormatBar: View {
         )
     }
 
+    private func undoLastEdit() {
+        if NJCollapsibleAttachmentView.undoActiveBodyEdit() {
+            return
+        }
+        withHandle { _ = $0.undoLastEdit() }
+    }
+
     @ViewBuilder
     private func textColorButton() -> some View {
         Button {
@@ -172,6 +179,11 @@ struct NJProtonFloatingFormatBar: View {
         ZStack(alignment: .bottomLeading) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
+                    Button { undoLastEdit() } label: { Image(systemName: "arrow.uturn.backward") }
+                        .accessibilityLabel(Text("Undo"))
+
+                    Divider().frame(height: 18)
+
                     Button { withFormattingAction(sectionAction: .decreaseFont) { $0.decreaseFont() } } label: { Image(systemName: "textformat.size.smaller") }
                     Button { withFormattingAction(sectionAction: .increaseFont) { $0.increaseFont() } } label: { Image(systemName: "textformat.size.larger") }
 
@@ -225,7 +237,7 @@ struct NJProtonFloatingFormatBar: View {
 
                     Button {
                         photoTargetHandle = resolvedHandle()
-                        print("NJ_PHOTO_TARGET_CAPTURED owner=\(String(describing: photoTargetHandle?.ownerBlockUUID))")
+                        // print("NJ_PHOTO_TARGET_CAPTURED owner=\(String(describing: photoTargetHandle?.ownerBlockUUID))")
                         isPhotoPickerPresented = true
                     } label: {
                         Image(systemName: "photo")
@@ -348,7 +360,7 @@ struct NJProtonFloatingFormatBar: View {
                         }
                         let h = photoTargetHandle ?? resolvedHandle()
                         guard let h else { return }
-                        print("NJ_PHOTO_PICKER_HANDLE owner=\(String(describing: h.ownerBlockUUID))")
+                        // print("NJ_PHOTO_PICKER_HANDLE owner=\(String(describing: h.ownerBlockUUID))")
                         h.isEditing = true
                         h.insertPhotoAttachment(img, fullPhotoRef: fullRef)
                         h.snapshot(markUserEdit: true)

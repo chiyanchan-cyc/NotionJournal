@@ -159,6 +159,24 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
 
     init() { }
 
+    private var isPersonalIdentificationCardNote: Bool {
+        guard noteType == .card else { return false }
+        let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let cleanContext = cardContext.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let cleanCardID = cardID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return cleanTitle == "personal identification"
+            || cleanContext == "personal identification"
+            || cleanCardID == "db-personal-id"
+    }
+
+    private var defaultCardStatus: String {
+        isPersonalIdentificationCardNote ? "Active" : "Pending"
+    }
+
+    private var defaultCardPriority: String {
+        isPersonalIdentificationCardNote ? "Low" : "Medium"
+    }
+
     private var localEditorDeviceID: String {
         let host = ProcessInfo.processInfo.hostName.trimmingCharacters(in: .whitespacesAndNewlines)
         return host.isEmpty ? UIDevice.current.identifierForVendor?.uuidString ?? "unknown" : host
@@ -330,6 +348,21 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             expiresAtMs: nowMs + editorLeaseDurationMs
         )
         print("NJ_BLOCK_EDITOR_LEASE_PUBLISH source=\(source) block_id=\(blocks[index].blockID) instance_id=\(instanceID) device_id=\(localEditorDeviceID) expires_at_ms=\(nowMs + editorLeaseDurationMs)")
+        store.sync.schedulePush(debounceMs: 0)
+    }
+
+    private func expireEditorLease(for index: Int, source: String) {
+        guard let store, blocks.indices.contains(index) else { return }
+        let instanceID = noteBlockInstanceID(for: index)
+        guard !instanceID.isEmpty else { return }
+        let nowMs = DBNoteRepository.nowMs()
+        store.notes.updateNoteBlockEditorLease(
+            instanceID: instanceID,
+            deviceID: localEditorDeviceID,
+            nowMs: nowMs,
+            expiresAtMs: nowMs - 1
+        )
+        print("NJ_BLOCK_EDITOR_LEASE_EXPIRE source=\(source) block_id=\(blocks[index].blockID) instance_id=\(instanceID) device_id=\(localEditorDeviceID) expires_at_ms=\(nowMs - 1)")
         store.sync.schedulePush(debounceMs: 0)
     }
 
@@ -603,14 +636,6 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
     }
 
     private func decodeStoredRTF(_ data: Data) -> NSAttributedString? {
-        if let rtfd = try? NSAttributedString(
-            data: data,
-            options: [.documentType: NSAttributedString.DocumentType.rtfd],
-            documentAttributes: nil
-        ) {
-            return rtfd
-        }
-
         if let rtf = try? NSAttributedString(
             data: data,
             options: [.documentType: NSAttributedString.DocumentType.rtf],
@@ -618,6 +643,8 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         ) {
             return rtf
         }
+
+        return nil
 
         return nil
     }
@@ -747,7 +774,7 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                 if let c = sqlite3_column_text(stmt, 0) { tables.append(String(cString: c)) }
             }
 
-            print("NJ_ATTACH_DEBUG tables=\(tables) block_id=\(blockID)")
+            // print("NJ_ATTACH_DEBUG tables=\(tables) block_id=\(blockID)")
 
             for t in tables {
                 var st2: OpaquePointer?
@@ -777,11 +804,11 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                             parts.append("\(name)=\(v)")
                         }
                     }
-                    print("NJ_ATTACH_DEBUG \(t) row\(rowN): " + parts.joined(separator: " | "))
+                    // print("NJ_ATTACH_DEBUG \(t) row\(rowN): " + parts.joined(separator: " | "))
                 }
 
                 if rowN == 0 {
-                    print("NJ_ATTACH_DEBUG \(t) no rows for block_id")
+                    // print("NJ_ATTACH_DEBUG \(t) no rows for block_id")
                 }
             }
         }
@@ -847,8 +874,8 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                 cardCategory = note.cardCategory
                 cardArea = note.cardArea
                 cardContext = note.cardContext
-                cardStatus = note.noteType == .card ? (note.cardStatus.isEmpty ? "Pending" : note.cardStatus) : note.cardStatus
-                cardPriority = note.noteType == .card ? (note.cardPriority.isEmpty ? "Medium" : note.cardPriority) : note.cardPriority
+                cardStatus = note.noteType == .card ? (note.cardStatus.isEmpty ? defaultCardStatus : note.cardStatus) : note.cardStatus
+                cardPriority = note.noteType == .card ? (note.cardPriority.isEmpty ? defaultCardPriority : note.cardPriority) : note.cardPriority
             } else {
                 let now = DBNoteRepository.nowMs()
                 let note = NJNote(
@@ -871,8 +898,8 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                 cardCategory = note.cardCategory
                 cardArea = note.cardArea
                 cardContext = note.cardContext
-                cardStatus = note.noteType == .card ? (note.cardStatus.isEmpty ? "Pending" : note.cardStatus) : note.cardStatus
-                cardPriority = note.noteType == .card ? (note.cardPriority.isEmpty ? "Medium" : note.cardPriority) : note.cardPriority
+                cardStatus = note.noteType == .card ? (note.cardStatus.isEmpty ? defaultCardStatus : note.cardStatus) : note.cardStatus
+                cardPriority = note.noteType == .card ? (note.cardPriority.isEmpty ? defaultCardPriority : note.cardPriority) : note.cardPriority
             }
 
             let rows = store.notes.loadAllTextBlocksRTFWithPlacement(noteID: noteID.raw)
@@ -901,8 +928,8 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                     orderKey: 1000,
                     createdAtMs: DBNoteRepository.nowMs(),
                     cardRowID: noteType == .card ? store.notes.nextCardRowID(noteID: noteID.raw) : "",
-                    cardStatus: noteType == .card ? "Pending" : "",
-                    cardPriority: noteType == .card ? "Medium" : "",
+                    cardStatus: noteType == .card ? defaultCardStatus : "",
+                    cardPriority: noteType == .card ? defaultCardPriority : "",
                     domainPreview: "",
                     goalPreview: "",
                     attr: makeEmptyBlockAttr(),
@@ -971,10 +998,6 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                 let goalPreview = dbLoadGoalPreview(row.blockID)
                 let clipPDFRel = dbLoadClipPDFRel(row.blockID)
 
-                if clipPDFRel.isEmpty {
-                    dbDebugAttachments(row.blockID)
-                }
-
                 out.append(
                     BlockState(
                         id: stableID,
@@ -983,8 +1006,8 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                         orderKey: row.orderKey,
                         createdAtMs: createdAtMs,
                         cardRowID: row.cardRowID,
-                        cardStatus: row.cardStatus.isEmpty && noteType == .card ? "Pending" : row.cardStatus,
-                        cardPriority: row.cardPriority.isEmpty && noteType == .card ? "Medium" : row.cardPriority,
+                        cardStatus: row.cardStatus.isEmpty && noteType == .card ? defaultCardStatus : row.cardStatus,
+                        cardPriority: row.cardPriority.isEmpty && noteType == .card ? defaultCardPriority : row.cardPriority,
                         cardCategory: row.cardCategory,
                         cardArea: row.cardArea,
                         cardContext: row.cardContext,
@@ -1050,10 +1073,10 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
                         recovered.cardRowID = store.notes.nextCardRowID(noteID: noteID.raw)
                     }
                     if noteType == .card && recovered.cardPriority.isEmpty {
-                        recovered.cardPriority = "Medium"
+                        recovered.cardPriority = defaultCardPriority
                     }
                     if noteType == .card && recovered.cardStatus.isEmpty {
-                        recovered.cardStatus = "Pending"
+                        recovered.cardStatus = defaultCardStatus
                     }
                     blocks.insert(recovered, at: min(offset, blocks.count))
                     scheduleCommit(recovered.id, debounce: 0.15)
@@ -1181,7 +1204,7 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
     
     func markDirty(_ id: UUID, source: String = "unknown") {
         guard let i = blocks.firstIndex(where: { $0.id == id }) else { return }
-        print("NJ_BLOCK_MARK_DIRTY source=\(source) block_id=\(blocks[i].blockID) id=\(id.uuidString)")
+        // print("NJ_BLOCK_MARK_DIRTY source=\(source) block_id=\(blocks[i].blockID) id=\(id.uuidString)")
         if !blocks[i].isDirty { blocks[i].isDirty = true }
     }
 
@@ -1231,7 +1254,7 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         let w = DispatchWorkItem { [weak self] in self?.commitBlockNow(id) }
         commitWork[id] = w
         if let i = blocks.firstIndex(where: { $0.id == id }) {
-            print("NJ_BLOCK_SCHEDULE_COMMIT source=\(source) block_id=\(blocks[i].blockID) id=\(id.uuidString) debounce=\(debounce)")
+            // print("NJ_BLOCK_SCHEDULE_COMMIT source=\(source) block_id=\(blocks[i].blockID) id=\(id.uuidString) debounce=\(debounce)")
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + debounce, execute: w)
     }
@@ -1254,8 +1277,8 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         let now = DBNoteRepository.nowMs()
         let safeTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Untitled" : title
         let safeTab = tab.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "default" : tab
-        let safeCardStatus = noteType == .card ? (cardStatus.isEmpty ? "Pending" : cardStatus) : ""
-        let safeCardPriority = noteType == .card ? (cardPriority.isEmpty ? "Medium" : cardPriority) : ""
+        let safeCardStatus = noteType == .card ? (cardStatus.isEmpty ? defaultCardStatus : cardStatus) : ""
+        let safeCardPriority = noteType == .card ? (cardPriority.isEmpty ? defaultCardPriority : cardPriority) : ""
         if var n = store.notes.getNote(noteID) {
             if n.title == safeTitle &&
                 n.tabDomain == safeTab &&
@@ -1298,6 +1321,7 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         guard let i = blocks.firstIndex(where: { $0.id == id }) else { return }
         let shouldCommit = blocks[i].isDirty || blocks[i].verifiedLocalEditAtMs > 0
         blocks[i].protonHandle.isEditing = false
+        expireEditorLease(for: i, source: "forceEndEditingAndCommitNow")
         guard shouldCommit else { return }
         commitBlockNow(id, force: true)
     }
@@ -1308,6 +1332,11 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
         let commitIDs = blocks
             .filter { $0.isDirty || $0.verifiedLocalEditAtMs > 0 }
             .map(\.id)
+
+        for index in blocks.indices {
+            expireEditorLease(for: index, source: "forceEndEditingAndCommitAllDirtyNow")
+        }
+
         for id in commitIDs {
             commitWork[id]?.cancel()
             commitWork[id] = nil
@@ -1644,10 +1673,10 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             blocks[index].cardRowID = store.notes.nextCardRowID(noteID: noteID.raw)
         }
         if noteType == .card && blocks[index].cardStatus.isEmpty {
-            blocks[index].cardStatus = "Pending"
+            blocks[index].cardStatus = defaultCardStatus
         }
         if noteType == .card && blocks[index].cardPriority.isEmpty {
-            blocks[index].cardPriority = "Medium"
+            blocks[index].cardPriority = defaultCardPriority
         }
         return instanceID
     }
@@ -1721,12 +1750,12 @@ final class NJNoteEditorContainerPersistence: ObservableObject {
             }
 
             if blocks[index].cardPriority.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                blocks[index].cardPriority = "Medium"
+                blocks[index].cardPriority = defaultCardPriority
                 needsPersist = true
                 didChange = true
             }
             if blocks[index].cardStatus.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                blocks[index].cardStatus = "Pending"
+                blocks[index].cardStatus = defaultCardStatus
                 needsPersist = true
                 didChange = true
             }

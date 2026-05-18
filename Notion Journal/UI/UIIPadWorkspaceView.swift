@@ -82,6 +82,17 @@ struct IPadWorkspaceView: View {
                             selectedNoteID = n.id
                         }
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button(role: .destructive) {
+                                store.notes.deleteNote(n.id)
+                                store.sync.schedulePush(debounceMs: 0)
+                                if selectedNoteID == n.id {
+                                    selectedNoteID = nil
+                                }
+                                store.objectWillChange.send()
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+
                             Button {
                                 store.notes.setFavorited(noteID: n.id.raw, favorited: n.favorited == 0)
                                 store.objectWillChange.send()

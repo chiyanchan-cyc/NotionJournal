@@ -690,6 +690,17 @@ final class NJCollapsibleAttachmentView: UIView, AttachmentViewIdentifying, UITe
         return true
     }
 
+    static func undoActiveBodyEdit() -> Bool {
+        guard let textView = resolvedActiveBodyTextView(),
+              let handle = textView.njProtonHandle else { return false }
+        let owner = owner(for: textView)
+        guard handle.undoLastEdit() else { return false }
+        owner?.markBodyEdited()
+        owner?.captureLatestBodyStateIfNeeded()
+        owner?.onContentChange?()
+        return true
+    }
+
     static func flushActiveBodyEditing() {
         guard let tv = resolvedActiveBodyTextView() else { return }
         if tv.isFirstResponder {
@@ -989,7 +1000,7 @@ extension NJPhotoAttachmentView: UIContextMenuInteractionDelegate {
 final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, BackgroundColorObserving, DynamicBoundsProviding, BoundsObserving, UIGestureRecognizerDelegate, GridViewDelegate {
     private static let filterIndicatorAttribute = NSAttributedString.Key("NJTableFilterIndicator")
     private static let hiddenColumnWidth: CGFloat = 2
-    private static let localColumnStateVersion = 1
+    private static let localColumnStateVersion = 2
     private static let minimumTableFontSize: CGFloat = 12
     private static let maximumTableFontSize: CGFloat = 30
     private static var checkboxTapRecognizerKey: UInt8 = 0
@@ -1035,6 +1046,12 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
     private var tableChangeObserver: NSObjectProtocol?
     private var hasRequestedCloudRefresh = false
     private var observedTextViewIDs: Set<ObjectIdentifier> = []
+    private var deferredPersistWorkItem: DispatchWorkItem?
+    private var deferredHeightWorkItem: DispatchWorkItem?
+    private var cachedBaseFontSize: CGFloat?
+    private var cachedFormulaHeaderLookup: [String: Int]?
+    private var tokenizedFormulaCache: [String: [FormulaToken]] = [:]
+    private var hasBuiltVisibleGrid = false
     private let resizeGrip = UIView(frame: .zero)
     private weak var resizePanGesture: UIPanGestureRecognizer?
     private var resizePanLastX: CGFloat?
@@ -1044,11 +1061,13 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
     private var columnCount: Int
     private var preferredHeight: CGFloat
     private var lastMeasuredWidth: CGFloat = 0
+    private var lastCanonicalPayloadJSON: String?
 
     init(
         attachmentID: String,
         config: GridConfiguration,
         cells: [GridCell]? = nil,
+        cellPayloads: [[String: Any]]? = nil,
         columnWidths: [CGFloat]? = nil,
         columnAlignments: [String]? = nil,
         columnTypes: [String]? = nil,
@@ -1076,7 +1095,7 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
         self.preferredHeight = max(44, CGFloat(max(1, config.rowsConfiguration.count)) * NJTableDefaultRowHeight)
         let safeColumnCount = max(1, config.columnsConfiguration.count)
         if let columnWidths, columnWidths.count == max(1, config.columnsConfiguration.count) {
-            self.storedColumnWidths = columnWidths.map { max(60, $0) }
+            self.storedColumnWidths = columnWidths.map { max(24, $0) }
         } else {
             self.storedColumnWidths = Array(
                 repeating: max(120, UIScreen.main.bounds.width / CGFloat(safeColumnCount)),
@@ -1158,6 +1177,7 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
         } else {
             self.gridView = GridView(config: config)
         }
+        // print("NJ_TABLE_VIEW_INIT_START table_id=\(attachmentID) rows=\(rowCount) cols=\(columnCount) payload_cells=\(cellPayloads?.count ?? -1)")
         super.init(frame: .zero)
         loadLocalColumnViewState()
         clipsToBounds = false
@@ -1177,13 +1197,16 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
         configureResizeGrip()
         configureGlobalTextViewObserver()
         configureTableChangeObserver()
-        seedStoredCellTexts(from: gridView.cells)
+        if let cellPayloads {
+            seedStoredCellTexts(fromPayloads: cellPayloads, rows: rowCount, cols: columnCount)
+        } else {
+            seedStoredCellTexts(from: gridView.cells)
+        }
         visibleRowIndices = computeVisibleRowIndices()
-        rebuildGrid(columnWidths: currentColumnWidths(), captureState: false)
-        refreshCanonicalPayloadFromCloud()
         gridView.setColumnResizing(false)
         let menu = UIContextMenuInteraction(delegate: self)
         addInteraction(menu)
+        // print("NJ_TABLE_VIEW_INIT_DONE table_id=\(attachmentID) visible_rows=\(visibleRowIndices.count) hidden_cols=\(storedHiddenColumns.count)")
     }
 
     @available(*, unavailable)
@@ -1205,12 +1228,19 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        ensureVisibleGridBuiltIfNeeded(reason: "layout")
         let width = bounds.width
         if width > 1, abs(width - lastMeasuredWidth) > 0.5 {
             lastMeasuredWidth = width
         }
         recalculatePreferredHeight()
         updateResizeGripFrame()
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        // print("NJ_TABLE_WINDOW table_id=\(attachmentID) attached=\(window == nil ? 0 : 1)")
+        ensureVisibleGridBuiltIfNeeded(reason: "window")
     }
 
     override var intrinsicContentSize: CGSize {
@@ -1247,6 +1277,13 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
             invalidateIntrinsicContentSize()
         }
         return CGSize(width: width, height: height)
+    }
+
+    private func ensureVisibleGridBuiltIfNeeded(reason: String) {
+        guard !hasBuiltVisibleGrid else { return }
+        guard window != nil else { return }
+        // print("NJ_TABLE_BUILD_ON_DEMAND table_id=\(attachmentID) reason=\(reason)")
+        rebuildGrid(columnWidths: currentColumnWidths(), captureState: false)
     }
 
     func containerEditor(_ editor: EditorView, backgroundColorUpdated color: UIColor?, oldColor: UIColor?) {
@@ -1312,6 +1349,11 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
     private func reloadCanonicalPayloadFromStoreIfIdle() {
         if findTextViews(in: self).contains(where: { $0.isFirstResponder }) { return }
         guard let payload = NJTableStore.shared.loadCanonicalPayload(tableID: attachmentID) else { return }
+        if let payloadJSON = canonicalPayloadJSONString(payload),
+           payloadJSON == lastCanonicalPayloadJSON {
+            return
+        }
+        // print("NJ_TABLE_RELOAD_START table_id=\(attachmentID)")
 
         let rows = max(1, intValue(payload["rows"]) ?? rowCount)
         let cols = max(1, intValue(payload["cols"]) ?? columnCount)
@@ -1320,12 +1362,11 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
 
         let widthValues = numberArray(payload["column_widths"]).map { CGFloat($0) }
         if widthValues.count == cols {
-            storedColumnWidths = widthValues.map { max(60, $0) }
-            syncedColumnWidths = storedColumnWidths
+            syncedColumnWidths = widthValues.map { max(24, $0) }
         } else {
-            storedColumnWidths = normalizedWidthState(storedColumnWidths, columnCount: cols)
             syncedColumnWidths = normalizedWidthState(syncedColumnWidths, columnCount: cols)
         }
+        storedColumnWidths = normalizedWidthState(storedColumnWidths, columnCount: cols)
 
         storedColumnAlignments = normalizedEnumArray(
             stringArray(payload["column_alignments"]),
@@ -1368,20 +1409,9 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
 
         visibleRowIndices = computeVisibleRowIndices()
         rebuildGrid(columnWidths: currentColumnWidths(), captureState: false)
+        lastCanonicalPayloadJSON = canonicalPayloadJSONString(payload)
         onResizeTable?()
-    }
-
-    private func refreshCanonicalPayloadFromCloud() {
-        guard !hasRequestedCloudRefresh else { return }
-        hasRequestedCloudRefresh = true
-
-        Task { [weak self] in
-            guard let self else { return }
-            guard let fields = await NJTableCloudFetcher.fetchTable(tableID: self.attachmentID) else { return }
-            await MainActor.run {
-                NJTableStore.shared.applyCloudFields(fields)
-            }
-        }
+        // print("NJ_TABLE_RELOAD_DONE table_id=\(attachmentID) rows=\(rowCount) cols=\(columnCount) visible_rows=\(visibleRowIndices.count)")
     }
 
     private func intValue(_ value: Any?) -> Int? {
@@ -1439,24 +1469,30 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
     }
 
     private func bindCellEditorIfNeeded(_ cell: GridCell) {
+        guard canAccessEditor(in: cell) else {
+            scheduleCellEditorBindingIfNeeded(cell)
+            return
+        }
+        let editor = cell.editor
         applyAlignmentStyle(to: cell)
-        let textViews = findTextViews(in: cell.editor)
+        let textViews = findTextViews(in: editor)
         guard !textViews.isEmpty else { return }
-        let visibleRow = cell.rowSpan.min() ?? 0
-        let actualRow = actualRow(forVisibleRow: visibleRow)
-        let column = cell.columnSpan.min() ?? 0
+        let visibleRowIndex = cell.rowSpan.min() ?? 0
+        let actualRow = actualRow(forVisibleRow: visibleRowIndex)
+        let column = actualColumn(forVisibleColumn: cell.columnSpan.min() ?? 0)
         let isCheckbox = isCheckboxColumn(column)
         let isFormula = isFormulaColumn(column)
         let isTotal = isTotalActualRow(actualRow)
         let tint = rowTintColor(forActualRow: actualRow)
         let shouldAllowTextEditing = !isTotal && !isCheckbox && !(isFormula && actualRow > 0)
-        cell.editor.isEditable = shouldAllowTextEditing
-        cell.editor.isUserInteractionEnabled = shouldAllowTextEditing || isCheckbox
-        cell.editor.backgroundColor = tint
-        cell.editor.contentInset = .zero
-        cell.editor.textContainerInset = .zero
-        cell.editor.maxHeight = .max(max(34, minimumRowHeight(forActualRow: actualRow)))
-        configureCheckboxTapIfNeeded(for: cell.editor, actualRow: actualRow, column: column, enabled: isCheckbox && !isTotal)
+        let rowHeight = estimatedRowHeight(forActualRow: actualRow, columnWidths: currentColumnWidths())
+        editor.isEditable = shouldAllowTextEditing
+        editor.isUserInteractionEnabled = shouldAllowTextEditing || isCheckbox
+        editor.backgroundColor = tint
+        editor.contentInset = .zero
+        editor.textContainerInset = .zero
+        editor.maxHeight = .max(max(34, rowHeight))
+        configureCheckboxTapIfNeeded(for: editor, actualRow: actualRow, column: column, enabled: isCheckbox && !isTotal)
 
         for tv in textViews {
             tv.isEditable = shouldAllowTextEditing
@@ -1466,29 +1502,29 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
             tv.isScrollEnabled = false
             tv.textContainerInset = .zero
             tv.textContainer.lineFragmentPadding = 0
+            if #available(iOS 18.0, *) {
+                tv.writingToolsBehavior = .none
+            }
             if isTotal {
                 tv.textColor = .secondaryLabel
                 continue
             }
-            let handle = tv.njProtonHandle ?? cell.editor.njProtonHandle ?? NJProtonEditorHandle()
-            handle.editor = cell.editor
+            let handle = tv.njProtonHandle ?? editor.njProtonHandle ?? NJProtonEditorHandle()
+            handle.editor = editor
             handle.textView = tv
-            handle.onSnapshot = { [weak self] _, _ in
-                guard let self else { return }
-                self.captureCurrentGridState()
-                self.refreshComputedAndTotalVisibleCells()
-                self.recalculatePreferredHeight()
-                self.persistCanonicalPayloadToStore()
+            handle.onSnapshot = { [weak self, weak tv] _, _ in
+                guard let self, let tv else { return }
+                self.handleLiveTextChange(from: tv)
             }
             tv.njProtonHandle = handle
-            cell.editor.njProtonHandle = handle
-            if let keyEditor = cell.editor as? NJKeyCommandEditorView {
+            editor.njProtonHandle = handle
+            if let keyEditor = editor as? NJKeyCommandEditorView {
                 keyEditor.njHandle = handle
             }
             if isCheckbox {
                 let checkboxText = checkboxAttributedText(checked: checkboxState(atActualRow: actualRow, column: column))
-                if cell.editor.attributedText.string != checkboxText.string {
-                    cell.editor.attributedText = checkboxText
+                if editor.attributedText.string != checkboxText.string {
+                    editor.attributedText = checkboxText
                 }
                 tv.textColor = displayTextColor(forActualRow: actualRow, isCheckbox: true)
             } else {
@@ -1516,15 +1552,56 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
                 forName: UITextView.textDidChangeNotification,
                 object: tv,
                 queue: .main
-            ) { [weak self] _ in
-                guard let self else { return }
-                self.captureCurrentGridState()
-                self.refreshComputedAndTotalVisibleCells()
-                self.recalculatePreferredHeight()
-                self.persistCanonicalPayloadToStore()
+            ) { [weak self, weak tv] _ in
+                guard let self, let tv else { return }
+                self.handleLiveTextChange(from: tv)
             }
             textBeginObservers.append(changeObserver)
         }
+    }
+
+    private func handleLiveTextChange(from textView: UITextView) {
+        guard let cell = findCell(containing: textView) else { return }
+        let visibleRowIndex = cell.rowSpan.min() ?? 0
+        let actualRow = actualRow(forVisibleRow: visibleRowIndex)
+        guard !isTotalActualRow(actualRow) else { return }
+        let column = actualColumn(forVisibleColumn: cell.columnSpan.min() ?? 0)
+        let changed = storeCurrentEditorText(from: cell, actualRow: actualRow, column: column)
+        guard changed else { return }
+
+        if actualRow == 0 {
+            refreshComputedAndTotalVisibleCells()
+        } else {
+            refreshVisibleCells(afterEditingActualRow: actualRow)
+        }
+        let desiredRowHeight = estimatedRowHeight(forActualRow: actualRow, columnWidths: currentColumnWidths())
+        if abs(desiredRowHeight - cell.frame.height) > 1 {
+            rebuildGrid(columnWidths: currentColumnWidths(), captureState: false)
+            if let refreshedVisibleRow = visibleRow(forActualRow: actualRow) {
+                activeRow = refreshedVisibleRow
+                focusActualCell(row: actualRow, column: column)
+            }
+        }
+        scheduleDeferredHeightRefresh()
+        scheduleDeferredPersist()
+    }
+
+    private func scheduleDeferredPersist() {
+        deferredPersistWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.persistCanonicalPayloadToStore()
+        }
+        deferredPersistWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: workItem)
+    }
+
+    private func scheduleDeferredHeightRefresh() {
+        deferredHeightWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.recalculatePreferredHeight()
+        }
+        deferredHeightWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: workItem)
     }
 
     private func configureCheckboxTapIfNeeded(for view: UIView, actualRow: Int, column: Int, enabled: Bool) {
@@ -1572,20 +1649,21 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
         if let textView {
             if let cell = objc_getAssociatedObject(textView, Unmanaged.passUnretained(self).toOpaque()) as? GridCell {
                 activeRow = cell.rowSpan.min() ?? activeRow
-                activeColumn = cell.columnSpan.min() ?? activeColumn
+                activeColumn = actualColumn(forVisibleColumn: cell.columnSpan.min() ?? 0)
                 return
             }
             if let cell = findCell(containing: textView) {
                 activeRow = cell.rowSpan.min() ?? activeRow
-                activeColumn = cell.columnSpan.min() ?? activeColumn
+                activeColumn = actualColumn(forVisibleColumn: cell.columnSpan.min() ?? 0)
                 return
             }
         }
 
         for cell in gridView.cells {
+            guard canAccessEditor(in: cell) else { continue }
             guard editorContainsFirstResponder(cell.editor) else { continue }
             activeRow = cell.rowSpan.min() ?? activeRow
-            activeColumn = cell.columnSpan.min() ?? activeColumn
+            activeColumn = actualColumn(forVisibleColumn: cell.columnSpan.min() ?? 0)
             return
         }
     }
@@ -1600,7 +1678,7 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
             let cellFrame = convert(cell.frame, from: gridView)
             if cellFrame.contains(location) {
                 activeRow = cell.rowSpan.min() ?? activeRow
-                activeColumn = cell.columnSpan.min() ?? activeColumn
+                activeColumn = actualColumn(forVisibleColumn: cell.columnSpan.min() ?? 0)
                 return
             }
         }
@@ -1628,7 +1706,8 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
             resizeGrip.isHidden = true
             return
         }
-        guard let cell = gridView.cellAt(rowIndex: activeRow, columnIndex: activeColumn) else {
+        guard let visibleColumn = visibleColumn(forActualColumn: activeColumn),
+              let cell = gridView.cellAt(rowIndex: activeRow, columnIndex: visibleColumn) else {
             resizeGrip.isHidden = true
             return
         }
@@ -1685,7 +1764,7 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
         guard activeColumn >= 0, activeColumn < storedColumnWidths.count else { return }
         guard !storedHiddenColumns.contains(activeColumn) else { return }
         let oldWidth = storedColumnWidths[activeColumn]
-        let newWidth = clampColumnWidth(oldWidth + deltaX, totalColumns: max(1, columnCount))
+        let newWidth = clampColumnWidth(oldWidth + deltaX, totalColumns: max(1, columnCount), columnIndex: activeColumn)
         if abs(newWidth - oldWidth) < 0.5 { return }
         storedColumnWidths[activeColumn] = newWidth
         persistLocalColumnViewState()
@@ -1693,27 +1772,26 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
     }
 
     private func currentColumnWidths() -> [CGFloat] {
-        let cols = max(1, columnCount)
-        if storedColumnWidths.count == cols {
-            return storedColumnWidths.enumerated().map { index, width in
-                if storedHiddenColumns.contains(index) {
-                    return Self.hiddenColumnWidth
-                }
-                return clampColumnWidth(width, totalColumns: cols)
-            }
+        let visibleColumns = visibleColumnIndices()
+        let layoutCols = max(1, visibleColumns.count)
+        guard !visibleColumns.isEmpty else { return [clampColumnWidth(max(120, maximumTableWidth()), totalColumns: 1)] }
+        let actualWidths = normalizedWidthState(storedColumnWidths, columnCount: max(1, columnCount))
+        return visibleColumns.map { actualCol in
+            clampColumnWidth(actualWidths[actualCol], totalColumns: layoutCols, columnIndex: actualCol)
         }
-        let fallback = clampColumnWidth(max(120, maximumTableWidth() / CGFloat(cols)), totalColumns: cols)
-        return Array(repeating: fallback, count: cols)
     }
 
     private func currentSyncedColumnWidths() -> [CGFloat] {
         let cols = max(1, columnCount)
+        let layoutCols = max(1, visibleColumnCount())
         if syncedColumnWidths.count == cols {
-            return syncedColumnWidths.map { clampColumnWidth($0, totalColumns: cols) }
+            return syncedColumnWidths.enumerated().map { index, width in
+                return clampColumnWidth(width, totalColumns: layoutCols, columnIndex: index)
+            }
         }
-        var next = Array(repeating: clampColumnWidth(max(120, maximumTableWidth() / CGFloat(cols)), totalColumns: cols), count: cols)
+        var next = Array(repeating: clampColumnWidth(max(120, maximumTableWidth() / CGFloat(layoutCols)), totalColumns: layoutCols), count: cols)
         for (index, width) in syncedColumnWidths.prefix(cols).enumerated() {
-            next[index] = clampColumnWidth(width, totalColumns: cols)
+            next[index] = clampColumnWidth(width, totalColumns: layoutCols, columnIndex: index)
         }
         return next
     }
@@ -1932,10 +2010,12 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
     }
 
     private func rebuildGrid(columnWidths: [CGFloat], captureState: Bool = true) {
+        // print("NJ_TABLE_REBUILD_START table_id=\(attachmentID) capture=\(captureState ? 1 : 0) rows=\(rowCount) cols=\(columnCount) width_count=\(columnWidths.count)")
         if captureState {
             captureCurrentGridState()
         }
-        let safeCols = max(1, columnWidths.count)
+        let visibleColumns = visibleColumnIndices()
+        let safeCols = max(1, visibleColumns.count)
         storedColumnAlignments = currentColumnAlignments()
         storedColumnTypes = currentColumnTypes()
         storedColumnFormulas = currentColumnFormulas()
@@ -1944,12 +2024,14 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
         applyFormulaColumns()
         visibleRowIndices = computeVisibleRowIndices()
         let displayRows = max(1, visibleRowIndices.count)
+        let rowHeights = estimatedRowHeights(columnWidths: columnWidths, visibleColumns: visibleColumns)
         let rowsCfg = (0..<displayRows).map { visibleRow in
-            let actualRow = self.actualRow(forVisibleRow: visibleRow)
-            return GridRowConfiguration(initialHeight: minimumRowHeight(forActualRow: actualRow))
+            let resolvedHeight = visibleRow < rowHeights.count ? rowHeights[visibleRow] : NJTableDefaultRowHeight
+            return GridRowConfiguration(initialHeight: resolvedHeight)
         }
-        let colsCfg = columnWidths.map { width in
-            let resolvedWidth = width <= Self.hiddenColumnWidth ? Self.hiddenColumnWidth : max(60, width)
+        let colsCfg = columnWidths.enumerated().map { index, width in
+            let actualCol = visibleColumns[min(index, max(0, visibleColumns.count - 1))]
+            let resolvedWidth = width <= Self.hiddenColumnWidth ? Self.hiddenColumnWidth : max(minimumColumnWidth(forColumn: actualCol), width)
             return GridColumnConfiguration(width: .fixed(resolvedWidth))
         }
 
@@ -1968,17 +2050,24 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
 
         for row in 0..<displayRows {
             let actualRow = self.actualRow(forVisibleRow: row)
+            let rowHeight = row < rowHeights.count ? rowHeights[row] : minimumRowHeight(forActualRow: actualRow)
             for col in 0..<safeCols {
+                let actualCol = visibleColumns[min(col, max(0, visibleColumns.count - 1))]
                 let cell = GridCell(
                     rowSpan: [row],
                     columnSpan: [col],
-                    initialHeight: minimumRowHeight(forActualRow: actualRow),
-                    ignoresOptimizedInit: true
+                    initialHeight: rowHeight,
+                    ignoresOptimizedInit: true,
+                    editorInitializer: {
+                        let editor = NJKeyCommandEditorView()
+                        editor.isScrollEnabled = false
+                        return editor
+                    }
                 )
                 cell.editor.forceApplyAttributedText = true
-                let type = (col >= 0 && col < storedColumnTypes.count) ? storedColumnTypes[col] : .text
-                cell.editor.attributedText = displayedCellAttributedText(atActualRow: actualRow, column: col, type: type)
-                let alignment = (col >= 0 && col < storedColumnAlignments.count) ? storedColumnAlignments[col] : .left
+                let type = (actualCol >= 0 && actualCol < storedColumnTypes.count) ? storedColumnTypes[actualCol] : .text
+                cell.editor.attributedText = displayedCellAttributedText(atActualRow: actualRow, column: actualCol, type: type)
+                let alignment = (actualCol >= 0 && actualCol < storedColumnAlignments.count) ? storedColumnAlignments[actualCol] : .left
                 applyAlignmentStyle(to: cell, alignment: alignment)
                 cells.append(cell)
             }
@@ -2001,21 +2090,33 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
             nextGrid.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
 
-        columnCount = safeCols
         wireCellEditors()
-        recalculatePreferredHeight()
         updateResizeGripFrame()
+        if window == nil {
+            hasBuiltVisibleGrid = false
+            preferredHeight = max(44, CGFloat(displayRows) * NJTableDefaultRowHeight)
+            invalidateIntrinsicContentSize()
+            setNeedsLayout()
+            // print("NJ_TABLE_REBUILD_DONE table_id=\(attachmentID) visible_rows=\(visibleRowIndices.count) preferred_height=\(preferredHeight) window=0")
+            return
+        }
+        hasBuiltVisibleGrid = true
         setNeedsLayout()
-        layoutIfNeeded()
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.recalculatePreferredHeight()
+            // print("NJ_TABLE_REBUILD_DONE table_id=\(self.attachmentID) visible_rows=\(self.visibleRowIndices.count) preferred_height=\(self.preferredHeight) window=1")
+        }
     }
 
-    private func focusCell(row: Int, column: Int) {
-        guard row >= 0, row < visibleRowCount(), column >= 0, column < columnCount else { return }
+    private func focusCell(row: Int, column actualColumn: Int) {
+        guard row >= 0, row < visibleRowCount(), actualColumn >= 0, actualColumn < columnCount else { return }
         guard !isTotalVisibleRow(row) else { return }
-        guard let cell = gridView.cellAt(rowIndex: row, columnIndex: column) else { return }
+        guard let visibleColumn = visibleColumn(forActualColumn: actualColumn),
+              let cell = gridView.cellAt(rowIndex: row, columnIndex: visibleColumn) else { return }
         activeRow = row
-        activeColumn = column
-        gridView.scrollToCellAt(rowIndex: row, columnIndex: column, animated: false)
+        activeColumn = actualColumn
+        gridView.scrollToCellAt(rowIndex: row, columnIndex: visibleColumn, animated: false)
         cell.setFocus()
         DispatchQueue.main.async { [weak self, weak cell] in
             guard let self, let cell else { return }
@@ -2104,12 +2205,12 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
         guard rowCount > 0, columnCount > 0 else { return }
         var nextRow = row
         var nextCol = col + 1
-        while nextCol < columnCount && storedHiddenColumns.contains(nextCol) {
+        while nextCol < columnCount && effectiveHiddenColumns().contains(nextCol) {
             nextCol += 1
         }
         if nextCol >= columnCount {
             nextCol = 0
-            while nextCol < columnCount && storedHiddenColumns.contains(nextCol) {
+            while nextCol < columnCount && effectiveHiddenColumns().contains(nextCol) {
                 nextCol += 1
             }
             nextRow += 1
@@ -2117,10 +2218,11 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
         guard nextRow < visibleRowCount() else { return }
         guard nextCol >= 0, nextCol < columnCount else { return }
         guard !isTotalVisibleRow(nextRow) else { return }
-        guard let cell = gridView.cellAt(rowIndex: nextRow, columnIndex: nextCol) else { return }
+        guard let visibleColumn = visibleColumn(forActualColumn: nextCol),
+              let cell = gridView.cellAt(rowIndex: nextRow, columnIndex: visibleColumn) else { return }
         activeRow = nextRow
         activeColumn = nextCol
-        gridView.scrollToCellAt(rowIndex: nextRow, columnIndex: nextCol, animated: false)
+        gridView.scrollToCellAt(rowIndex: nextRow, columnIndex: visibleColumn, animated: false)
         cell.setFocus()
         updateResizeGripFrame()
     }
@@ -2129,23 +2231,24 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
         guard rowCount > 0, columnCount > 0 else { return }
         var nextRow = row
         var nextCol = col - 1
-        while nextCol >= 0 && storedHiddenColumns.contains(nextCol) {
+        while nextCol >= 0 && effectiveHiddenColumns().contains(nextCol) {
             nextCol -= 1
         }
         if nextCol < 0 {
             nextRow -= 1
             nextCol = columnCount - 1
-            while nextCol >= 0 && storedHiddenColumns.contains(nextCol) {
+            while nextCol >= 0 && effectiveHiddenColumns().contains(nextCol) {
                 nextCol -= 1
             }
         }
         guard nextRow >= 0 else { return }
         guard nextCol >= 0, nextCol < columnCount else { return }
         guard !isTotalVisibleRow(nextRow) else { return }
-        guard let cell = gridView.cellAt(rowIndex: nextRow, columnIndex: nextCol) else { return }
+        guard let visibleColumn = visibleColumn(forActualColumn: nextCol),
+              let cell = gridView.cellAt(rowIndex: nextRow, columnIndex: visibleColumn) else { return }
         activeRow = nextRow
         activeColumn = nextCol
-        gridView.scrollToCellAt(rowIndex: nextRow, columnIndex: nextCol, animated: false)
+        gridView.scrollToCellAt(rowIndex: nextRow, columnIndex: visibleColumn, animated: false)
         cell.setFocus()
         updateResizeGripFrame()
     }
@@ -2171,7 +2274,7 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
     func gridView(_ gridView: GridView, didReceiveFocusAt range: NSRange, in cell: GridCell) {
         bindCellEditorIfNeeded(cell)
         activeRow = cell.rowSpan.min() ?? activeRow
-        activeColumn = cell.columnSpan.min() ?? activeColumn
+        activeColumn = actualColumn(forVisibleColumn: cell.columnSpan.min() ?? 0)
         updateResizeGripFrame()
     }
 
@@ -2181,7 +2284,7 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
     func gridView(_ gridView: GridView, didTapAtLocation location: CGPoint, characterRange: NSRange?, in cell: GridCell) {
         let visibleRow = cell.rowSpan.min() ?? 0
         let actualRow = actualRow(forVisibleRow: visibleRow)
-        let column = cell.columnSpan.min() ?? 0
+        let column = actualColumn(forVisibleColumn: cell.columnSpan.min() ?? 0)
         activeRow = visibleRow
         activeColumn = column
         if isTotalActualRow(actualRow) {
@@ -2206,7 +2309,7 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
 
     func gridView(_ gridView: GridView, didReceiveKey key: EditorKey, at range: NSRange, in cell: GridCell) {
         let row = cell.rowSpan.min() ?? activeRow
-        let col = cell.columnSpan.min() ?? activeColumn
+        let col = actualColumn(forVisibleColumn: cell.columnSpan.min() ?? 0)
         if key == .tab {
             moveFocus(forwardFromRow: row, column: col)
         }
@@ -2225,6 +2328,8 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
     }
 
     private func recalculatePreferredHeight() {
+        deferredHeightWorkItem?.cancel()
+        deferredHeightWorkItem = nil
         let oldHeight = preferredHeight
         let nextHeight = measuredPreferredHeight(containerWidth: bounds.width)
         guard abs(nextHeight - oldHeight) > 0.5 else { return }
@@ -2241,51 +2346,72 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
     private func measuredPreferredHeight(containerWidth: CGFloat?) -> CGFloat {
         let widths = currentColumnWidths()
         let estimated = estimatedContentHeight(columnWidths: widths)
-        layoutIfNeeded()
-        gridView.layoutIfNeeded()
-        let laidOutGridHeight = gridView.systemLayoutSizeFitting(
-            CGSize(width: max(1, bounds.width), height: UIView.layoutFittingCompressedSize.height),
-            withHorizontalFittingPriority: .required,
-            verticalFittingPriority: .fittingSizeLevel
-        ).height
-        return max(44, estimated, ceil(laidOutGridHeight))
+        lastMeasuredWidth = bounds.width
+        return max(44, estimated)
     }
 
     private func minimumRowHeight(forActualRow actualRow: Int) -> CGFloat {
-        let base = ceil(baseTableFontSize() + 10)
+        let base = ceil(baseTableFontSize() + 8)
         if actualRow == 0 || isTotalActualRow(actualRow) {
-            return max(32, base)
+            return max(28, base)
         }
-        return max(28, base)
+        return max(24, base)
     }
 
     private func estimatedContentHeight(columnWidths: [CGFloat]) -> CGFloat {
-        let safeCols = min(columnCount, columnWidths.count)
-        guard safeCols > 0 else { return NJTableDefaultRowHeight }
-        var totalHeight: CGFloat = 0
+        let rowHeights = estimatedRowHeights(columnWidths: columnWidths, visibleColumns: visibleColumnIndices())
+        return max(rowHeights.reduce(CGFloat(0), +), NJTableDefaultRowHeight)
+    }
 
-        for visibleRow in 0..<visibleRowCount() {
+    private func estimatedRowHeights(columnWidths: [CGFloat], visibleColumns: [Int]) -> [CGFloat] {
+        let safeCols = min(visibleColumns.count, columnWidths.count)
+        guard safeCols > 0 else { return [NJTableDefaultRowHeight] }
+        return (0..<visibleRowCount()).map { visibleRow in
             let actualRow = actualRow(forVisibleRow: visibleRow)
-            var rowHeight = minimumRowHeight(forActualRow: actualRow)
+            return estimatedRowHeight(
+                forActualRow: actualRow,
+                visibleColumns: visibleColumns,
+                columnWidths: columnWidths,
+                safeVisibleColumnCount: safeCols
+            )
+        }
+    }
 
-            for col in 0..<safeCols {
-                let width = columnWidths[col]
-                guard width > Self.hiddenColumnWidth + 1 else { continue }
-                let type = (col < currentColumnTypes().count) ? currentColumnTypes()[col] : .text
-                let text = displayedCellAttributedText(atActualRow: actualRow, column: col, type: type)
-                let availableWidth = max(24, width - 16)
-                let measured = text.boundingRect(
-                    with: CGSize(width: availableWidth, height: .greatestFiniteMagnitude),
-                    options: [.usesLineFragmentOrigin, .usesFontLeading],
-                    context: nil
-                )
-                rowHeight = max(rowHeight, ceil(measured.height) + 10)
-            }
+    private func estimatedRowHeight(forActualRow actualRow: Int, columnWidths: [CGFloat]) -> CGFloat {
+        estimatedRowHeight(
+            forActualRow: actualRow,
+            visibleColumns: visibleColumnIndices(),
+            columnWidths: columnWidths,
+            safeVisibleColumnCount: min(visibleColumnIndices().count, columnWidths.count)
+        )
+    }
 
-            totalHeight += rowHeight
+    private func estimatedRowHeight(
+        forActualRow actualRow: Int,
+        visibleColumns: [Int],
+        columnWidths: [CGFloat],
+        safeVisibleColumnCount: Int
+    ) -> CGFloat {
+        guard safeVisibleColumnCount > 0 else { return minimumRowHeight(forActualRow: actualRow) }
+        let types = currentColumnTypes()
+        var rowHeight = minimumRowHeight(forActualRow: actualRow)
+
+        for col in 0..<safeVisibleColumnCount {
+            let actualCol = visibleColumns[col]
+            let width = columnWidths[col]
+            guard width > Self.hiddenColumnWidth + 1 else { continue }
+            let type = (actualCol < types.count) ? types[actualCol] : .text
+            let text = displayedCellAttributedText(atActualRow: actualRow, column: actualCol, type: type)
+            let availableWidth = max(24, width - 16)
+            let measured = text.boundingRect(
+                with: CGSize(width: availableWidth, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                context: nil
+            )
+            rowHeight = max(rowHeight, ceil(measured.height) + 10)
         }
 
-        return max(totalHeight, NJTableDefaultRowHeight)
+        return rowHeight
     }
 
     private func maximumTableWidth() -> CGFloat {
@@ -2300,14 +2426,62 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
         return max(240, width - 16)
     }
 
-    private func clampColumnWidth(_ width: CGFloat, totalColumns: Int) -> CGFloat {
-        let minWidth: CGFloat = 60
+    private func clampColumnWidth(_ width: CGFloat, totalColumns: Int, columnIndex: Int? = nil) -> CGFloat {
+        let minWidth = minimumColumnWidth(forColumn: columnIndex)
         let availableWidth = maximumTableWidth()
         let dynamicMax = max(180, min(availableWidth * 0.6, 420))
         if totalColumns <= 1 {
             return min(max(width, minWidth), availableWidth)
         }
         return min(max(width, minWidth), dynamicMax)
+    }
+
+    private func minimumColumnWidth(forColumn column: Int?) -> CGFloat {
+        guard let column, column >= 0, column < columnCount else { return 60 }
+        let types = currentColumnTypes()
+        if column < types.count, types[column] == .checkbox {
+            return 28
+        }
+
+        let header = storedCellText(atActualRow: 0, column: column).string
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+
+        if ["day", "qty", "no", "#"].contains(header) {
+            return 36
+        }
+        if ["ccy", "cur", "currency"].contains(header) {
+            return 44
+        }
+        if ["date"].contains(header) {
+            return 110
+        }
+        if ["nature", "type", "category"].contains(header) {
+            return 120
+        }
+        if ["item", "description", "detail", "notes", "commentary"].contains(header) {
+            return 180
+        }
+        if ["amount", "price", "cost", "value", "total"].contains(header) {
+            return 96
+        }
+
+        var longest = header.count
+        for row in 1..<max(1, rowCount) {
+            let value = storedCellText(atActualRow: row, column: column).string
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty else { continue }
+            longest = max(longest, value.count)
+            if longest > 4 { break }
+        }
+
+        if longest <= 1 { return 28 }
+        if longest <= 3 { return 44 }
+        if longest <= 5 { return 60 }
+        if longest <= 8 { return 84 }
+        if longest <= 12 { return 108 }
+        if longest <= 20 { return 136 }
+        return 160
     }
 
     private func localColumnStateStorageKey() -> String {
@@ -2358,16 +2532,40 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
 
     private func normalizedWidthState(_ widths: [CGFloat], columnCount: Int) -> [CGFloat] {
         let cols = max(1, columnCount)
-        let fallback = clampColumnWidth(max(120, maximumTableWidth() / CGFloat(cols)), totalColumns: cols)
+        let hiddenColumns = effectiveHiddenColumns()
+        let layoutCols = max(1, cols - hiddenColumns.count)
+        let fallback = clampColumnWidth(max(120, maximumTableWidth() / CGFloat(layoutCols)), totalColumns: layoutCols)
         var normalized = Array(repeating: fallback, count: cols)
         for (index, width) in widths.prefix(cols).enumerated() {
-            normalized[index] = clampColumnWidth(width, totalColumns: cols)
+            normalized[index] = hiddenColumns.contains(index) ? Self.hiddenColumnWidth : clampColumnWidth(width, totalColumns: layoutCols, columnIndex: index)
         }
         return normalized
     }
 
     private func visibleColumnCount() -> Int {
-        max(0, columnCount - storedHiddenColumns.count)
+        max(0, columnCount - effectiveHiddenColumns().count)
+    }
+
+    private func effectiveHiddenColumns() -> Set<Int> {
+        storedHiddenColumns
+    }
+
+    private func visibleColumnIndices() -> [Int] {
+        let hidden = effectiveHiddenColumns()
+        let columns = (0..<columnCount).filter { !hidden.contains($0) }
+        return columns.isEmpty ? [0] : columns
+    }
+
+    private func actualColumn(forVisibleColumn visibleColumn: Int) -> Int {
+        let visible = visibleColumnIndices()
+        guard visibleColumn >= 0, visibleColumn < visible.count else {
+            return min(max(0, activeColumn), max(0, columnCount - 1))
+        }
+        return visible[visibleColumn]
+    }
+
+    private func visibleColumn(forActualColumn actualColumn: Int) -> Int? {
+        visibleColumnIndices().firstIndex(of: actualColumn)
     }
 
     private func displayNameForColumn(_ column: Int) -> String {
@@ -2404,7 +2602,8 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
     private func insertLocalColumnState(at index: Int) {
         let clampedIndex = max(0, min(index, storedColumnWidths.count))
         let colsAfterInsert = max(1, columnCount + 1)
-        let fallback = clampColumnWidth(max(120, maximumTableWidth() / CGFloat(colsAfterInsert)), totalColumns: colsAfterInsert)
+        let layoutCols = max(1, colsAfterInsert - storedHiddenColumns.count)
+        let fallback = clampColumnWidth(max(120, maximumTableWidth() / CGFloat(layoutCols)), totalColumns: layoutCols)
         storedColumnWidths.insert(fallback, at: clampedIndex)
         syncedColumnWidths.insert(fallback, at: min(clampedIndex, syncedColumnWidths.count))
         remapHiddenColumns(afterInserting: clampedIndex)
@@ -2425,44 +2624,48 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
         guard column >= 0, column < columnCount else { return }
         guard !storedHiddenColumns.contains(column) else { return }
         guard visibleColumnCount() > 1 else { return }
+        captureCurrentGridState()
         storedHiddenColumns.insert(column)
         if activeColumn == column {
             activeColumn = nextVisibleColumn(startingAt: column + 1, fallbackDirection: -1) ?? activeColumn
         }
         persistLocalColumnViewState()
-        rebuildGrid(columnWidths: currentColumnWidths())
+        rebuildGrid(columnWidths: currentColumnWidths(), captureState: false)
         onLocalLayoutChange?()
     }
 
     private func showColumn(_ column: Int) {
         guard storedHiddenColumns.contains(column) else { return }
+        captureCurrentGridState()
         storedHiddenColumns.remove(column)
         persistLocalColumnViewState()
-        rebuildGrid(columnWidths: currentColumnWidths())
+        rebuildGrid(columnWidths: currentColumnWidths(), captureState: false)
         onLocalLayoutChange?()
     }
 
     private func showAllColumns() {
         guard !storedHiddenColumns.isEmpty else { return }
+        captureCurrentGridState()
         storedHiddenColumns.removeAll()
         persistLocalColumnViewState()
-        rebuildGrid(columnWidths: currentColumnWidths())
+        rebuildGrid(columnWidths: currentColumnWidths(), captureState: false)
         onLocalLayoutChange?()
     }
 
     private func nextVisibleColumn(startingAt start: Int, fallbackDirection: Int) -> Int? {
+        let hidden = effectiveHiddenColumns()
         if columnCount <= 0 { return nil }
         if start >= 0 && start < columnCount {
-            for candidate in start..<columnCount where !storedHiddenColumns.contains(candidate) {
+            for candidate in start..<columnCount where !hidden.contains(candidate) {
                 return candidate
             }
         }
         if fallbackDirection < 0 {
-            for candidate in stride(from: min(max(start - 1, 0), columnCount - 1), through: 0, by: -1) where !storedHiddenColumns.contains(candidate) {
+            for candidate in stride(from: min(max(start - 1, 0), columnCount - 1), through: 0, by: -1) where !hidden.contains(candidate) {
                 return candidate
             }
         }
-        return (0..<columnCount).first { !storedHiddenColumns.contains($0) }
+        return (0..<columnCount).first { !hidden.contains($0) }
     }
 
     private func findTextView(in root: UIView) -> UITextView? {
@@ -2486,7 +2689,9 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
 
     private func findCell(containing textView: UITextView) -> GridCell? {
         for cell in gridView.cells {
-            if textView.isDescendant(of: cell.editor) || cell.editor === textView {
+            guard canAccessEditor(in: cell) else { continue }
+            let editor = cell.editor
+            if textView.isDescendant(of: editor) || editor === textView {
                 return cell
             }
         }
@@ -2497,7 +2702,7 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
         guard let cell = findCell(containing: textView) else { return false }
         let visibleRow = cell.rowSpan.min() ?? 0
         let actualRow = actualRow(forVisibleRow: visibleRow)
-        let column = cell.columnSpan.min() ?? 0
+        let column = actualColumn(forVisibleColumn: cell.columnSpan.min() ?? 0)
         if actualRow == 0 { return true }
         if isTotalActualRow(actualRow) { return true }
         if isCheckboxColumn(column) { return true }
@@ -2515,24 +2720,41 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
         return false
     }
 
+    private func canAccessEditor(in cell: GridCell) -> Bool {
+        cell.contentView.window != nil
+    }
+
+    private func scheduleCellEditorBindingIfNeeded(_ cell: GridCell) {
+        guard window != nil else { return }
+        DispatchQueue.main.async { [weak self, weak cell] in
+            guard let self, let cell, self.canAccessEditor(in: cell) else { return }
+            self.bindCellEditorIfNeeded(cell)
+        }
+    }
+
     private func applyAlignmentStylesToAllCells() {
         let alignments = currentColumnAlignments()
         for cell in gridView.cells {
-            let col = cell.columnSpan.min() ?? 0
+            let col = actualColumn(forVisibleColumn: cell.columnSpan.min() ?? 0)
             let alignment = (col >= 0 && col < alignments.count) ? alignments[col] : .left
             applyAlignmentStyle(to: cell, alignment: alignment)
         }
     }
 
     private func applyAlignmentStyle(to cell: GridCell) {
-        let col = cell.columnSpan.min() ?? 0
+        let col = actualColumn(forVisibleColumn: cell.columnSpan.min() ?? 0)
         let alignments = currentColumnAlignments()
         let alignment = (col >= 0 && col < alignments.count) ? alignments[col] : .left
         applyAlignmentStyle(to: cell, alignment: alignment)
     }
 
     private func applyAlignmentStyle(to cell: GridCell, alignment: NJTableColumnAlignment) {
-        let text = NSMutableAttributedString(attributedString: normalizedTableCellText(cell.editor.attributedText))
+        guard canAccessEditor(in: cell) else {
+            scheduleCellEditorBindingIfNeeded(cell)
+            return
+        }
+        let editor = cell.editor
+        let text = NSMutableAttributedString(attributedString: normalizedTableCellText(editor.attributedText))
         let fullRange = NSRange(location: 0, length: text.length)
         if fullRange.length > 0 {
             text.enumerateAttribute(.paragraphStyle, in: fullRange) { value, range, _ in
@@ -2546,10 +2768,10 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
                 style.maximumLineHeight = 0
                 text.addAttribute(.paragraphStyle, value: style, range: range)
             }
-            cell.editor.attributedText = text
+            editor.attributedText = text
         }
 
-        if let tv = findTextView(in: cell.editor) {
+        if let tv = findTextView(in: editor) {
             tv.textAlignment = alignment.textAlignment
             var typing = tv.typingAttributes
             let style = ((typing[.paragraphStyle] as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
@@ -2653,10 +2875,19 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
     }
 
     private func persistCanonicalPayloadToStore() {
+        let payload = canonicalPayloadForStore()
+        lastCanonicalPayloadJSON = canonicalPayloadJSONString(payload)
         NJTableStore.shared.upsertCanonicalPayload(
             tableID: attachmentID,
-            payload: canonicalPayloadForStore()
+            payload: payload
         )
+    }
+
+    private func canonicalPayloadJSONString(_ payload: [String: Any]) -> String? {
+        guard JSONSerialization.isValidJSONObject(payload),
+              let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
+              let json = String(data: data, encoding: .utf8) else { return nil }
+        return json
     }
 
     private static func encodeRTFBase64(_ attributed: NSAttributedString) -> String? {
@@ -2689,24 +2920,25 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
     }
 
     private func setStoredCellText(_ text: NSAttributedString, atActualRow row: Int, column col: Int) {
-        storedCellTexts[cellKey(row: row, col: col)] = normalizedTableCellText(text)
+        let key = cellKey(row: row, col: col)
+        let normalized = normalizedTableCellText(text)
+        if row == 0 {
+            invalidateFormulaCaches()
+        }
+        if let current = storedCellTexts[key],
+           let oldSize = firstFontSize(in: current),
+           let newSize = firstFontSize(in: normalized),
+           abs(oldSize - newSize) > 0.1 {
+            cachedBaseFontSize = nil
+        } else if storedCellTexts[key] == nil, firstFontSize(in: normalized) != nil {
+            cachedBaseFontSize = nil
+        }
+        storedCellTexts[key] = normalized
     }
 
     private func normalizedTableCellText(_ text: NSAttributedString) -> NSAttributedString {
         guard text.length > 0 else { return text }
         let normalized = NSMutableAttributedString(attributedString: text)
-        let fullRange = NSRange(location: 0, length: normalized.length)
-
-        normalized.enumerateAttribute(.paragraphStyle, in: fullRange) { value, range, _ in
-            let style = (value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle ?? NSMutableParagraphStyle()
-            style.lineSpacing = 0
-            style.paragraphSpacing = 0
-            style.paragraphSpacingBefore = 0
-            style.lineHeightMultiple = 1
-            style.minimumLineHeight = 0
-            style.maximumLineHeight = 0
-            normalized.addAttribute(.paragraphStyle, value: style, range: range)
-        }
 
         while normalized.length > 0 {
             let tailRange = NSRange(location: normalized.length - 1, length: 1)
@@ -2721,6 +2953,23 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
         return normalized
     }
 
+    private func invalidateFormulaCaches() {
+        cachedFormulaHeaderLookup = nil
+        tokenizedFormulaCache.removeAll()
+    }
+
+    private func firstFontSize(in text: NSAttributedString) -> CGFloat? {
+        guard text.length > 0 else { return nil }
+        var fontSize: CGFloat?
+        text.enumerateAttribute(.font, in: NSRange(location: 0, length: text.length)) { value, _, stop in
+            if let font = value as? UIFont {
+                fontSize = font.pointSize
+                stop.pointee = true
+            }
+        }
+        return fontSize
+    }
+
     private func clearStoredRow(atActualRow row: Int) {
         guard row >= 0 else { return }
         for col in 0..<max(1, columnCount) {
@@ -2729,26 +2978,41 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
     }
 
     private func seedStoredCellTexts(from cells: [GridCell]) {
+        cachedBaseFontSize = nil
         storedCellTexts.removeAll()
         for cell in cells {
             let row = cell.rowSpan.min() ?? 0
-            let col = cell.columnSpan.min() ?? 0
+            let col = actualColumn(forVisibleColumn: cell.columnSpan.min() ?? 0)
             setStoredCellText(cell.editor.attributedText, atActualRow: row, column: col)
         }
     }
 
+    private func seedStoredCellTexts(fromPayloads payloads: [[String: Any]], rows: Int, cols: Int) {
+        cachedBaseFontSize = nil
+        storedCellTexts.removeAll()
+        for cell in payloads {
+            let row = intValue(cell["row"]) ?? 0
+            let col = intValue(cell["col"]) ?? 0
+            guard row >= 0, row < max(1, rows), col >= 0, col < max(1, cols) else { continue }
+            let text = Self.decodeRTFBase64((cell["rtf_base64"] as? String) ?? "") ?? NSAttributedString(string: "")
+            setStoredCellText(text, atActualRow: row, column: col)
+        }
+    }
+
     private func captureCurrentGridState() {
+        let types = currentColumnTypes()
         for cell in gridView.cells {
+            guard canAccessEditor(in: cell) else { continue }
             let visibleRow = cell.rowSpan.min() ?? 0
             let actualRow = actualRow(forVisibleRow: visibleRow)
             guard !isTotalActualRow(actualRow) else { continue }
-            let col = cell.columnSpan.min() ?? 0
+            let col = actualColumn(forVisibleColumn: cell.columnSpan.min() ?? 0)
             let cleanedText = stripFilterIndicator(from: cell.editor.attributedText)
             if actualRow == 0 {
                 setStoredCellText(cleanedText, atActualRow: actualRow, column: col)
                 continue
             }
-            let type = (col >= 0 && col < currentColumnTypes().count) ? currentColumnTypes()[col] : .text
+            let type = (col >= 0 && col < types.count) ? types[col] : .text
             if type == .checkbox {
                 setStoredCellText(
                     checkboxAttributedText(checked: checkboxState(from: cleanedText)),
@@ -2762,6 +3026,33 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
             }
         }
         applyFormulaColumns()
+    }
+
+    private func storeCurrentEditorText(from cell: GridCell, actualRow: Int, column: Int) -> Bool {
+        let cleanedText = stripFilterIndicator(from: cell.editor.attributedText)
+        let existing = storedCellText(atActualRow: actualRow, column: column)
+        let types = currentColumnTypes()
+
+        if actualRow == 0 {
+            guard !existing.isEqual(to: cleanedText) else { return false }
+            setStoredCellText(cleanedText, atActualRow: actualRow, column: column)
+            return true
+        }
+
+        let type = (column >= 0 && column < types.count) ? types[column] : .text
+        switch type {
+        case .checkbox:
+            let next = checkboxAttributedText(checked: checkboxState(from: cleanedText))
+            guard !existing.isEqual(to: next) else { return false }
+            setStoredCellText(next, atActualRow: actualRow, column: column)
+            return true
+        case .formula:
+            return false
+        case .text:
+            guard !existing.isEqual(to: cleanedText) else { return false }
+            setStoredCellText(cleanedText, atActualRow: actualRow, column: column)
+            return true
+        }
     }
 
     private func computeVisibleRowIndices() -> [Int] {
@@ -2832,6 +3123,7 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
         guard column >= 0, column < formulas.count else { return }
         formulas[column] = normalizedFormulaStorage(formula)
         storedColumnFormulas = formulas
+        tokenizedFormulaCache.removeAll()
     }
 
     private func displayFormulaDefinition(for column: Int) -> String? {
@@ -2841,27 +3133,25 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
         return formula.isEmpty ? nil : formula
     }
 
-    private func headerNameByColumn() -> [Int: String] {
-        var map: [Int: String] = [:]
-        for col in 0..<max(1, columnCount) {
-            let header = storedCellText(atActualRow: 0, column: col).string.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !header.isEmpty else { continue }
-            map[col] = header
-        }
-        return map
-    }
-
     private func resolveFormulaReference(named name: String) -> Int? {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
+        return formulaHeaderLookup()[trimmed.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)]
+    }
+
+    private func formulaHeaderLookup() -> [String: Int] {
+        if let cachedFormulaHeaderLookup {
+            return cachedFormulaHeaderLookup
+        }
+        var map: [String: Int] = [:]
         for col in 0..<max(1, columnCount) {
             let header = storedCellText(atActualRow: 0, column: col).string.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !header.isEmpty else { continue }
-            if header.compare(trimmed, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame {
-                return col
-            }
+            let key = header.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            map[key] = col
         }
-        return nil
+        cachedFormulaHeaderLookup = map
+        return map
     }
 
     private func numericValueForFormulaCell(atActualRow row: Int, column col: Int) -> Double? {
@@ -2952,10 +3242,25 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
         return tokens
     }
 
+    private func cachedTokens(for formula: String) -> [FormulaToken]? {
+        let trimmed = formula.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        if let cached = tokenizedFormulaCache[trimmed] {
+            return cached
+        }
+        guard let tokens = tokenizeFormula(trimmed) else { return nil }
+        tokenizedFormulaCache[trimmed] = tokens
+        return tokens
+    }
+
     private func evaluateFormula(_ formula: String, atActualRow row: Int) -> String {
         let trimmed = formula.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }
-        guard let tokens = tokenizeFormula(trimmed) else { return "ERR" }
+        guard let tokens = cachedTokens(for: trimmed) else { return "ERR" }
+        return evaluateFormula(tokens: tokens, atActualRow: row)
+    }
+
+    private func evaluateFormula(tokens: [FormulaToken], atActualRow row: Int) -> String {
         let nonEmptyReferencedValues = tokens.compactMap { token -> Double? in
             guard case .reference(let name) = token,
                   let col = resolveFormulaReference(named: name),
@@ -3047,33 +3352,76 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
         for col in 0..<min(types.count, columnCount) where types[col] == .formula {
             let formula = (col < formulas.count) ? formulas[col] : ""
             for row in 1..<max(1, rowCount) {
-                let text = evaluateFormula(formula, atActualRow: row)
-                setStoredCellText(
-                    NSAttributedString(
-                        string: text,
-                        attributes: [.font: NJEditorCanonicalBodyFont(size: baseTableFontSize(), bold: false, italic: false)]
-                    ),
-                    atActualRow: row,
-                    column: col
-                )
+                updateFormulaCell(atActualRow: row, column: col, formula: formula)
             }
         }
+    }
+
+    private func updateFormulaCell(atActualRow row: Int, column col: Int, formula: String? = nil) {
+        guard row > 0, row < max(1, rowCount) else { return }
+        let formulas = currentColumnFormulas()
+        let resolvedFormula = formula ?? ((col < formulas.count) ? formulas[col] : "")
+        let text = evaluateFormula(resolvedFormula, atActualRow: row)
+        setStoredCellText(
+            NSAttributedString(
+                string: text,
+                attributes: [.font: NJEditorCanonicalBodyFont(size: baseTableFontSize(), bold: false, italic: false)]
+            ),
+            atActualRow: row,
+            column: col
+        )
     }
 
     private func refreshComputedAndTotalVisibleCells() {
         applyFormulaColumns()
         let types = currentColumnTypes()
+        let visibleColumns = visibleColumnIndices()
 
         for visibleRow in 0..<visibleRowCount() {
             let actualRow = actualRow(forVisibleRow: visibleRow)
-            for col in 0..<columnCount {
-                guard let cell = gridView.cellAt(rowIndex: visibleRow, columnIndex: col) else { continue }
-                let type = (col < types.count) ? types[col] : .text
+            for (visibleCol, actualCol) in visibleColumns.enumerated() {
+                guard let cell = gridView.cellAt(rowIndex: visibleRow, columnIndex: visibleCol) else { continue }
+                let type = (actualCol < types.count) ? types[actualCol] : .text
                 if isTotalActualRow(actualRow) || (type == .formula && actualRow > 0) {
-                    cell.editor.attributedText = displayedCellAttributedText(atActualRow: actualRow, column: col, type: type)
+                    guard canAccessEditor(in: cell) else { continue }
+                    cell.editor.attributedText = displayedCellAttributedText(atActualRow: actualRow, column: actualCol, type: type)
                     applyAlignmentStyle(to: cell)
                 }
             }
+        }
+    }
+
+    private func refreshVisibleCells(afterEditingActualRow actualRow: Int) {
+        let types = currentColumnTypes()
+        let formulas = currentColumnFormulas()
+        for col in 0..<min(types.count, columnCount) where types[col] == .formula {
+            updateFormulaCell(atActualRow: actualRow, column: col, formula: (col < formulas.count) ? formulas[col] : "")
+        }
+        guard let visibleRow = visibleRow(forActualRow: actualRow) else {
+            refreshTotalVisibleCells(using: types)
+            return
+        }
+        for (visibleCol, actualCol) in visibleColumnIndices().enumerated() {
+            guard let cell = gridView.cellAt(rowIndex: visibleRow, columnIndex: visibleCol) else { continue }
+            let type = (actualCol < types.count) ? types[actualCol] : .text
+            if type == .formula {
+                guard canAccessEditor(in: cell) else { continue }
+                cell.editor.attributedText = displayedCellAttributedText(atActualRow: actualRow, column: actualCol, type: type)
+                applyAlignmentStyle(to: cell)
+            }
+        }
+        refreshTotalVisibleCells(using: types)
+    }
+
+    private func refreshTotalVisibleCells(using types: [NJTableColumnType]? = nil) {
+        guard totalsEnabled, let visibleTotalRow = visibleRow(forActualRow: totalRowActualIndex()) else { return }
+        let resolvedTypes = types ?? currentColumnTypes()
+        for (visibleCol, actualCol) in visibleColumnIndices().enumerated() {
+            guard let cell = gridView.cellAt(rowIndex: visibleTotalRow, columnIndex: visibleCol) else { continue }
+            let type = (actualCol < resolvedTypes.count) ? resolvedTypes[actualCol] : .text
+            guard canAccessEditor(in: cell) else { continue }
+            cell.editor.attributedText = displayedCellAttributedText(atActualRow: totalRowActualIndex(), column: actualCol, type: type)
+            applyAlignmentStyle(to: cell)
         }
     }
 
@@ -3234,6 +3582,9 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
     }
 
     private func baseTableFontSize() -> CGFloat {
+        if let cachedBaseFontSize {
+            return cachedBaseFontSize
+        }
         for row in 0..<max(1, rowCount) {
             for col in 0..<max(1, columnCount) {
                 let text = storedCellText(atActualRow: row, column: col)
@@ -3246,10 +3597,13 @@ final class NJTableAttachmentView: UIView, AttachmentViewIdentifying, Background
                     }
                 }
                 if let foundSize {
-                    return min(max(foundSize, Self.minimumTableFontSize), Self.maximumTableFontSize)
+                    let clamped = min(max(foundSize, Self.minimumTableFontSize), Self.maximumTableFontSize)
+                    cachedBaseFontSize = clamped
+                    return clamped
                 }
             }
         }
+        cachedBaseFontSize = 17
         return 17
     }
 
@@ -3554,27 +3908,49 @@ extension NJTableAttachmentView: UIContextMenuInteractionDelegate {
                 guard !isOnTotalRow else { return nil }
                 return UIMenu(title: "Rearrange Row", children: [moveRowUp, moveRowDown])
             }()
-            let identityMenu = UIMenu(title: "Table Identity", children: [
+            let identityMenu = UIMenu(title: "Identity", children: [
                 UIAction(title: self.tableDisplayReference(), attributes: [.disabled]) { _ in },
                 copyTableID,
                 copyTableReference,
                 renameTable
             ])
-            var children: [UIMenuElement] = [resizeColumn, rearrangeMenu, columnVisibilityMenu, columnTypeMenu, formulaMenu, addTotalRow]
-            if let rearrangeRowMenu {
-                children.append(rearrangeRowMenu)
-            }
-            if let totalMenu {
-                children.append(totalMenu)
-            }
-            if canToggleRowDone {
-                children.append(toggleRowDone)
-            }
-            children.append(contentsOf: [identityMenu, sortMenu, filterMenu, alignmentMenu, increaseTableFont, decreaseTableFont, toggleHideChecked, addRow, addColumn])
-            if !isOnTotalRow {
-                children.append(deleteRow)
-            }
-            children.append(contentsOf: [deleteColumn, copyTable, cutTable, deleteTable])
+            let structureMenu = UIMenu(title: "Structure", children: {
+                var items: [UIMenuElement] = [addRow, addColumn, resizeColumn, rearrangeMenu]
+                if let rearrangeRowMenu {
+                    items.append(rearrangeRowMenu)
+                }
+                if !isOnTotalRow {
+                    items.append(deleteRow)
+                }
+                items.append(deleteColumn)
+                return items
+            }())
+            let columnMenu = UIMenu(title: "Column", children: {
+                var items: [UIMenuElement] = [columnVisibilityMenu, alignmentMenu, columnTypeMenu, formulaMenu]
+                if let totalMenu {
+                    items.append(totalMenu)
+                }
+                return items
+            }())
+            let dataMenu = UIMenu(title: "Data", children: {
+                var items: [UIMenuElement] = [sortMenu, filterMenu, addTotalRow, toggleHideChecked]
+                if canToggleRowDone {
+                    items.append(toggleRowDone)
+                }
+                return items
+            }())
+            let viewMenu = UIMenu(title: "View", children: [increaseTableFont, decreaseTableFont])
+            let transferMenu = UIMenu(title: "Transfer", children: [copyTable, cutTable])
+            let dangerMenu = UIMenu(title: "Delete", options: .destructive, children: [deleteTable])
+            let children: [UIMenuElement] = [
+                structureMenu,
+                columnMenu,
+                dataMenu,
+                viewMenu,
+                transferMenu,
+                identityMenu,
+                dangerMenu
+            ]
             return UIMenu(title: "", children: children)
         }
     }
@@ -3806,6 +4182,7 @@ enum NJTableAttachmentFactory {
         attachmentID: String,
         config: GridConfiguration,
         cells: [GridCell]? = nil,
+        cellPayloads: [[String: Any]]? = nil,
         columnWidths: [CGFloat]? = nil,
         columnAlignments: [String]? = nil,
         columnTypes: [String]? = nil,
@@ -3826,6 +4203,7 @@ enum NJTableAttachmentFactory {
             attachmentID: attachmentID,
             config: config,
             cells: cells,
+            cellPayloads: cellPayloads,
             columnWidths: columnWidths,
             columnAlignments: columnAlignments,
             columnTypes: columnTypes,

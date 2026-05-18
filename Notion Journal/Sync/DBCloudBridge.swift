@@ -19,6 +19,10 @@ final class DBCloudBridge {
     let financeJournalLinkTable: DBFinanceJournalLinkTable
     let financeSourceItemTable: DBFinanceSourceItemTable
     let financeTransactionTable: DBFinanceTransactionTable
+    let investmentLedgerTransactionTable: DBInvestmentLedgerTransactionTable
+    let investmentChartDrawingTable: DBInvestmentChartDrawingTable
+    let investmentSymbolTable: DBInvestmentSymbolTable
+    let investmentSymbolRelationshipTable: DBInvestmentSymbolRelationshipTable
     let agentHeartbeatRunTable: DBAgentHeartbeatRunTable
     let agentBackfillTaskTable: DBAgentBackfillTaskTable
     let timeSlotTable: DBTimeSlotTable
@@ -45,6 +49,10 @@ final class DBCloudBridge {
         financeJournalLinkTable: DBFinanceJournalLinkTable,
         financeSourceItemTable: DBFinanceSourceItemTable,
         financeTransactionTable: DBFinanceTransactionTable,
+        investmentLedgerTransactionTable: DBInvestmentLedgerTransactionTable,
+        investmentChartDrawingTable: DBInvestmentChartDrawingTable,
+        investmentSymbolTable: DBInvestmentSymbolTable,
+        investmentSymbolRelationshipTable: DBInvestmentSymbolRelationshipTable,
         agentHeartbeatRunTable: DBAgentHeartbeatRunTable,
         agentBackfillTaskTable: DBAgentBackfillTaskTable,
         timeSlotTable: DBTimeSlotTable,
@@ -70,6 +78,10 @@ final class DBCloudBridge {
         self.financeJournalLinkTable = financeJournalLinkTable
         self.financeSourceItemTable = financeSourceItemTable
         self.financeTransactionTable = financeTransactionTable
+        self.investmentLedgerTransactionTable = investmentLedgerTransactionTable
+        self.investmentChartDrawingTable = investmentChartDrawingTable
+        self.investmentSymbolTable = investmentSymbolTable
+        self.investmentSymbolRelationshipTable = investmentSymbolRelationshipTable
         self.agentHeartbeatRunTable = agentHeartbeatRunTable
         self.agentBackfillTaskTable = agentBackfillTaskTable
         self.timeSlotTable = timeSlotTable
@@ -118,6 +130,14 @@ final class DBCloudBridge {
             return financeSourceItemTable.loadFields(sourceItemID: id)
         case "finance_transaction":
             return financeTransactionTable.loadFields(transactionID: id)
+        case "investment_ledger_transaction":
+            return investmentLedgerTransactionTable.loadFields(ledgerTransactionID: id)
+        case "investment_chart_drawing":
+            return investmentChartDrawingTable.loadFields(drawingID: id)
+        case "investment_symbol":
+            return investmentSymbolTable.loadFields(symbolID: id)
+        case "investment_symbol_relationship":
+            return investmentSymbolRelationshipTable.loadFields(relationshipID: id)
         case "agent_heartbeat_run":
             return agentHeartbeatRunTable.loadFields(runID: id)
         case "agent_backfill_task":
@@ -185,6 +205,14 @@ final class DBCloudBridge {
             financeSourceItemTable.applyRemote(fields)
         case "finance_transaction":
             financeTransactionTable.applyRemote(fields)
+        case "investment_ledger_transaction":
+            investmentLedgerTransactionTable.applyRemote(fields)
+        case "investment_chart_drawing":
+            investmentChartDrawingTable.applyRemote(fields)
+        case "investment_symbol":
+            investmentSymbolTable.applyRemote(fields)
+        case "investment_symbol_relationship":
+            investmentSymbolRelationshipTable.applyRemote(fields)
         case "agent_heartbeat_run":
             agentHeartbeatRunTable.applyRemote(fields)
         case "agent_backfill_task":
@@ -224,6 +252,8 @@ final class DBCloudBridge {
             "card_priority": n.cardPriority,
             "pinned": n.pinned,
             "favorited": n.favorited,
+            "pinned_updated_at_ms": n.pinnedUpdatedAtMs,
+            "favorited_updated_at_ms": n.favoritedUpdatedAtMs,
             "deleted": n.deleted
         ]
     }
@@ -248,11 +278,33 @@ final class DBCloudBridge {
         let cardPriority = (fields["card_priority"] as? String) ?? ""
         let pinned = int64Any(fields["pinned"])
         let favorited = int64Any(fields["favorited"])
+        let pinnedUpdatedAtMs = int64Any(fields["pinned_updated_at_ms"])
+        let favoritedUpdatedAtMs = int64Any(fields["favorited_updated_at_ms"])
         let deleted = int64Any(fields["deleted"])
 
         let existing = noteTable.getNote(NJNoteID(noteID))
+        let incomingPinnedClock = pinnedUpdatedAtMs > 0 ? pinnedUpdatedAtMs : updatedAt
+        let incomingFavoritedClock = favoritedUpdatedAtMs > 0 ? favoritedUpdatedAtMs : updatedAt
         if let existing {
+            let existingPinnedClock = existing.pinnedUpdatedAtMs
+            let existingFavoritedClock = existing.favoritedUpdatedAtMs
+            let mergedPinned = incomingPinnedClock > existingPinnedClock ? pinned : existing.pinned
+            let mergedPinnedUpdatedAtMs = max(existingPinnedClock, incomingPinnedClock)
+            let mergedFavorited = incomingFavoritedClock > existingFavoritedClock ? favorited : existing.favorited
+            let mergedFavoritedUpdatedAtMs = max(existingFavoritedClock, incomingFavoritedClock)
+
             if existing.updatedAtMs > updatedAt, updatedAt > 0 {
+                if mergedPinned != existing.pinned ||
+                    mergedPinnedUpdatedAtMs != existing.pinnedUpdatedAtMs ||
+                    mergedFavorited != existing.favorited ||
+                    mergedFavoritedUpdatedAtMs != existing.favoritedUpdatedAtMs {
+                    var note = existing
+                    note.pinned = mergedPinned
+                    note.pinnedUpdatedAtMs = mergedPinnedUpdatedAtMs
+                    note.favorited = mergedFavorited
+                    note.favoritedUpdatedAtMs = mergedFavoritedUpdatedAtMs
+                    noteTable.upsertNote(note)
+                }
                 return
             }
             if existing.updatedAtMs == updatedAt,
@@ -285,6 +337,12 @@ final class DBCloudBridge {
         }()
 
         let keepRTF = existing?.rtfData ?? noteTable.emptyRTF()
+        let existingPinnedClock = existing?.pinnedUpdatedAtMs ?? 0
+        let existingFavoritedClock = existing?.favoritedUpdatedAtMs ?? 0
+        let mergedPinned = incomingPinnedClock >= existingPinnedClock ? pinned : (existing?.pinned ?? pinned)
+        let mergedPinnedUpdatedAtMs = max(existingPinnedClock, incomingPinnedClock)
+        let mergedFavorited = incomingFavoritedClock >= existingFavoritedClock ? favorited : (existing?.favorited ?? favorited)
+        let mergedFavoritedUpdatedAtMs = max(existingFavoritedClock, incomingFavoritedClock)
 
         let note = NJNote(
             id: NJNoteID(noteID),
@@ -295,8 +353,10 @@ final class DBCloudBridge {
             title: title,
             rtfData: keepRTF,
             deleted: deleted,
-            pinned: pinned,
-            favorited: favorited,
+            pinned: mergedPinned,
+            favorited: mergedFavorited,
+            pinnedUpdatedAtMs: mergedPinnedUpdatedAtMs,
+            favoritedUpdatedAtMs: mergedFavoritedUpdatedAtMs,
             noteTypeRaw: noteTypeRaw,
             dominanceModeRaw: dominanceModeRaw,
             isChecklist: isChecklist,

@@ -464,17 +464,16 @@ private struct NJCalendarDateSheetTarget: Identifiable {
     var id: Int64 { Int64(date.timeIntervalSince1970 * 1000.0) }
 }
 
-private struct NJPlanningNoteSheetTarget: Identifiable {
-    let kind: String
-    let targetKey: String
-    let title: String
-    let protonJSON: String
-    var id: String { "\(kind):\(targetKey)" }
-}
-
 private struct NJCalendarDaySummaryTarget: Identifiable {
     let date: Date
     var id: Int64 { Int64(date.timeIntervalSince1970 * 1000.0) }
+}
+
+private struct NJCalendarWeeklyBlockEditorTarget: Identifiable {
+    let date: Date
+    let blockID: String
+
+    var id: String { blockID }
 }
 
 private struct NJCalendarDaySummaryData {
@@ -582,6 +581,7 @@ struct NJCalendarView: View {
     @State private var itemsByDate: [String: NJCalendarItem] = [:]
     @State private var healthByDate: [String: NJCalendarHealthDay] = [:]
     @State private var renewalItemsByDate: [String: [NJRenewalItemRecord]] = [:]
+    @State private var weeklyPreviewsByDate: [String: [String]] = [:]
     @State private var timeLogsByDate: [String: [NJTimeSlotRecord]] = [:]
     @State private var financeEventsByDate: [String: [NJFinanceMacroEvent]] = [:]
     @State private var financeBriefsByDate: [String: NJFinanceDailyBrief] = [:]
@@ -601,20 +601,15 @@ struct NJCalendarView: View {
     @State private var planExerciseTarget: NJCalendarDateSheetTarget? = nil
     @State private var showWeeklyWorkoutSheet = false
     @State private var weeklyWorkoutEntries: [NJWeeklyWorkoutEntry] = []
-    @State private var planningNoteTarget: NJPlanningNoteSheetTarget? = nil
     @State private var daySummaryTarget: NJCalendarDaySummaryTarget? = nil
-    @State private var planningNoteHandle = NJProtonEditorHandle()
-    @State private var planningNoteAttr = NSAttributedString(string: "")
-    @State private var planningNoteSel = NSRange(location: 0, length: 0)
-    @State private var planningNoteEditorHeight: CGFloat = 120
-    @State private var planningNotePickedPhotoItem: PhotosPickerItem? = nil
+    @State private var weeklyBlockEditorTarget: NJCalendarWeeklyBlockEditorTarget? = nil
     @State private var financeEditorTarget: NJFinanceEditorTarget? = nil
-    @State private var showPlanningClipboardPreviewSheet = false
-    @State private var planningClipboardDrafts: [NJPlanningClipboardDraft] = []
     @State private var showTrainingPlanImporter = false
     @State private var trainingExportTarget: NJCalendarExportTarget? = nil
     @State private var trainingAlertMessage = ""
     @State private var showTrainingAlert = false
+    @State private var calendarAlertMessage = ""
+    @State private var showCalendarAlert = false
     @State private var financeAlertMessage = ""
     @State private var showFinanceAlert = false
     @State private var showFinanceDataImporter = false
@@ -770,28 +765,22 @@ struct NJCalendarView: View {
                 onDeleteWorkout: deleteWorkoutEntry
             )
         }
-        .sheet(item: $planningNoteTarget) { target in
-            NJPlanningNoteSheet(
-                title: target.title,
-                handle: planningNoteHandle,
-                initialAttributedText: planningNoteAttr,
-                initialSelectedRange: planningNoteSel,
-                initialProtonJSON: target.protonJSON,
-                snapshotAttributedText: $planningNoteAttr,
-                snapshotSelectedRange: $planningNoteSel,
-                measuredHeight: $planningNoteEditorHeight,
-                pickedPhotoItem: $planningNotePickedPhotoItem,
-                onSave: { plainText, protonJSON in
-                    savePlanningNote(kind: target.kind, targetKey: target.targetKey, text: plainText, protonJSON: protonJSON)
-                }
-            )
-            .id(target.id)
-        }
         .sheet(item: $daySummaryTarget) { target in
             NJCalendarDaySummarySheet(
                 date: target.date,
                 loadSummary: { await generateDaySummary(for: target.date) }
             )
+        }
+        .sheet(item: $weeklyBlockEditorTarget) { target in
+            NJReconstructedNoteView(
+                spec: .custom(
+                    title: weeklyBlockEditorTitle(for: target.date),
+                    ids: [target.blockID],
+                    limit: 1,
+                    newestFirst: false
+                )
+            )
+            .environmentObject(store)
         }
         .sheet(item: $financeEditorTarget) { target in
             NJFinanceDaySheet(
@@ -815,16 +804,15 @@ struct NJCalendarView: View {
                 )
             }
         }
-        .sheet(isPresented: $showPlanningClipboardPreviewSheet) {
-            NJPlanningClipboardPreviewSheet(
-                drafts: planningClipboardDrafts,
-                onSubmit: { submitWeekPlanningPreviewToClipboard() }
-            )
-        }
         .alert("Training Plan", isPresented: $showTrainingAlert) {
             Button("OK", role: .cancel) {}
         } message: {
             Text(trainingAlertMessage)
+        }
+        .alert("Calendar", isPresented: $showCalendarAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(calendarAlertMessage)
         }
         .alert("Finance", isPresented: $showFinanceAlert) {
             Button("OK", role: .cancel) {}
@@ -1092,6 +1080,7 @@ struct NJCalendarView: View {
         let item = itemsByDate[key]
         let events = eventsByDate[key] ?? []
         let renewals = renewalItemsByDate[key] ?? []
+        let weeklyPreviewLines = weeklyPreviewsByDate[key] ?? []
         let isSelected = calendar.isDate(date, inSameDayAs: selectedDate)
         let isInMonth = calendar.isDate(date, equalTo: focusedDate, toGranularity: .month)
         let textColor: Color = isInMonth ? .primary : .secondary
@@ -1164,17 +1153,16 @@ struct NJCalendarView: View {
                     weatherBadgeView(weatherBadge, isWeekly: isWeekly)
                 }
 
-                let planningPreviewTitle: String = {
-                    guard isWeekly, contentMode == .memory else { return "" }
-                    return calendar.component(.weekday, from: date) == 1 ? "WEEKLY PLANNING NOTE" : "PLANNING NOTE"
-                }()
-
-                let planningPreviewLines: [String] = {
-                    guard isWeekly, contentMode == .memory else { return [] }
-                    return calendar.component(.weekday, from: date) == 1
-                        ? weeklyPlanningPreviewLines(for: date)
-                        : dayPlanningPreviewLines(for: date)
-                }()
+                if isWeekly, contentMode == .memory, !weeklyPreviewLines.isEmpty {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(Array(weeklyPreviewLines.prefix(5).enumerated()), id: \.offset) { _, line in
+                            Text(line)
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                }
 
                 if !events.isEmpty || !renewals.isEmpty {
                     if contentMode == .memory {
@@ -1190,42 +1178,14 @@ struct NJCalendarView: View {
                                 .lineLimit(1)
                                 .foregroundStyle(.secondary)
                         }
-                        if !planningPreviewLines.isEmpty {
-                            Divider()
-                                .padding(.top, 2)
-                            Text(planningPreviewTitle)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                            ForEach(Array(planningPreviewLines.prefix(3).enumerated()), id: \.offset) { _, line in
-                                Text(line)
-                                    .font(.caption)
-                                    .lineLimit(1)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
                     } else {
                         contentSummaryView(date: date, isWeekly: isWeekly)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     }
                 } else {
                     if contentMode == .memory {
-                        if !planningPreviewLines.isEmpty {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(planningPreviewTitle)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                ForEach(Array(planningPreviewLines.prefix(4).enumerated()), id: \.offset) { _, line in
-                                    Text(line)
-                                        .font(.caption)
-                                        .lineLimit(1)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                        } else {
-                            Text(" ")
-                                .font(.caption2)
-                        }
+                        Text(" ")
+                            .font(.caption2)
                     } else {
                         contentSummaryView(date: date, isWeekly: isWeekly)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -1248,9 +1208,9 @@ struct NJCalendarView: View {
             if isWeekly, contentMode == .memory, isFutureDate(date) {
                 Button {
                     activateDate(date)
-                    openDayPlanningNoteEditor(for: date)
+                    openWeeklyBlockEditor(for: date)
                 } label: {
-                    Image(systemName: hasPlanningNote(kind: "daily", targetKey: key) ? "note.text" : "note.text.badge.plus")
+                    Image(systemName: "square.and.pencil")
                         .font(.system(size: 12, weight: .semibold))
                         .padding(6)
                         .background(Color(UIColor.systemBackground).opacity(0.92))
@@ -1272,9 +1232,9 @@ struct NJCalendarView: View {
                     openDaySummary(for: date)
                 }
                 if displayMode == .month, isFutureDate(date) {
-                    Button("Edit Day Planning Note") {
+                    Button("Create Future Weekly Note") {
                         activateDate(date)
-                        openDayPlanningNoteEditor(for: date)
+                        openWeeklyBlockEditor(for: date)
                     }
                 }
                 if hasSavedPhoto(item) {
@@ -1341,6 +1301,7 @@ struct NJCalendarView: View {
         let items = store.notes.listCalendarItems(startKey: startKey, endKey: endKey)
         itemsByDate = Dictionary(uniqueKeysWithValues: items.map { ($0.dateKey, $0) })
         reloadRenewalsForVisibleRange(startKey: startKey, endKey: endKey)
+        reloadWeeklyPreviewsForVisibleRange(start: start, end: end)
         for item in items where !item.photoAttachmentID.isEmpty {
             ensureThumbCached(attachmentID: item.photoAttachmentID, dateKey: item.dateKey)
         }
@@ -1350,6 +1311,69 @@ struct NJCalendarView: View {
         reloadFinanceForVisibleRange(start: start, end: end)
         reloadPlansForVisibleRange(start: start, end: end)
         recomputeMatchedTrainingResults(start: start, end: end)
+    }
+
+    private func reloadWeeklyPreviewsForVisibleRange(start: Date, end: Date) {
+        let startDay = calendar.startOfDay(for: start)
+        let endExclusive = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: end)) ?? end
+        let startMs = Int64((startDay.timeIntervalSince1970 * 1000.0).rounded())
+        let endMs = Int64((endExclusive.timeIntervalSince1970 * 1000.0).rounded())
+
+        let rows = store.db.queryRows("""
+        SELECT date(b.created_at_ms / 1000, 'unixepoch', 'localtime') AS day_key,
+               b.payload_json
+        FROM nj_block b
+        JOIN nj_note_block nb
+          ON nb.block_id = b.block_id
+         AND nb.deleted = 0
+        JOIN nj_note n
+          ON n.note_id = nb.note_id
+         AND n.deleted = 0
+        WHERE b.deleted = 0
+          AND b.created_at_ms >= \(startMs)
+          AND b.created_at_ms < \(endMs)
+          AND (
+            EXISTS (
+              SELECT 1
+              FROM nj_block_tag t
+              WHERE t.block_id = b.block_id
+                AND t.tag = '#WEEKLY' COLLATE NOCASE
+            )
+            OR LOWER(COALESCE(b.tag_json, '')) LIKE '%#weekly%'
+            OR LOWER(COALESCE(b.payload_json, '')) LIKE '%#weekly%'
+          )
+        ORDER BY b.created_at_ms ASC, nb.order_key ASC;
+        """)
+
+        var previews: [String: [String]] = [:]
+        for row in rows {
+            let key = row["day_key"] ?? ""
+            guard !key.isEmpty, previews[key] == nil else { continue }
+            let lines = weeklyCalendarPreviewLines(from: row["payload_json"] ?? "")
+            if !lines.isEmpty {
+                previews[key] = lines
+            }
+        }
+        weeklyPreviewsByDate = previews
+    }
+
+    private func weeklyCalendarPreviewLines(from payloadJSON: String) -> [String] {
+        let lines = NJQuickNotePayload.plainText(from: payloadJSON)
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        return lines.filter { line in
+            !isWeeklyPreviewMetadataLine(line)
+        }
+    }
+
+    private func isWeeklyPreviewMetadataLine(_ line: String) -> Bool {
+        let lowered = line.lowercased()
+        if lowered == "#weekly" || line == "-" { return true }
+        if line.range(of: #"^\(\d{8}\) .+ - Daily( Focus)?$"#, options: .regularExpression) != nil { return true }
+        if line.range(of: #"^\(\d{8}\) Weekly Focus$"#, options: .regularExpression) != nil { return true }
+        return false
     }
 
     private func syncSelectedItem() {
@@ -3835,29 +3859,16 @@ struct NJCalendarView: View {
                         .contentShape(Rectangle())
                     if contentMode == .memory {
                         Button {
-                            openWeekPlanningNoteEditor(for: focusedDate)
+                            openWeeklyBlockEditor(for: focusedDate)
                         } label: {
-                            let targetKey = weekPlanningTargetKey(for: focusedDate)
-                            Image(systemName: hasPlanningNote(kind: "weekly", targetKey: targetKey) ? "note.text" : "note.text.badge.plus")
+                            Image(systemName: "square.and.pencil")
                                 .font(.subheadline)
                                 .frame(width: 30, height: 30)
                                 .background(Color(UIColor.systemBackground).opacity(0.9))
                                 .clipShape(RoundedRectangle(cornerRadius: 7))
                         }
                         .buttonStyle(.plain)
-                        .disabled(!canOpenWeekPlanningNote(for: focusedDate))
-
-                        Button {
-                            openWeekPlanningClipboardPreview(for: focusedDate)
-                        } label: {
-                            Image(systemName: "doc.on.clipboard")
-                                .font(.subheadline)
-                                .frame(width: 30, height: 30)
-                                .background(Color(UIColor.systemBackground).opacity(0.9))
-                                .clipShape(RoundedRectangle(cornerRadius: 7))
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(!canOpenWeekPlanningNote(for: focusedDate))
+                        .disabled(!isFutureDate(focusedDate))
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -3884,34 +3895,6 @@ struct NJCalendarView: View {
             return formatter.string(from: date)
         }
         return "\(formatter.string(from: start))  –  \(formatter.string(from: endDate))"
-    }
-
-    private func weeklyPlanningPreviewLines(for date: Date) -> [String] {
-        let key = weekPlanningTargetKey(for: date)
-        guard let row = store.notes.planningNote(kind: "weekly", targetKey: key) else { return [] }
-        let protonLines = summaryLineItems(from: attributedTextFromProtonJSON(row.protonJSON))
-        if !protonLines.isEmpty { return protonLines }
-
-        let plainLines = row.note
-            .split(whereSeparator: \.isNewline)
-            .map(String.init)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-        return Array(plainLines.prefix(6))
-    }
-
-    private func dayPlanningPreviewLines(for date: Date) -> [String] {
-        let key = dateKey(date)
-        guard let row = store.notes.planningNote(kind: "daily", targetKey: key) else { return [] }
-        let protonLines = summaryLineItems(from: attributedTextFromProtonJSON(row.protonJSON))
-        if !protonLines.isEmpty { return protonLines }
-
-        let plainLines = row.note
-            .split(whereSeparator: \.isNewline)
-            .map(String.init)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-        return Array(plainLines.prefix(6))
     }
 
     private func weekRange(for date: Date) -> (Date, Date)? {
@@ -4403,54 +4386,6 @@ struct NJCalendarView: View {
         }
     }
 
-    private func weekPlanningTargetKey(for date: Date) -> String {
-        DBNoteRepository.sundayWeekStartKey(for: date)
-    }
-
-    private func hasPlanningNote(kind: String, targetKey: String) -> Bool {
-        guard !targetKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
-        let text = store.notes.planningNote(kind: kind, targetKey: targetKey)?.note ?? ""
-        return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    private func openDayPlanningNoteEditor(for date: Date) {
-        guard isFutureDate(date) else { return }
-        let key = dateKey(date)
-        let row = store.notes.planningNote(kind: "daily", targetKey: key)
-        let text = row?.note ?? ""
-        let protonJSON = row?.protonJSON ?? ""
-        planningNoteHandle = makePlanningNoteHandle()
-        planningNoteAttr = planningNoteInitialAttr(text: text, protonJSON: protonJSON, handle: planningNoteHandle)
-        planningNoteSel = NSRange(location: 0, length: 0)
-        planningNoteEditorHeight = 120
-        planningNotePickedPhotoItem = nil
-        planningNoteTarget = NJPlanningNoteSheetTarget(
-            kind: "daily",
-            targetKey: key,
-            title: "Day Planning Note (\(formattedDate(date)))",
-            protonJSON: protonJSON
-        )
-    }
-
-    private func openWeekPlanningNoteEditor(for date: Date) {
-        guard canOpenWeekPlanningNote(for: date) else { return }
-        let key = weekPlanningTargetKey(for: date)
-        let row = store.notes.planningNote(kind: "weekly", targetKey: key)
-        let text = row?.note ?? ""
-        let protonJSON = row?.protonJSON ?? ""
-        planningNoteHandle = makePlanningNoteHandle()
-        planningNoteAttr = planningNoteInitialAttr(text: text, protonJSON: protonJSON, handle: planningNoteHandle)
-        planningNoteSel = NSRange(location: 0, length: 0)
-        planningNoteEditorHeight = 120
-        planningNotePickedPhotoItem = nil
-        planningNoteTarget = NJPlanningNoteSheetTarget(
-            kind: "weekly",
-            targetKey: key,
-            title: "Week Planning Note (\(weekRangeTitle(for: date)))",
-            protonJSON: protonJSON
-        )
-    }
-
     private func openPhotoPicker(for date: Date) {
         activateDate(date)
         photoPickerTarget = NJCalendarDateSheetTarget(date: date)
@@ -4469,6 +4404,64 @@ struct NJCalendarView: View {
     private func openDaySummary(for date: Date) {
         activateDate(date)
         daySummaryTarget = NJCalendarDaySummaryTarget(date: date)
+    }
+
+    private func openWeeklyBlockEditor(for date: Date) {
+        activateDate(date)
+
+        if weeklyBlockID(for: date) == nil, isFutureDate(date) {
+            _ = store.createFutureWeeklyCalendarNote(for: date)
+            reloadItemsForVisibleRange()
+        }
+
+        guard let blockID = weeklyBlockID(for: date) else {
+            calendarAlertMessage = "No #WEEKLY block exists for \(dateKey(date))."
+            showCalendarAlert = true
+            return
+        }
+
+        weeklyBlockEditorTarget = NJCalendarWeeklyBlockEditorTarget(date: date, blockID: blockID)
+    }
+
+    private func weeklyBlockID(for date: Date) -> String? {
+        let start = calendar.startOfDay(for: date)
+        let end = calendar.date(byAdding: .day, value: 1, to: start) ?? start
+        let startMs = Int64((start.timeIntervalSince1970 * 1000.0).rounded())
+        let endMs = Int64((end.timeIntervalSince1970 * 1000.0).rounded())
+        let rows = store.db.queryRows("""
+        SELECT b.block_id
+        FROM nj_block b
+        JOIN nj_note_block nb
+          ON nb.block_id = b.block_id
+         AND nb.deleted = 0
+        JOIN nj_note n
+          ON n.note_id = nb.note_id
+         AND n.deleted = 0
+        WHERE b.deleted = 0
+          AND b.created_at_ms >= \(startMs)
+          AND b.created_at_ms < \(endMs)
+          AND (
+            EXISTS (
+              SELECT 1
+              FROM nj_block_tag t
+              WHERE t.block_id = b.block_id
+                AND t.tag = '#WEEKLY' COLLATE NOCASE
+            )
+            OR LOWER(COALESCE(b.tag_json, '')) LIKE '%#weekly%'
+            OR LOWER(COALESCE(b.payload_json, '')) LIKE '%#weekly%'
+          )
+        ORDER BY b.created_at_ms ASC, nb.order_key ASC
+        LIMIT 1;
+        """)
+        let blockID = rows.first?["block_id"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return blockID.isEmpty ? nil : blockID
+    }
+
+    private func weeklyBlockEditorTitle(for date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale.current
+        formatter.setLocalizedDateFormatFromTemplate("EEE MMM d")
+        return "\(formatter.string(from: date)) #WEEKLY"
     }
 
     private func saveFinanceDay(date: Date, events: [NJFinanceMacroEvent], brief: NJFinanceDailyBrief?) {
@@ -4515,51 +4508,6 @@ struct NJCalendarView: View {
         store.sync.schedulePush(debounceMs: 0)
     }
 
-    private func savePlanningNote(kind: String, targetKey: String, text: String, protonJSON: String) {
-        let now = DBNoteRepository.nowMs()
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            store.notes.deletePlanningNote(kind: kind, targetKey: targetKey, nowMs: now)
-            return
-        }
-        store.notes.upsertPlanningNote(kind: kind, targetKey: targetKey, note: trimmed, protonJSON: protonJSON, nowMs: now)
-    }
-
-    private func makePlanningNoteHandle() -> NJProtonEditorHandle {
-        let h = NJProtonEditorHandle()
-        h.attachmentResolver = { [weak store] id in
-            store?.notes.attachmentByID(id)
-        }
-        h.attachmentThumbPathCleaner = { [weak store] id in
-            store?.notes.clearAttachmentThumbPath(attachmentID: id, nowMs: DBNoteRepository.nowMs())
-        }
-        h.onOpenFullPhoto = { id in
-            NJPhotoLibraryPresenter.presentFullPhoto(localIdentifier: id)
-        }
-        return h
-    }
-
-    private func planningNoteInitialAttr(text: String, protonJSON: String, handle: NJProtonEditorHandle) -> NSAttributedString {
-        let trimmedProton = protonJSON.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedProton.isEmpty {
-            let decoded = handle.attributedStringFromProtonJSONString(trimmedProton)
-            let visible = decoded.string
-                .replacingOccurrences(of: "\u{FFFC}", with: "")
-                .replacingOccurrences(of: "\u{200B}", with: "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !visible.isEmpty {
-                return decoded
-            }
-        }
-        return NSAttributedString(string: text)
-    }
-
-    private func canOpenWeekPlanningNote(for date: Date) -> Bool {
-        let today = calendar.startOfDay(for: Date())
-        guard let week = calendar.dateInterval(of: .weekOfYear, for: date) else { return false }
-        return week.end > today
-    }
-
     private func generateDaySummary(for date: Date) async -> NJCalendarDaySummaryData {
         let sourceText = buildDaySummarySourceText(for: date)
         let result = await NJAppleIntelligenceSummarizer.summarizeAuto(text: sourceText)
@@ -4579,7 +4527,6 @@ struct NJCalendarView: View {
             ("Reflection Notes", dayReflectionNoteLines(for: date)),
             ("Journal Entries", dayJournalEntryLines(for: date)),
             ("Completed Weekly Items", completedWeeklyTaggedItems(for: date)),
-            ("Completed Planning Items", completedPlanningItems(for: date)),
             ("GPS / Movement", dayGPSSummaryLines(for: date)),
             ("Workouts", dayWorkoutSummaryLines(for: date)),
             ("Health", dayHealthSummaryLines(for: date))
@@ -4674,22 +4621,6 @@ struct NJCalendarView: View {
         }
     }
 
-    private func completedPlanningItems(for date: Date) -> [String] {
-        let dayKey = dateKey(date)
-        let weekKey = weekPlanningTargetKey(for: date)
-        let daily = store.notes.planningNote(kind: "daily", targetKey: dayKey)
-        let weekly = store.notes.planningNote(kind: "weekly", targetKey: weekKey)
-
-        var out: [String] = []
-        if let daily {
-            out.append(contentsOf: struckLineItems(fromProtonJSON: daily.protonJSON).map { "Daily plan: \($0)" })
-        }
-        if let weekly {
-            out.append(contentsOf: struckLineItems(fromProtonJSON: weekly.protonJSON).map { "Weekly plan: \($0)" })
-        }
-        return out
-    }
-
     private func dayWorkoutSummaryLines(for date: Date) -> [String] {
         let start = calendar.startOfDay(for: date)
         let end = calendar.date(byAdding: .day, value: 1, to: start) ?? start
@@ -4777,10 +4708,6 @@ struct NJCalendarView: View {
             return DBNoteRepository.decodeAttributedTextFromRTFBase64(proton.rtf_base64)
         }
         return NSAttributedString(string: NJQuickNotePayload.plainText(from: payloadJSON))
-    }
-
-    private func struckLineItems(fromProtonJSON protonJSON: String) -> [String] {
-        struckLineItems(from: attributedTextFromProtonJSON(protonJSON))
     }
 
     private func attributedTextFromProtonJSON(_ protonJSON: String) -> NSAttributedString {
@@ -5022,165 +4949,6 @@ struct NJCalendarView: View {
         return String(format: "lat %.3f, lon %.3f", lat, lon)
     }
 
-    private func openWeekPlanningClipboardPreview(for date: Date) {
-        planningClipboardDrafts = buildWeekPlanningClipboardDrafts(for: date)
-        showPlanningClipboardPreviewSheet = true
-    }
-
-    private func submitWeekPlanningPreviewToClipboard() {
-        for draft in planningClipboardDrafts {
-            store.createQuickNoteToClipboard(
-                payloadJSON: draft.payloadJSON,
-                createdAtMs: draft.createdAtMs,
-                tags: draft.tags
-            )
-        }
-        showPlanningClipboardPreviewSheet = false
-    }
-
-    private func buildWeekPlanningClipboardDrafts(for date: Date) -> [NJPlanningClipboardDraft] {
-        guard let sunday = sundayDate(for: date) else { return [] }
-        let weekKey = dateKey(sunday)
-        let weekKeyCompact = compactDateKey(from: weekKey)
-        var drafts: [NJPlanningClipboardDraft] = []
-
-        let weeklyPlanning = store.notes.planningNote(kind: "weekly", targetKey: weekKey)
-        let weeklyNote = weeklyPlanning?.note ?? ""
-        let weeklyProtonJSON = weeklyPlanning?.protonJSON ?? ""
-        let weeklyTitle = "(\(weekKeyCompact)) Weekly Focus"
-        var weeklySummaryLines: [String] = []
-        var weeklyPlanLines: [String] = []
-        for dayOffset in 1...6 {
-            guard let day = calendar.date(byAdding: .day, value: dayOffset, to: sunday) else { continue }
-            let key = dateKey(day)
-            let plans = plannedByDate[key] ?? []
-            for p in plans {
-                let weekdayShort = shortWeekdayName(day)
-                let notes = p.notes.trimmingCharacters(in: .whitespacesAndNewlines)
-                weeklyPlanLines.append(
-                    "\(weekdayShort): \(p.sport) \(fmtNum(p.targetDistanceKm))km / \(fmtNum(p.targetDurationMin))m\(notes.isEmpty ? "" : " - \(notes)")"
-                )
-            }
-        }
-        weeklySummaryLines.append("Weekly Block")
-        if !weeklyPlanLines.isEmpty {
-            weeklySummaryLines.append("Planned Activities")
-            weeklySummaryLines.append(contentsOf: weeklyPlanLines)
-        }
-        let weeklySummaryBody = joinedLines(weeklySummaryLines)
-        let weeklyPreviewBody = joinedLines([weeklySummaryBody, weeklyNote])
-        let weeklyPayloadBody = weeklyProtonJSON.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? weeklyPreviewBody
-            : weeklySummaryBody
-        drafts.append(
-            NJPlanningClipboardDraft(
-                title: weeklyTitle,
-                body: weeklyPreviewBody,
-                createdAtMs: msAtNoon(for: sunday),
-                tags: ["#WEEKLY"],
-                payloadJSON: makePlanningClipboardPayload(
-                    title: weeklyTitle,
-                    body: weeklyPayloadBody,
-                    protonJSONBody: weeklyProtonJSON
-                )
-            )
-        )
-
-        for dayOffset in 1...6 {
-            guard let day = calendar.date(byAdding: .day, value: dayOffset, to: sunday) else { continue }
-            let dayKey = dateKey(day)
-            let dayCompact = compactDateKey(from: dayKey)
-            let weekdayShort = shortWeekdayName(day)
-            let dayPlanningRow = store.notes.planningNote(kind: "daily", targetKey: dayKey)
-            let dayPlanning = dayPlanningRow?.note ?? ""
-            let dayPlanningProtonJSON = dayPlanningRow?.protonJSON ?? ""
-            let calendarItem = store.notes.calendarItem(dateKey: dayKey)?.title ?? ""
-            let eventTitles = (eventsByDate[dayKey] ?? [])
-                .map { $0.title.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-            let renewalLines = (renewalItemsByDate[dayKey] ?? []).map { renewalCalendarLine(for: $0) }
-            var mergedEventLines: [String] = []
-            if !calendarItem.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                mergedEventLines.append(calendarItem.trimmingCharacters(in: .whitespacesAndNewlines))
-            }
-            for line in renewalLines where !mergedEventLines.contains(line) {
-                mergedEventLines.append(line)
-            }
-            for t in eventTitles where !mergedEventLines.contains(t) {
-                mergedEventLines.append(t)
-            }
-
-            let plans = plannedByDate[dayKey] ?? []
-            let planLines: [String] = plans.map {
-                "Planned: \($0.sport) \(fmtNum($0.targetDistanceKm))km / \(fmtNum($0.targetDurationMin))m\($0.notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : " - \($0.notes)")"
-            }
-
-            let health = healthByDate[dayKey] ?? NJCalendarHealthDay()
-            var healthLines: [String] = []
-            if health.sleepHours > 0 { healthLines.append("Sleep: \(fmtNum(health.sleepHours)) h") }
-            if health.workoutCount > 0 { healthLines.append("Workout done: \(fmtNum(health.workoutDistanceKm)) km / \(fmtNum(health.workoutDurationMin)) min") }
-            if let s = health.avgSystolic, let d = health.avgDiastolic { healthLines.append("BP: \(Int(s))/\(Int(d))") }
-            if health.medDoseCount > 0 { healthLines.append("Medication: logged") }
-
-            let dailyTitle = "(\(dayCompact)) \(weekdayShort) - Daily Focus"
-            let dailySummaryLines: [String] = [
-                joinedLines(mergedEventLines),
-                joinedLines(healthLines),
-                joinedLines(planLines)
-            ]
-            let dailySummaryBody = joinedLines(dailySummaryLines)
-            let dailyPreviewBody = joinedLines([dailySummaryBody, dayPlanning])
-            let dailyPayloadBody = dayPlanningProtonJSON.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                ? dailyPreviewBody
-                : dailySummaryBody
-            drafts.append(
-                NJPlanningClipboardDraft(
-                    title: dailyTitle,
-                    body: dailyPreviewBody,
-                    createdAtMs: msAtNoon(for: day),
-                    tags: ["#WEEKLY"],
-                    payloadJSON: makePlanningClipboardPayload(
-                        title: dailyTitle,
-                        body: dailyPayloadBody,
-                        protonJSONBody: dayPlanningProtonJSON
-                    )
-                )
-            )
-        }
-        return drafts
-    }
-
-    private func sundayDate(for date: Date) -> Date? {
-        let key = DBNoteRepository.sundayWeekStartKey(for: date, calendar: calendar)
-        return dateFromKey(key)
-    }
-
-    private func dateFromKey(_ key: String) -> Date? {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = calendar.timeZone
-        f.dateFormat = "yyyy-MM-dd"
-        return f.date(from: key)
-    }
-
-    private func compactDateKey(from key: String) -> String {
-        key.replacingOccurrences(of: "-", with: "")
-    }
-
-    private func shortWeekdayName(_ date: Date) -> String {
-        let f = DateFormatter()
-        f.locale = Locale.current
-        f.dateFormat = "EEE"
-        return f.string(from: date)
-    }
-
-    private func joinedLines(_ lines: [String]) -> String {
-        lines
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .joined(separator: "\n")
-    }
-
     private func uniquedPreservingOrder(_ values: [String]) -> [String] {
         var seen = Set<String>()
         var out: [String] = []
@@ -5190,46 +4958,6 @@ struct NJCalendarView: View {
             }
         }
         return out
-    }
-
-    private func makePlanningClipboardPayload(title: String, body: String, protonJSONBody: String = "") -> String {
-        let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let cleanBody = body.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleanTitle.isEmpty else { return NJQuickNotePayload.makePayloadJSON(from: cleanBody) }
-
-        let titleAttr = NSAttributedString(
-            string: cleanTitle,
-            attributes: [.font: UIFont.systemFont(ofSize: 18, weight: .semibold)]
-        )
-
-        let full = NSMutableAttributedString(attributedString: titleAttr)
-        if !cleanBody.isEmpty {
-            let bodyAttr = NSAttributedString(
-                string: "\n\(cleanBody)",
-                attributes: [.font: UIFont.systemFont(ofSize: 17, weight: .regular)]
-            )
-            full.append(bodyAttr)
-        }
-
-        let trimmedProton = protonJSONBody.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedProton.isEmpty {
-            let protonHandle = NJProtonEditorHandle()
-            let protonAttr = protonHandle.attributedStringFromProtonJSONString(trimmedProton)
-            if protonAttr.length > 0 {
-                full.append(NSAttributedString(string: "\n\n"))
-                full.append(protonAttr)
-            }
-        }
-
-        let rtfBase64 = DBNoteRepository.encodeRTFBase64FromAttributedText(full)
-        let protonJSON = NJProtonEditorHandle().exportProtonJSONString(from: full)
-        return NJQuickNotePayload.makePayloadJSON(protonJSON: protonJSON, rtfBase64: rtfBase64)
-    }
-
-    private func msAtNoon(for date: Date) -> Int64 {
-        let start = calendar.startOfDay(for: date)
-        let noon = calendar.date(byAdding: .hour, value: 12, to: start) ?? start
-        return Int64(noon.timeIntervalSince1970 * 1000.0)
     }
 
     private func miniMonthView() -> some View {
@@ -5635,61 +5363,6 @@ private struct NJPhotoAssetThumb: View {
     }
 }
 
-private struct NJPlanningClipboardDraft: Identifiable {
-    let id = UUID()
-    let title: String
-    let body: String
-    let createdAtMs: Int64
-    let tags: [String]
-    let payloadJSON: String
-
-    var fullText: String {
-        if body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return title
-        }
-        return "\(title)\n\(body)"
-    }
-}
-
-private struct NJPlanningClipboardPreviewSheet: View {
-    let drafts: [NJPlanningClipboardDraft]
-    let onSubmit: () -> Void
-
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            List {
-                ForEach(Array(drafts.enumerated()), id: \.element.id) { idx, draft in
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("\(idx + 1). \(draft.title)")
-                            .font(.headline)
-                        Text(draft.body.isEmpty ? "(empty)" : draft.body)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                    }
-                    .padding(.vertical, 4)
-                }
-            }
-            .navigationTitle("Clipboard Preview")
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Submit") {
-                        onSubmit()
-                        dismiss()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(drafts.isEmpty)
-                }
-            }
-        }
-    }
-}
-
 private struct NJCalendarDaySummarySheet: View {
     let date: Date
     let loadSummary: () async -> NJCalendarDaySummaryData
@@ -5785,73 +5458,6 @@ private struct NJCalendarDaySummarySheet: View {
         formatter.locale = Locale.current
         formatter.dateStyle = .full
         return formatter.string(from: date)
-    }
-}
-
-private struct NJPlanningNoteSheet: View {
-    let title: String
-    let handle: NJProtonEditorHandle
-    let initialAttributedText: NSAttributedString
-    let initialSelectedRange: NSRange
-    let initialProtonJSON: String
-    @Binding var snapshotAttributedText: NSAttributedString
-    @Binding var snapshotSelectedRange: NSRange
-    @Binding var measuredHeight: CGFloat
-    @Binding var pickedPhotoItem: PhotosPickerItem?
-    let onSave: (String, String) -> Void
-
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            VStack(spacing: 12) {
-                NJProtonEditorView(
-                    initialAttributedText: initialAttributedText,
-                    initialSelectedRange: initialSelectedRange,
-                    snapshotAttributedText: $snapshotAttributedText,
-                    snapshotSelectedRange: $snapshotSelectedRange,
-                    measuredHeight: $measuredHeight,
-                    handle: handle
-                )
-                .frame(minHeight: measuredHeight)
-                .padding(10)
-                .background(Color(UIColor.secondarySystemBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-                Spacer()
-            }
-            .padding(16)
-            .navigationTitle(title)
-            .navigationBarTitleDisplayMode(.inline)
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                NJProtonFloatingFormatBar(handle: handle, pickedPhotoItem: $pickedPhotoItem)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
-                    .background(.ultraThinMaterial)
-            }
-            .onAppear {
-                if !initialProtonJSON.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    handle.hydrateFromProtonJSONString(initialProtonJSON)
-                }
-            }
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Save") {
-                        handle.snapshot()
-                        let attr = handle.editor?.attributedText ?? snapshotAttributedText
-                        let plain = attr.string.trimmingCharacters(in: .whitespacesAndNewlines)
-                        let exported = handle.exportProtonJSONString()
-                        let proton = exported.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                            ? handle.exportProtonJSONString(from: attr)
-                            : exported
-                        onSave(plain, proton)
-                        dismiss()
-                    }
-                }
-            }
-        }
     }
 }
 

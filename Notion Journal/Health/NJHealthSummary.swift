@@ -409,7 +409,7 @@ enum NJHealthSummary {
         return f.string(from: d)
     }
 
-    private static func fmtNum(_ v: Double) -> String {
+    private nonisolated static func fmtNum(_ v: Double) -> String {
         let f = NumberFormatter()
         f.minimumFractionDigits = 0
         f.maximumFractionDigits = 1

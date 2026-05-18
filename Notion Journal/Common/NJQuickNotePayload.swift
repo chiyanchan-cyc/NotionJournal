@@ -36,10 +36,12 @@ enum NJQuickNotePayload {
             let proton = try? v1.proton1Data()
         else { return "" }
 
-        let rtfBase64 = proton.rtf_base64
-        guard !rtfBase64.isEmpty else { return "" }
+        if !proton.proton_json.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return plainTextFromProtonJSON(proton.proton_json)
+        }
 
-        if let text = try? NJPayloadConverterV1.decodeRTFBase64ToPlainText(rtfBase64) {
+        if !proton.rtf_base64.isEmpty,
+           let text = try? NJPayloadConverterV1.decodeRTFBase64ToPlainText(proton.rtf_base64) {
             return text.trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
@@ -53,5 +55,37 @@ enum NJQuickNotePayload {
             return String(line).trimmingCharacters(in: .whitespacesAndNewlines)
         }
         return text
+    }
+
+    private static func plainTextFromProtonJSON(_ protonJSON: String) -> String {
+        guard let data = protonJSON.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let doc = root["doc"] as? [[String: Any]] else {
+            return ""
+        }
+
+        var lines: [String] = []
+        for node in doc {
+            let type = node["type"] as? String ?? ""
+            if type == "rich",
+               let rtfBase64 = node["rtf_base64"] as? String,
+               let text = try? NJPayloadConverterV1.decodeRTFBase64ToPlainText(rtfBase64) {
+                lines.append(text.trimmingCharacters(in: .whitespacesAndNewlines))
+            } else if let items = node["items"] as? [[String: Any]] {
+                let itemText = items.compactMap { item -> String? in
+                    guard let rtfBase64 = item["rtf_base64"] as? String,
+                          let text = try? NJPayloadConverterV1.decodeRTFBase64ToPlainText(rtfBase64) else {
+                        return nil
+                    }
+                    return text.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                lines.append(contentsOf: itemText)
+            }
+        }
+
+        return lines
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
     }
 }

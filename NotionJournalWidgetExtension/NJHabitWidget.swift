@@ -52,7 +52,7 @@ private final class NJHabitWidgetProvider {
 
     private func currentWeekDays(now: Date) -> [NJHabitWidgetDay] {
         var calendar = Calendar.current
-        calendar.firstWeekday = 2
+        calendar.firstWeekday = 1
         let formatter = DateFormatter()
         formatter.locale = Locale.current
         formatter.dateFormat = "E"

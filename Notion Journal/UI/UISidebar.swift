@@ -8,6 +8,7 @@ struct Sidebar: View {
     @EnvironmentObject var store: AppStore
     @Binding var selectedNoteID: NJNoteID?
     var onRequestDetailFocus: (() -> Void)? = nil
+    var lockedModule: NJUIModule? = nil
     @Environment(\.openWindow) private var openWindow
 
     @State private var showNewNotebook = false
@@ -31,6 +32,7 @@ struct Sidebar: View {
     @State private var showGPSLogger = false
     @State private var showHealthLogger = false
     @State private var showHealthWeeklySummary = false
+    @State private var showAppleBooksProbe = false
     @State private var showMeetingInbox = false
     @State private var showExport = false
     @State private var showQuickNoteSheet = false
@@ -42,6 +44,7 @@ struct Sidebar: View {
     @State private var showRecoverFromCloudConfirm = false
     @State private var showRecoverFinanceFromCloudConfirm = false
     @State private var tradeThesisExpanded = true
+    @State private var investmentLedgerExpanded = true
     private var notesInScope: [NJNote] {
         guard let nb = store.currentNotebookTitle else { return [] }
 
@@ -123,6 +126,10 @@ struct Sidebar: View {
         #endif
     }
 
+    private var activeModule: NJUIModule {
+        lockedModule ?? store.selectedModule
+    }
+
     private func focusDetailIfNeeded() {
         guard isPhone else { return }
         onRequestDetailFocus?()
@@ -187,36 +194,47 @@ struct Sidebar: View {
     }
 
     private var moduleToolbarItems: [ModuleToolbarButtons.Item] {
-        [
-            ModuleToolbarButtons.Item(id: "note", title: "Note", systemImage: "doc.text", isOn: store.selectedModule == .note, action: {
-                store.selectedModule = .note
+        let items = [
+            ModuleToolbarButtons.Item(id: "note", title: "Note", systemImage: "doc.text", isOn: activeModule == .note, action: {
+                if lockedModule == nil { store.selectedModule = .note }
                 selectedNoteID = nil
                 focusDetailIfNeeded()
             }),
-            ModuleToolbarButtons.Item(id: "goal", title: "Goal", systemImage: "target", isOn: store.selectedModule == .goal, action: {
-                store.selectedModule = .goal
+            ModuleToolbarButtons.Item(id: "goal", title: "Goal", systemImage: "target", isOn: activeModule == .goal, action: {
+                if lockedModule == nil { store.selectedModule = .goal }
                 selectedNoteID = nil
                 focusDetailIfNeeded()
             }),
-            ModuleToolbarButtons.Item(id: "outline", title: "Outline", systemImage: "list.bullet.rectangle", isOn: store.selectedModule == .outline, action: {
-                store.selectedModule = .outline
+            ModuleToolbarButtons.Item(id: "outline", title: "Outline", systemImage: "list.bullet.rectangle", isOn: activeModule == .outline, action: {
+                if lockedModule == nil { store.selectedModule = .outline }
                 selectedNoteID = nil
                 focusDetailIfNeeded()
             }),
-            ModuleToolbarButtons.Item(id: "time", title: "Time", systemImage: "applewatch", isOn: store.selectedModule == .time, action: {
-                store.selectedModule = .time
+            ModuleToolbarButtons.Item(id: "time", title: "Time", systemImage: "applewatch", isOn: activeModule == .time, action: {
+                if lockedModule == nil { store.selectedModule = .time }
                 selectedNoteID = nil
                 focusDetailIfNeeded()
             }),
-            ModuleToolbarButtons.Item(id: "investment", title: "Investment", systemImage: "chart.line.uptrend.xyaxis", isOn: store.selectedModule == .investment, action: {
-                store.selectedModule = .investment
+            ModuleToolbarButtons.Item(id: "investment", title: "Investment", systemImage: "chart.line.uptrend.xyaxis", isOn: activeModule == .investment, badgeCount: store.investmentCriticalNewsCount, action: {
+                // print("NJ_INV_DEBUG MODULE_TAP source=toolbar previous=\(store.selectedModule.rawValue) selected_section=\(store.selectedInvestmentSection.rawValue) trade=\(store.selectedInvestmentTradeTab.rawValue)")
+                if lockedModule == nil { store.selectedModule = .investment }
                 selectedNoteID = nil
                 focusDetailIfNeeded()
+                if lockedModule == nil && UIDevice.current.userInterfaceIdiom == .phone {
+                    DispatchQueue.main.async {
+                        guard store.selectedModule == .investment else { return }
+                        store.selectedInvestmentSection = .observations
+                        store.investmentRefreshNonce += 1
+                        // print("NJ_INV_DEBUG MODULE_TAP_PHONE_DEFAULT_DEFERRED section=\(store.selectedInvestmentSection.rawValue) nonce=\(store.investmentRefreshNonce)")
+                    }
+                }
             }),
             ModuleToolbarButtons.Item(id: "planning", title: "Planning", systemImage: "calendar", isOn: false, action: {
                 openCalendarView()
             })
         ]
+        guard let lockedModule else { return items }
+        return items.filter { $0.id == lockedModule.rawValue }
     }
 
     @ViewBuilder
@@ -226,7 +244,7 @@ struct Sidebar: View {
                 ModuleToolbarButtons(items: moduleToolbarItems)
             }
 
-            if store.selectedModule == .note {
+            if activeModule == .note {
                 HStack(spacing: 6) {
                     scopeToolbarButton
                     NJGPSStatusBadge()
@@ -246,7 +264,7 @@ struct Sidebar: View {
     var body: some View {
         VStack(spacing: 0) {
                 sharedModuleRow
-                if store.selectedModule == .note {
+                if activeModule == .note {
                     Group {
                         if isPhone {
                             HStack(spacing: 8) {
@@ -273,6 +291,10 @@ struct Sidebar: View {
 
                                     Button("Health Logger", systemImage: "heart.circle") {
                                         showHealthLogger = true
+                                    }
+
+                                    Button("Apple Books Probe", systemImage: "books.vertical") {
+                                        showAppleBooksProbe = true
                                     }
 
                                     Button("DB Debug", systemImage: "terminal") {
@@ -332,6 +354,10 @@ struct Sidebar: View {
                                         showHealthLogger = true
                                     }
 
+                                    Button("Apple Books Probe", systemImage: "books.vertical") {
+                                        showAppleBooksProbe = true
+                                    }
+
                                     Button("DB Debug", systemImage: "terminal") {
                                         store.showDBDebugPanel = true
                                     }
@@ -370,7 +396,7 @@ struct Sidebar: View {
                     .background(Color(UIColor.systemBackground))
                 }
 
-                if store.selectedModule == .note {
+                if activeModule == .note {
                     Divider()
                     if isPhone {
                         Color.clear.frame(height: 6)
@@ -390,7 +416,7 @@ struct Sidebar: View {
 
             Divider()
 
-            if store.selectedModule == .note {
+            if activeModule == .note {
                 HStack(spacing: 0) {
                     Rail(onChanged: { selectedNoteID = nil })
                     Divider()
@@ -444,6 +470,12 @@ struct Sidebar: View {
                                     DispatchQueue.main.async { selectedNoteID = n.id }
                                 })
                                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    Button(role: .destructive) {
+                                        deleteNote(note: n)
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+
                                     Button {
                                         toggleFavorite(note: n)
                                     } label: {
@@ -479,15 +511,15 @@ struct Sidebar: View {
                     }
                     .listStyle(.sidebar)
                 }
-            } else if store.selectedModule == .goal {
+            } else if activeModule == .goal {
                 NJGoalSidebarView()
                     .environmentObject(store)
-            } else if store.selectedModule == .outline {
+            } else if activeModule == .outline {
                 NJOutlineSidebarView(outline: store.outline)
                     .environmentObject(store)
-            } else if store.selectedModule == .investment {
+            } else if activeModule == .investment {
                 investmentSidebar
-            } else if store.selectedModule == .time, isPhone {
+            } else if activeModule == .time, isPhone {
                 NJTimeModuleView()
                     .environmentObject(store)
             } else {
@@ -496,7 +528,7 @@ struct Sidebar: View {
 
             Divider()
 
-            if store.selectedModule == .note {
+            if activeModule == .note {
                 HStack(spacing: 12) {
                     SidebarSquareButton(systemName: "magnifyingglass") {
                         openManualReconstructed()
@@ -530,7 +562,7 @@ struct Sidebar: View {
             }
         }
         .overlay(alignment: .bottomTrailing) {
-            if store.selectedModule == .note {
+            if activeModule == .note {
                 Button {
                     resetQuickNoteEditor()
                     showQuickNoteSheet = true
@@ -670,6 +702,12 @@ struct Sidebar: View {
         .sheet(isPresented: $showHealthLogger) {
             NavigationStack {
                 NJHealthLoggerPage()
+            }
+        }
+
+        .sheet(isPresented: $showAppleBooksProbe) {
+            NavigationStack {
+                NJAppleBooksProbePage()
             }
         }
 
@@ -817,6 +855,15 @@ struct Sidebar: View {
         store.objectWillChange.send()
     }
 
+    private func deleteNote(note: NJNote) {
+        store.notes.deleteNote(note.id)
+        store.sync.schedulePush(debounceMs: 0)
+        if selectedNoteID == note.id {
+            selectedNoteID = nil
+        }
+        store.objectWillChange.send()
+    }
+
     private func resetQuickNoteEditor() {
         quickNoteAttr = NSAttributedString(string: "")
         quickNoteSel = NSRange(location: 0, length: 0)
@@ -845,12 +892,14 @@ private extension Sidebar {
                 .padding(.top, 16)
                 .padding(.bottom, 8)
 
-            ForEach(NJInvestmentSection.allCases) { section in
+            ForEach(NJInvestmentSection.navigationCases) { section in
                 if section == .trades {
                     VStack(alignment: .leading, spacing: 4) {
                         Button {
                             tradeThesisExpanded.toggle()
                             store.selectedInvestmentSection = .trades
+                            store.investmentRefreshNonce += 1
+                            // print("NJ_INV_DEBUG SIDEBAR_SECTION_TAP section=\(section.rawValue) expanded=\(tradeThesisExpanded ? 1 : 0) nonce=\(store.investmentRefreshNonce)")
                             selectedNoteID = nil
                             focusDetailIfNeeded()
                         } label: {
@@ -875,17 +924,84 @@ private extension Sidebar {
                                 Button {
                                     store.selectedInvestmentSection = .trades
                                     store.selectedInvestmentTradeTab = tab
+                                    store.investmentRefreshNonce += 1
+                                    // print("NJ_INV_DEBUG SIDEBAR_TRADE_TAP section=Trade Thesis trade=\(tab.rawValue) nonce=\(store.investmentRefreshNonce)")
+                                    selectedNoteID = nil
+                                    focusDetailIfNeeded()
+                                } label: {
+                                    HStack(spacing: 8) {
+                                        Label(tab.rawValue, systemImage: tab.symbolName)
+                                            .font(.caption.weight(.semibold))
+                                        if tab == .mfs, store.investmentMFSFocusCount > 0 {
+                                            Text("\(store.investmentMFSFocusCount)")
+                                                .font(.caption2.weight(.bold))
+                                                .foregroundStyle(.white)
+                                                .monospacedDigit()
+                                                .padding(.horizontal, 6)
+                                                .padding(.vertical, 2)
+                                                .background(Color.orange)
+                                                .clipShape(Capsule())
+                                                .accessibilityLabel("\(store.investmentMFSFocusCount) MFS focus items")
+                                        }
+                                        Spacer(minLength: 0)
+                                    }
+                                    .foregroundStyle(store.selectedInvestmentSection == .trades && store.selectedInvestmentTradeTab == tab ? Color.accentColor : Color.primary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.leading, 28)
+                                    .padding(.trailing, 12)
+                                    .padding(.vertical, 8)
+                                    .background(store.selectedInvestmentSection == .trades && store.selectedInvestmentTradeTab == tab ? Color.accentColor.opacity(0.10) : Color.clear)
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                } else if section == .ledger {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Button {
+                            investmentLedgerExpanded.toggle()
+                            store.selectedInvestmentSection = .ledger
+                            store.investmentRefreshNonce += 1
+                            // print("NJ_INV_DEBUG SIDEBAR_SECTION_TAP section=\(section.rawValue) expanded=\(investmentLedgerExpanded ? 1 : 0) nonce=\(store.investmentRefreshNonce)")
+                            selectedNoteID = nil
+                            focusDetailIfNeeded()
+                        } label: {
+                            HStack(spacing: 8) {
+                                Label(section.rawValue, systemImage: section.symbolName)
+                                Spacer()
+                                Image(systemName: investmentLedgerExpanded ? "chevron.down" : "chevron.right")
+                                    .font(.caption.weight(.bold))
+                            }
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(store.selectedInvestmentSection == section ? Color.accentColor : Color.primary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 10)
+                            .background(store.selectedInvestmentSection == section ? Color.accentColor.opacity(0.14) : Color.clear)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                        .buttonStyle(.plain)
+
+                        if investmentLedgerExpanded {
+                            ForEach(NJInvestmentLedgerTab.allCases) { tab in
+                                Button {
+                                    store.selectedInvestmentSection = .ledger
+                                    store.selectedInvestmentLedgerTab = tab
+                                    store.investmentRefreshNonce += 1
+                                    // print("NJ_INV_DEBUG SIDEBAR_LEDGER_TAP tab=\(tab.rawValue) nonce=\(store.investmentRefreshNonce)")
                                     selectedNoteID = nil
                                     focusDetailIfNeeded()
                                 } label: {
                                     Label(tab.rawValue, systemImage: tab.symbolName)
                                         .font(.caption.weight(.semibold))
-                                        .foregroundStyle(store.selectedInvestmentSection == .trades && store.selectedInvestmentTradeTab == tab ? Color.accentColor : Color.primary)
+                                        .foregroundStyle(store.selectedInvestmentSection == .ledger && store.selectedInvestmentLedgerTab == tab ? Color.accentColor : Color.primary)
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                         .padding(.leading, 28)
                                         .padding(.trailing, 12)
                                         .padding(.vertical, 8)
-                                        .background(store.selectedInvestmentSection == .trades && store.selectedInvestmentTradeTab == tab ? Color.accentColor.opacity(0.10) : Color.clear)
+                                        .background(store.selectedInvestmentSection == .ledger && store.selectedInvestmentLedgerTab == tab ? Color.accentColor.opacity(0.10) : Color.clear)
                                         .clipShape(RoundedRectangle(cornerRadius: 8))
                                 }
                                 .buttonStyle(.plain)
@@ -896,17 +1012,32 @@ private extension Sidebar {
                 } else {
                     Button {
                         store.selectedInvestmentSection = section
+                        store.investmentRefreshNonce += 1
+                        // print("NJ_INV_DEBUG SIDEBAR_SECTION_TAP section=\(section.rawValue) nonce=\(store.investmentRefreshNonce)")
                         selectedNoteID = nil
                         focusDetailIfNeeded()
                     } label: {
-                        Label(section.rawValue, systemImage: section.symbolName)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(store.selectedInvestmentSection == section ? Color.accentColor : Color.primary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 10)
-                            .background(store.selectedInvestmentSection == section ? Color.accentColor.opacity(0.14) : Color.clear)
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        HStack(spacing: 8) {
+                            Label(section.rawValue, systemImage: section.symbolName)
+                                .font(.subheadline.weight(.semibold))
+                            if section == .analysisInbox, store.investmentCriticalNewsCount > 0 {
+                                Text(store.investmentCriticalNewsCount > 99 ? "99+" : "\(store.investmentCriticalNewsCount)")
+                                    .font(.caption2.weight(.bold))
+                                    .foregroundStyle(.white)
+                                    .monospacedDigit()
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Color.red)
+                                    .clipShape(Capsule())
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .foregroundStyle(store.selectedInvestmentSection == section ? Color.accentColor : Color.primary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(store.selectedInvestmentSection == section ? Color.accentColor.opacity(0.14) : Color.clear)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
                     .buttonStyle(.plain)
                     .padding(.horizontal, 10)
@@ -917,6 +1048,9 @@ private extension Sidebar {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color(UIColor.systemBackground))
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            store.refreshInvestmentCriticalNewsBadge()
+        }
     }
 
     @ViewBuilder

@@ -1,0 +1,18 @@
+2026-05-04 Trading Journal - Hormuz, Japan, AI, And DDOG Probe
+
+Today the trade conversation centered on whether the market is misreading the U.S. "guide ships" headline in the Strait of Hormuz. The working conclusion was that this is not a clean de-escalation. The U.S. is posturing, but allies are not fully on board, "guide" is not the same as guaranteed escort, insurance remains the real shipping throttle, and the only vessels clearly moving appear to be those coordinating with or paying Iran. The practical market read is that Iran still controls access at the margin, while the U.S. headline is mostly theater until hulls actually move and underwriters agree.
+
+HK energy confirmed this interpretation. PetroChina 0857 HK and CNOOC 0883 HK pulled back only about 4% from their post-ceasefire highs, which is too shallow to chase as a fresh long and too resilient to call a true ceasefire unwind. The drop looked more like rotation into HK tech than investors abandoning the oil hedge. HK tech strength, especially Xiaomi and Alibaba, looked like risk-on / TACO positioning, while energy stayed bid as Hormuz insurance.
+
+The biggest macro pressure point is Japan. If oil stays high and Hormuz is not truly reopened, Japan is on the grill because it imports energy, cannot force the strait open, and is exposed through JPY, BOJ/JGB pressure, and exporter-heavy equity beta. U.S. equities and Nikkei have not really corrected, so if June brings no Fed cut while oil remains high, equities can get ugly. The Fed is trapped by a stagflationary shock: it can insure demand weakness, but it cannot print barrels through Hormuz.
+
+The AI tape added a second caution signal. Reports that OpenAI may delay IPO timing to 2027 because of financial/reporting readiness and growth concerns are not good AI-cycle news. It suggests public-market discipline may be arriving for the AI capex story: revenue quality, user growth, compute obligations, cash burn, and margins all matter. This does not kill AI, but it raises the question of who pays for the buildout, which matters for NVDA, AMD, ORCL, CoreWeave, semis, and power/grid plays.
+
+Position plan discussed: keep the current 20% probe as a small test position that can play into June, with a clear exit rule around the Fed / Hormuz / AI-capex test. For SaaS, DDOG remains the preferred grind-down entry because its demand is usage and machine-data linked rather than purely seat based. Set a disciplined 20% entry around 135 today rather than chasing. Everything else waits for AMD tomorrow as the next real gate for AI demand breadth, data-center guidance, gross margin, and whether the market rewards or sells good-but-not-perfect AI news.
+
+Remember:
+- Do not treat U.S. "guide ships" headlines as de-risking unless actual transits, insurance cover, and shipper behavior confirm it.
+- HK energy is not cheap enough to chase after only a 4% pullback from post-ceasefire highs.
+- Watch Nikkei / Japan beta and U.S. equities as the real losers if TACO fails and oil stays high.
+- DDOG 135 is a disciplined probe level, not an emotional average-down trigger.
+- AMD tomorrow is the confirmation gate before adding broader AI exposure.

@@ -1,0 +1,159 @@
+{
+  "updated": "2026-05-15",
+  "holdings": [
+    {
+      "id": "bea-usd-cash",
+      "institution": "BEA",
+      "accountLabel": "USD cash",
+      "currency": "USD",
+      "amount": 15159.78,
+      "instrumentType": "Cash",
+      "market": "USD / Cash",
+      "maturity": null,
+      "note": "Cash balance"
+    },
+    {
+      "id": "bea-hkd-cash",
+      "institution": "BEA",
+      "accountLabel": "HKD cash",
+      "currency": "HKD",
+      "amount": 3267.1,
+      "instrumentType": "Cash",
+      "market": "HKD / Cash",
+      "maturity": null,
+      "note": "Cash balance"
+    },
+    {
+      "id": "bea-mercedes-bond",
+      "institution": "BEA",
+      "accountLabel": "Bond",
+      "currency": "USD",
+      "amount": 300000,
+      "instrumentType": "Bond",
+      "market": "USD Credit",
+      "maturity": "3/8/33",
+      "note": "Mercedes Benz FINA 5.05PCT 3/8/33"
+    },
+    {
+      "id": "shacom-hkd-cash",
+      "institution": "ShacomBank",
+      "accountLabel": "HKD cash",
+      "currency": "HKD",
+      "amount": 14090.09,
+      "instrumentType": "Cash",
+      "market": "HKD / Cash",
+      "maturity": null,
+      "note": "Cash balance"
+    },
+    {
+      "id": "shacom-ckhutchison-bond-20340426",
+      "institution": "ShacomBank",
+      "accountLabel": "Bond",
+      "currency": "USD",
+      "amount": 323868.33,
+      "instrumentType": "Bond",
+      "market": "USD Credit",
+      "maturity": "2034-04-26",
+      "note": "CK Hutchison Intl 24, 5.5% coupon, principal USD 317,910, accrued interest USD 5,958.33, done 105.97, YTW 4.70586%, settlement 2024-09-06"
+    },
+    {
+      "id": "hsbc-hkd-current",
+      "institution": "HSBC",
+      "accountLabel": "HKD current",
+      "currency": "HKD",
+      "amount": 18031.08,
+      "instrumentType": "Cash",
+      "market": "HKD / Cash",
+      "maturity": null,
+      "note": "Current account"
+    },
+    {
+      "id": "hsbc-hkd-saving",
+      "institution": "HSBC",
+      "accountLabel": "HKD saving",
+      "currency": "HKD",
+      "amount": 1508.8,
+      "instrumentType": "Cash",
+      "market": "HKD / Cash",
+      "maturity": null,
+      "note": "Saving account"
+    },
+    {
+      "id": "hsbc-usd-saving",
+      "institution": "HSBC",
+      "accountLabel": "USD saving",
+      "currency": "USD",
+      "amount": 65428,
+      "instrumentType": "Cash",
+      "market": "USD / Cash",
+      "maturity": null,
+      "note": "Saving account"
+    },
+    {
+      "id": "hsbc-hkd-td-20260610",
+      "institution": "HSBC",
+      "accountLabel": "HKD time deposit",
+      "currency": "HKD",
+      "amount": 1415250.62,
+      "instrumentType": "Time Deposit",
+      "market": "HKD / Deposit",
+      "maturity": "2026-06-10",
+      "note": "Projected HKD 1,422,920.12 at maturity"
+    },
+    {
+      "id": "canadia-usd-cash",
+      "institution": "Canadia Bank",
+      "accountLabel": "USD cash",
+      "currency": "USD",
+      "amount": 55046.1,
+      "instrumentType": "Cash",
+      "market": "USD / Cash",
+      "maturity": null,
+      "note": "Cash balance"
+    },
+    {
+      "id": "canadia-usd-fd-20270310",
+      "institution": "Canadia Bank",
+      "accountLabel": "USD fixed deposit",
+      "currency": "USD",
+      "amount": 153890.02,
+      "instrumentType": "Time Deposit",
+      "market": "USD / Deposit",
+      "maturity": "2027-03-10",
+      "note": "Interest USD 6,309.49"
+    },
+    {
+      "id": "ibkr-hkd-cash",
+      "institution": "IBKR",
+      "accountLabel": "HKD cash",
+      "currency": "HKD",
+      "amount": 10258.43,
+      "instrumentType": "Cash",
+      "market": "HKD / Broker Cash",
+      "maturity": null,
+      "note": "Broker cash balance"
+    },
+    {
+      "id": "ibkr-usd-cash",
+      "institution": "IBKR",
+      "accountLabel": "USD cash",
+      "currency": "USD",
+      "amount": 63651.18,
+      "instrumentType": "Cash",
+      "market": "USD / Broker Cash",
+      "maturity": null,
+      "note": "Broker cash balance"
+    },
+    {
+      "id": "webull-hkd-cash",
+      "institution": "Webull",
+      "accountLabel": "HKD cash",
+      "currency": "HKD",
+      "amount": 10000,
+      "instrumentType": "Cash",
+      "market": "HKD / Broker Cash",
+      "maturity": null,
+      "note": "Broker cash balance"
+    }
+  ]
+}

@@ -12,6 +12,72 @@ private let NJShortcutLog = Logger(subsystem: "NotionJournal", category: "Shortc
 
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
+private enum NJCardEmbeddedViewKind: String, CaseIterable, Identifiable {
+    case rows = "rows"
+    case transactionLedger = "transaction_ledger"
+    case investmentPosition = "investment_position"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .rows: return "Rows"
+        case .transactionLedger: return "Transaction Ledger"
+        case .investmentPosition: return "Investment Position"
+        }
+    }
+}
+
+private struct NJCardInvestmentExecution: Identifiable {
+    let id: String
+    let dateKey: String
+    let thesis: String
+    let tradeCode: String
+    let region: String
+    let orderRef: String
+    let institution: String
+    let accountLabel: String
+    let symbol: String
+    let side: String
+    let quantity: Double
+    let price: Double
+    let currency: String
+    let fees: Double?
+}
+
+private struct NJCardInvestmentLot: Identifiable {
+    let id: String
+    let dateKey: String
+    let orderRef: String
+    var quantity: Double
+    let costPerShare: Double
+
+    var cost: Double { quantity * costPerShare }
+}
+
+private struct NJCardInvestmentPosition: Identifiable {
+    let id: String
+    let thesis: String
+    let tradeCode: String
+    let region: String
+    let symbol: String
+    let institutions: [String]
+    let currency: String
+    let quantity: Double
+    let averageCost: Double
+    let openCost: Double
+    let realizedPL: Double
+    let currentPrice: Double?
+    let lots: [NJCardInvestmentLot]
+
+    var marketValue: Double? { currentPrice.map { quantity * $0 } }
+    var unrealizedPL: Double? { marketValue.map { $0 - openCost } }
+    var unrealizedPct: Double? {
+        guard openCost != 0, let unrealizedPL else { return nil }
+        return unrealizedPL / openCost * 100
+    }
+}
+
 struct NJNoteEditorContainerView: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) var dismiss
@@ -58,6 +124,9 @@ struct NJNoteEditorContainerView: View {
     @State private var cardResizeStartWidths: [NJCardTableColumn: CGFloat] = [:]
     @State private var presentedCardFilterColumn: NJCardTableColumn? = nil
     @State private var selectedCardBlockItem: NJCardBlockSheetItem? = nil
+    @State private var selectedCardEmbeddedView: NJCardEmbeddedViewKind = .rows
+    @State private var cardInvestmentPrices: [String: Double] = [:]
+    @State private var cardInvestmentPriceStatus: [String: String] = [:]
 
     private struct NJGoalSheetItem: Identifiable {
         let id = UUID()
@@ -86,6 +155,15 @@ struct NJNoteEditorContainerView: View {
             case .title: return "Title"
             }
         }
+    }
+
+    private struct NJPersonalIdentificationCardFields {
+        var person: String
+        var document: String
+        var documentType: String
+        var jurisdiction: String
+        var expiryDate: String
+        var documentNumber: String
     }
 
     private struct NJCardBlockSheetItem: Identifiable {
@@ -128,6 +206,8 @@ struct NJNoteEditorContainerView: View {
 
                 if persistence.noteType == .note {
                     noteConfigurator()
+                } else if persistence.noteType == .card {
+                    cardViewChooser()
                 }
             }
             
@@ -137,7 +217,14 @@ struct NJNoteEditorContainerView: View {
             Divider()
 
             if persistence.noteType == .card {
-                cardTableView()
+                switch selectedCardEmbeddedView {
+                case .rows:
+                    cardTableView()
+                case .transactionLedger:
+                    cardInvestmentTransactionLedgerView()
+                case .investmentPosition:
+                    cardInvestmentPositionView()
+                }
             } else {
                 List {
                     ForEach(displayedBlocks, id: \.id) { b in
@@ -296,6 +383,7 @@ struct NJNoteEditorContainerView: View {
             persistence.configure(store: store, noteID: noteID)
             blockBus.setHandler { e in handleBlockEvent(e) }
             loadCardTablePreferences()
+            loadCardEmbeddedViewPreference()
             persistence.reload(makeHandle: makeWiredHandle)
         }
         .onReceive(NotificationCenter.default.publisher(for: .njPullCompleted)) { _ in
@@ -535,16 +623,57 @@ private func clampSelectionRange(_ range: NSRange, textLength: Int) -> NSRange {
 }
 
 private extension NJNoteEditorContainerView {
+    var isInvestmentLedgerCard: Bool {
+        guard persistence.noteType == .card else { return false }
+        return persistence.cardCategory.caseInsensitiveCompare("Investment Ledger") == .orderedSame ||
+            persistence.cardCategory.caseInsensitiveCompare("Investment Transaction") == .orderedSame
+    }
+
+    var cardEmbeddedViewPreferenceKey: String {
+        "nj_card_embedded_view_\(noteID.raw)"
+    }
+
+    func loadCardEmbeddedViewPreference() {
+        guard let raw = UserDefaults.standard.string(forKey: cardEmbeddedViewPreferenceKey),
+              let view = NJCardEmbeddedViewKind(rawValue: raw)
+        else {
+            selectedCardEmbeddedView = isInvestmentLedgerCard ? .transactionLedger : .rows
+            return
+        }
+        if isInvestmentLedgerCard && view == .rows {
+            selectedCardEmbeddedView = .transactionLedger
+            return
+        }
+        selectedCardEmbeddedView = isInvestmentLedgerCard || view == .rows ? view : .rows
+    }
+
+    func persistCardEmbeddedViewPreference() {
+        if selectedCardEmbeddedView != .rows && !isInvestmentLedgerCard {
+            selectedCardEmbeddedView = .rows
+        }
+        UserDefaults.standard.set(selectedCardEmbeddedView.rawValue, forKey: cardEmbeddedViewPreferenceKey)
+    }
+
     var cardPriorityOptions: [String] {
-        ["Low", "Medium", "High"]
+        if isPersonalIdentificationCard {
+            return ["Low", "Review", "Medium", "High", "Critical"]
+        }
+        return ["Low", "Medium", "High"]
     }
 
     var cardStatusOptions: [String] {
-        ["Pending", "TBT", "Done"]
+        if isPersonalIdentificationCard {
+            return ["Active", "Due Soon", "Expired", "Missing Date", "Review", "Pending"]
+        }
+        return ["Pending", "TBT", "Done"]
     }
 
     func cardStatusRank(_ value: String) -> Int {
         switch value.lowercased() {
+        case "active": return 0
+        case "due soon": return 1
+        case "missing date", "review": return 2
+        case "expired": return 3
         case "pending": return 0
         case "tbt": return 1
         case "done": return 2
@@ -554,11 +683,70 @@ private extension NJNoteEditorContainerView {
 
     func cardPriorityRank(_ value: String) -> Int {
         switch value.lowercased() {
+        case "critical": return 0
         case "high": return 0
-        case "medium": return 1
-        case "low": return 2
+        case "review": return 1
+        case "medium": return 2
+        case "low": return 3
         default: return 3
         }
+    }
+
+    private var isPersonalIdentificationCard: Bool {
+        guard persistence.noteType == .card else { return false }
+        let title = persistence.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let context = persistence.cardContext.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let cardID = persistence.cardID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return title == "personal identification"
+            || context == "personal identification"
+            || cardID == "db-personal-id"
+    }
+
+    private func cardColumnTitle(_ column: NJCardTableColumn) -> String {
+        guard isPersonalIdentificationCard else { return column.title }
+        switch column {
+        case .rowID: return "ID"
+        case .status: return "Status"
+        case .priority: return "Urgency"
+        case .category: return "Type"
+        case .area: return "Person"
+        case .context: return "Details"
+        case .title: return "Document"
+        }
+    }
+
+    private func personalIdentificationFields(from block: NJNoteEditorContainerPersistence.BlockState) -> NJPersonalIdentificationCardFields {
+        let titleParts = block.cardTitle
+            .split(separator: "-", maxSplits: 1)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        let document = titleParts.count == 2 ? titleParts[1] : block.cardTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let contextParts = block.cardContext
+            .replacingOccurrences(of: "•", with: "|")
+            .split(separator: "|")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        return NJPersonalIdentificationCardFields(
+            person: block.cardArea,
+            document: document,
+            documentType: block.cardCategory,
+            jurisdiction: contextParts.indices.contains(0) ? contextParts[0] : "",
+            expiryDate: contextParts.indices.contains(1) ? contextParts[1] : "",
+            documentNumber: contextParts.indices.contains(2) ? contextParts[2] : ""
+        )
+    }
+
+    private func personalIdentificationContext(jurisdiction: String, expiryDate: String, documentNumber: String) -> String {
+        [jurisdiction, expiryDate, documentNumber]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " • ")
+    }
+
+    private func personalIdentificationTitle(person: String, document: String) -> String {
+        let cleanPerson = person.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanDocument = document.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleanPerson.isEmpty { return cleanDocument }
+        if cleanDocument.isEmpty { return cleanPerson }
+        return "\(cleanPerson) - \(cleanDocument)"
     }
 
     func cardDisplayTitle(_ block: NJNoteEditorContainerPersistence.BlockState) -> String {
@@ -870,6 +1058,384 @@ private extension NJNoteEditorContainerView {
     }
 
     @ViewBuilder
+    func cardInvestmentTransactionLedgerView() -> some View {
+        let executions = cardInvestmentExecutions()
+        GeometryReader { proxy in
+            ScrollView([.horizontal, .vertical]) {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Investment Transaction Ledger")
+                                .font(.headline)
+                            Text("One row per broker transaction. This is the permanent source table used by all position, exposure, and trade-performance views.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                    }
+
+                    cardInvestmentHeader(
+                        ["Txn", "Date", "Bank Reference", "Bank", "Symbol", "CCY", "Qty", "Price", "Region", "Trade"],
+                        widths: [70, 110, 140, 170, 100, 80, 90, 110, 90, 130]
+                    )
+                    ForEach(Array(executions.enumerated()), id: \.element.id) { index, execution in
+                        cardInvestmentRow(
+                            [
+                                "\(index + 1)",
+                                execution.dateKey,
+                                execution.orderRef,
+                                execution.institution,
+                                execution.symbol,
+                                execution.currency,
+                                cardInvestmentQuantity(execution.quantity),
+                                cardInvestmentMoney(execution.price, currency: execution.currency),
+                                execution.region,
+                                execution.tradeCode
+                            ],
+                            widths: [70, 110, 140, 170, 100, 80, 90, 110, 90, 130]
+                        )
+                    }
+
+                    if executions.isEmpty {
+                        ContentUnavailableView("No investment transactions yet", systemImage: "list.bullet.rectangle")
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 32)
+                    }
+                }
+                .padding(14)
+                .frame(minWidth: proxy.size.width, minHeight: proxy.size.height, alignment: .topLeading)
+            }
+        }
+    }
+
+    @ViewBuilder
+    func cardInvestmentPositionView() -> some View {
+        let executions = cardInvestmentExecutions()
+        let positions = cardInvestmentPositions(from: executions)
+        GeometryReader { proxy in
+            ScrollView([.horizontal, .vertical]) {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Transaction-Based Holding / Mark to Market")
+                                .font(.headline)
+                            Text("The source rows are transactions: institution/account, symbol, side, quantity, price, fees, and order ref. FIFO and P/L are views on top.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button {
+                            Task { await refreshCardInvestmentPrices(for: positions.map(\.symbol)) }
+                        } label: {
+                            Label("Refresh Price", systemImage: "arrow.clockwise")
+                                .font(.caption.weight(.semibold))
+                        }
+                        .buttonStyle(.bordered)
+                    }
+
+                    if positions.isEmpty {
+                        ContentUnavailableView("No investment ledger rows for this card", systemImage: "chart.line.uptrend.xyaxis")
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 32)
+                    } else {
+                        VStack(alignment: .leading, spacing: 8) {
+                            cardInvestmentHeader(["Symbol", "Region", "CCY", "Institution", "Trade", "Qty", "Avg Cost", "Current", "Market Value", "Unrealized", "Unrl %", "Realized"], widths: [90, 90, 80, 150, 130, 80, 110, 110, 130, 130, 90, 120])
+                            ForEach(positions) { position in
+                                cardInvestmentRow(
+                                    [
+                                        position.symbol,
+                                        position.region,
+                                        position.currency,
+                                        position.institutions.joined(separator: ", "),
+                                        position.tradeCode,
+                                        cardInvestmentQuantity(position.quantity),
+                                        cardInvestmentMoney(position.averageCost, currency: position.currency),
+                                        cardInvestmentOptionalMoney(position.currentPrice, currency: position.currency),
+                                        cardInvestmentOptionalMoney(position.marketValue, currency: position.currency),
+                                        cardInvestmentOptionalMoney(position.unrealizedPL, currency: position.currency),
+                                        cardInvestmentOptionalPct(position.unrealizedPct),
+                                        cardInvestmentMoney(position.realizedPL, currency: position.currency)
+                                    ],
+                                    widths: [90, 90, 80, 150, 130, 80, 110, 110, 130, 130, 90, 120],
+                                    negativeColumns: [9, 11]
+                                )
+                            }
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("FIFO Lots")
+                                .font(.subheadline.weight(.semibold))
+                            cardInvestmentHeader(["Symbol", "Date", "Ref", "Open Qty", "Cost / Share", "Open Cost"], widths: [90, 110, 110, 100, 120, 130])
+                            ForEach(positions) { position in
+                                ForEach(position.lots) { lot in
+                                    cardInvestmentRow(
+                                        [
+                                            position.symbol,
+                                            lot.dateKey,
+                                            lot.orderRef,
+                                            cardInvestmentQuantity(lot.quantity),
+                                            cardInvestmentMoney(lot.costPerShare, currency: position.currency),
+                                            cardInvestmentMoney(lot.cost, currency: position.currency)
+                                        ],
+                                        widths: [90, 110, 110, 100, 120, 130]
+                                    )
+                                }
+                            }
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Ledger Rows")
+                                .font(.subheadline.weight(.semibold))
+                            cardInvestmentHeader(["Txn", "Date", "Bank Ref", "Bank", "Symbol", "CCY", "Qty", "Price", "Region", "Trade"], widths: [70, 110, 110, 150, 90, 80, 90, 110, 90, 130])
+                            ForEach(Array(executions.enumerated()), id: \.element.id) { index, execution in
+                                cardInvestmentRow(
+                                    [
+                                        "\(index + 1)",
+                                        execution.dateKey,
+                                        execution.orderRef,
+                                        execution.institution,
+                                        execution.symbol,
+                                        execution.currency,
+                                        cardInvestmentQuantity(execution.quantity),
+                                        cardInvestmentMoney(execution.price, currency: execution.currency),
+                                        execution.region,
+                                        execution.tradeCode
+                                    ],
+                                    widths: [70, 110, 110, 150, 90, 80, 90, 110, 90, 130]
+                                )
+                            }
+                        }
+                    }
+                }
+                .padding(14)
+                .frame(minWidth: proxy.size.width, minHeight: proxy.size.height, alignment: .topLeading)
+            }
+            .task(id: positions.map(\.symbol).joined(separator: ",")) {
+                await refreshCardInvestmentPrices(for: positions.map(\.symbol))
+            }
+        }
+    }
+
+    private func cardInvestmentHeader(_ values: [String], widths: [CGFloat]) -> some View {
+        HStack(spacing: 8) {
+            ForEach(Array(values.enumerated()), id: \.offset) { index, value in
+                Text(value)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: widths[index], alignment: .leading)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Color(UIColor.tertiarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func cardInvestmentRow(_ values: [String], widths: [CGFloat], negativeColumns: [Int] = []) -> some View {
+        HStack(spacing: 8) {
+            ForEach(Array(values.enumerated()), id: \.offset) { index, value in
+                Text(value)
+                    .font(.caption)
+                    .foregroundStyle(negativeColumns.contains(index) && value.contains("-") ? Color.red : Color.primary)
+                    .lineLimit(2)
+                    .frame(width: widths[index], alignment: .leading)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Color(UIColor.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func cardInvestmentExecutions() -> [NJCardInvestmentExecution] {
+        let cardFilter = persistence.cardContext.trimmingCharacters(in: .whitespacesAndNewlines)
+        return store.notes.listRecentFinanceTransactions(limit: 500)
+            .compactMap(cardInvestmentExecution(from:))
+            .filter { execution in
+                cardFilter.isEmpty ||
+                execution.symbol.caseInsensitiveCompare(cardFilter) == .orderedSame ||
+                execution.thesis.caseInsensitiveCompare(cardFilter) == .orderedSame
+            }
+            .sorted {
+                if $0.dateKey != $1.dateKey { return $0.dateKey < $1.dateKey }
+                return $0.id < $1.id
+            }
+    }
+
+    private func cardInvestmentExecution(from row: NJFinanceTransaction) -> NJCardInvestmentExecution? {
+        guard row.deleted == 0,
+              row.analysisNature == "investment_trade",
+              let data = row.rawPayloadJSON.data(using: .utf8),
+              let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              payload["schema"] as? String == "investment_ledger_execution_v1",
+              let symbol = payload["symbol"] as? String,
+              let side = payload["side"] as? String,
+              let quantity = cardInvestmentPayloadDouble(payload["quantity"]),
+              let price = cardInvestmentPayloadDouble(payload["execution_price"])
+        else { return nil }
+
+        return NJCardInvestmentExecution(
+            id: row.transactionID,
+            dateKey: row.dateKey,
+            thesis: payload["trade_thesis"] as? String ?? row.tagText,
+            tradeCode: payload["trade"] as? String ?? payload["trade_code"] as? String ?? payload["trade_thesis"] as? String ?? row.tagText,
+            region: payload["region"] as? String ?? "US",
+            orderRef: payload["order_ref"] as? String ?? row.externalRef,
+            institution: payload["institution"] as? String ?? row.counterparty,
+            accountLabel: payload["account_label"] as? String ?? row.accountLabel,
+            symbol: symbol,
+            side: side,
+            quantity: quantity,
+            price: price,
+            currency: payload["currency"] as? String ?? row.currencyCode,
+            fees: cardInvestmentPayloadDouble(payload["transaction_cost"])
+        )
+    }
+
+    private func cardInvestmentPositions(from executions: [NJCardInvestmentExecution]) -> [NJCardInvestmentPosition] {
+        let grouped = Dictionary(grouping: executions) { "\($0.tradeCode)|\($0.region)|\($0.symbol)|\($0.currency)" }
+        return grouped.values.map { rows in
+            let orderedRows = rows.sorted {
+                if $0.dateKey != $1.dateKey { return $0.dateKey < $1.dateKey }
+                return $0.id < $1.id
+            }
+            var lots: [NJCardInvestmentLot] = []
+            var realizedPL = 0.0
+
+            for execution in orderedRows {
+                let fees = execution.fees ?? 0
+                if execution.side.uppercased() == "SELL" {
+                    var remainingSellQuantity = execution.quantity
+                    let sellPriceAfterFees = execution.quantity == 0 ? execution.price : execution.price - fees / execution.quantity
+                    var updatedLots: [NJCardInvestmentLot] = []
+
+                    for lot in lots {
+                        guard remainingSellQuantity > 0 else {
+                            updatedLots.append(lot)
+                            continue
+                        }
+                        let consumed = min(lot.quantity, remainingSellQuantity)
+                        realizedPL += consumed * (sellPriceAfterFees - lot.costPerShare)
+                        remainingSellQuantity -= consumed
+                        let remainingLotQuantity = lot.quantity - consumed
+                        if remainingLotQuantity > 0.0001 {
+                            updatedLots.append(
+                                NJCardInvestmentLot(
+                                    id: lot.id,
+                                    dateKey: lot.dateKey,
+                                    orderRef: lot.orderRef,
+                                    quantity: remainingLotQuantity,
+                                    costPerShare: lot.costPerShare
+                                )
+                            )
+                        }
+                    }
+                    lots = updatedLots
+                } else {
+                    let costPerShare = execution.quantity == 0 ? execution.price : execution.price + fees / execution.quantity
+                    lots.append(
+                        NJCardInvestmentLot(
+                            id: execution.id,
+                            dateKey: execution.dateKey,
+                            orderRef: execution.orderRef,
+                            quantity: execution.quantity,
+                            costPerShare: costPerShare
+                        )
+                    )
+                }
+            }
+
+            let first = orderedRows[0]
+            let quantity = lots.reduce(0) { $0 + $1.quantity }
+            let openCost = lots.reduce(0) { $0 + $1.cost }
+            let averageCost = quantity == 0 ? 0 : openCost / quantity
+            return NJCardInvestmentPosition(
+                id: "\(first.thesis)|\(first.symbol)|\(first.currency)",
+                thesis: first.thesis,
+                tradeCode: first.tradeCode,
+                region: first.region,
+                symbol: first.symbol,
+                institutions: Array(Set(orderedRows.map(\.institution))).filter { !$0.isEmpty }.sorted(),
+                currency: first.currency,
+                quantity: quantity,
+                averageCost: averageCost,
+                openCost: openCost,
+                realizedPL: realizedPL,
+                currentPrice: cardInvestmentPrices[first.symbol],
+                lots: lots
+            )
+        }
+        .sorted { $0.id < $1.id }
+    }
+
+    private func refreshCardInvestmentPrices(for symbols: [String]) async {
+        let uniqueSymbols = Array(Set(symbols)).sorted()
+        guard !uniqueSymbols.isEmpty else { return }
+        for symbol in uniqueSymbols {
+            cardInvestmentPriceStatus[symbol] = "Loading"
+            if let price = await fetchCardInvestmentPrice(symbol: symbol) {
+                cardInvestmentPrices[symbol] = price
+                cardInvestmentPriceStatus[symbol] = "Live"
+            } else {
+                cardInvestmentPriceStatus[symbol] = "Unavailable"
+            }
+        }
+    }
+
+    private func fetchCardInvestmentPrice(symbol: String) async -> Double? {
+        let sourceSymbol = cardInvestmentSourceSymbol(for: symbol)
+        guard let url = URL(string: "https://stooq.com/q/l/?s=\(sourceSymbol)&f=sd2t2ohlcv&h&e=csv") else { return nil }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            guard let csv = String(data: data, encoding: .utf8) else { return nil }
+            let lines = csv.split(whereSeparator: \.isNewline).map(String.init)
+            guard lines.count >= 2 else { return nil }
+            let values = lines[1].split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+            guard values.count > 6, let close = Double(values[6]), close > 0 else { return nil }
+            return close
+        } catch {
+            return nil
+        }
+    }
+
+    private func cardInvestmentSourceSymbol(for symbol: String) -> String {
+        switch symbol.uppercased() {
+        case "SQQQ": return "sqqq.us"
+        case "QQQ": return "qqq.us"
+        case "SPY": return "spy.us"
+        case "AMD": return "amd.us"
+        case "NVDA": return "nvda.us"
+        default: return "\(symbol.lowercased()).us"
+        }
+    }
+
+    private func cardInvestmentPayloadDouble(_ value: Any?) -> Double? {
+        if let value = value as? Double { return value }
+        if let value = value as? Int { return Double(value) }
+        if let value = value as? Int64 { return Double(value) }
+        if let value = value as? String { return Double(value) }
+        return nil
+    }
+
+    private func cardInvestmentMoney(_ value: Double, currency: String) -> String {
+        "\(currency.uppercased()) \(String(format: "%.2f", value))"
+    }
+
+    private func cardInvestmentOptionalMoney(_ value: Double?, currency: String) -> String {
+        guard let value else { return "Live pending" }
+        return cardInvestmentMoney(value, currency: currency)
+    }
+
+    private func cardInvestmentOptionalPct(_ value: Double?) -> String {
+        guard let value else { return "Live pending" }
+        return String(format: "%+.2f%%", value)
+    }
+
+    private func cardInvestmentQuantity(_ value: Double) -> String {
+        value.rounded() == value ? String(format: "%.0f", value) : String(format: "%.2f", value)
+    }
+
+    @ViewBuilder
     func cardTableView() -> some View {
         GeometryReader { proxy in
             ScrollView([.horizontal, .vertical]) {
@@ -884,7 +1450,7 @@ private extension NJNoteEditorContainerView {
                         Spacer()
                         Menu {
                             ForEach(cardColumnOrder) { column in
-                                Section(column.title) {
+                                Section(cardColumnTitle(column)) {
                                     Button("Move Left") {
                                         moveCardColumn(column, delta: -1)
                                     }
@@ -993,7 +1559,7 @@ private extension NJNoteEditorContainerView {
         ZStack(alignment: .trailing) {
             HStack(spacing: 6) {
                 HStack(spacing: 4) {
-                    Text(column.title)
+                    Text(cardColumnTitle(column))
                         .font(cardTableScaledFont(12, weight: .semibold))
                     if cardSortColumn == column {
                         Image(systemName: cardSortAscending ? "arrow.up" : "arrow.down")
@@ -1082,7 +1648,7 @@ private extension NJNoteEditorContainerView {
         activeFilter: Binding<String>
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("\(column.title) Filter")
+            Text("\(cardColumnTitle(column)) Filter")
                 .font(.headline)
 
             Button("All") {
@@ -1137,6 +1703,73 @@ private extension NJNoteEditorContainerView {
 
     @ViewBuilder
     func cardBlockMetadataEditor(_ block: NJNoteEditorContainerPersistence.BlockState) -> some View {
+        if isPersonalIdentificationCard {
+            personalIdentificationMetadataEditor(block)
+        } else {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 12) {
+                    TextField(
+                        "Row ID",
+                        text: .constant(persistence.blocks.first(where: { $0.id == block.id })?.cardRowID ?? block.cardRowID)
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 160)
+                    .disabled(true)
+
+                    Picker("Priority", selection: Binding(
+                        get: { persistence.blocks.first(where: { $0.id == block.id })?.cardPriority.isEmpty == false ? (persistence.blocks.first(where: { $0.id == block.id })?.cardPriority ?? "Medium") : "Medium" },
+                        set: { persistence.updateCardRowFields(block.id, priority: $0) }
+                    )) {
+                        ForEach(cardPriorityOptions, id: \.self) { priority in
+                            Text(priority).tag(priority)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(width: 120)
+
+                    Picker("Status", selection: Binding(
+                        get: { persistence.blocks.first(where: { $0.id == block.id })?.cardStatus.isEmpty == false ? (persistence.blocks.first(where: { $0.id == block.id })?.cardStatus ?? "Pending") : "Pending" },
+                        set: { persistence.updateCardRowFields(block.id, status: $0) }
+                    )) {
+                        ForEach(cardStatusOptions, id: \.self) { status in
+                            Text(status).tag(status)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(width: 120)
+                }
+
+                TextField("Category", text: Binding(
+                    get: { persistence.blocks.first(where: { $0.id == block.id })?.cardCategory ?? block.cardCategory },
+                    set: { persistence.updateCardRowFields(block.id, category: $0) }
+                ))
+                .textFieldStyle(.roundedBorder)
+
+                TextField("Area", text: Binding(
+                    get: { persistence.blocks.first(where: { $0.id == block.id })?.cardArea ?? block.cardArea },
+                    set: { persistence.updateCardRowFields(block.id, area: $0) }
+                ))
+                .textFieldStyle(.roundedBorder)
+
+                TextField("Context", text: Binding(
+                    get: { persistence.blocks.first(where: { $0.id == block.id })?.cardContext ?? block.cardContext },
+                    set: { persistence.updateCardRowFields(block.id, context: $0) }
+                ))
+                .textFieldStyle(.roundedBorder)
+
+                TextField("Title", text: Binding(
+                    get: { persistence.blocks.first(where: { $0.id == block.id })?.cardTitle ?? block.cardTitle },
+                    set: { persistence.updateCardRowFields(block.id, title: $0) }
+                ))
+                .textFieldStyle(.roundedBorder)
+            }
+        }
+    }
+
+    @ViewBuilder
+    func personalIdentificationMetadataEditor(_ block: NJNoteEditorContainerPersistence.BlockState) -> some View {
+        let current = persistence.blocks.first(where: { $0.id == block.id }) ?? block
+        let fields = personalIdentificationFields(from: current)
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 12) {
                 TextField(
@@ -1147,8 +1780,8 @@ private extension NJNoteEditorContainerView {
                 .frame(width: 160)
                 .disabled(true)
 
-                Picker("Priority", selection: Binding(
-                    get: { persistence.blocks.first(where: { $0.id == block.id })?.cardPriority.isEmpty == false ? (persistence.blocks.first(where: { $0.id == block.id })?.cardPriority ?? "Medium") : "Medium" },
+                Picker("Urgency", selection: Binding(
+                    get: { current.cardPriority.isEmpty ? "Low" : current.cardPriority },
                     set: { persistence.updateCardRowFields(block.id, priority: $0) }
                 )) {
                     ForEach(cardPriorityOptions, id: \.self) { priority in
@@ -1159,7 +1792,7 @@ private extension NJNoteEditorContainerView {
                 .frame(width: 120)
 
                 Picker("Status", selection: Binding(
-                    get: { persistence.blocks.first(where: { $0.id == block.id })?.cardStatus.isEmpty == false ? (persistence.blocks.first(where: { $0.id == block.id })?.cardStatus ?? "Pending") : "Pending" },
+                    get: { current.cardStatus.isEmpty ? "Active" : current.cardStatus },
                     set: { persistence.updateCardRowFields(block.id, status: $0) }
                 )) {
                     ForEach(cardStatusOptions, id: \.self) { status in
@@ -1170,27 +1803,41 @@ private extension NJNoteEditorContainerView {
                 .frame(width: 120)
             }
 
-            TextField("Category", text: Binding(
-                get: { persistence.blocks.first(where: { $0.id == block.id })?.cardCategory ?? block.cardCategory },
+            TextField("Person", text: Binding(
+                get: { fields.person },
+                set: { persistence.updateCardRowFields(block.id, area: $0, title: personalIdentificationTitle(person: $0, document: fields.document)) }
+            ))
+            .textFieldStyle(.roundedBorder)
+
+            TextField("Document", text: Binding(
+                get: { fields.document },
+                set: { persistence.updateCardRowFields(block.id, title: personalIdentificationTitle(person: fields.person, document: $0)) }
+            ))
+            .textFieldStyle(.roundedBorder)
+
+            TextField("Type", text: Binding(
+                get: { fields.documentType },
                 set: { persistence.updateCardRowFields(block.id, category: $0) }
             ))
             .textFieldStyle(.roundedBorder)
 
-            TextField("Area", text: Binding(
-                get: { persistence.blocks.first(where: { $0.id == block.id })?.cardArea ?? block.cardArea },
-                set: { persistence.updateCardRowFields(block.id, area: $0) }
-            ))
-            .textFieldStyle(.roundedBorder)
+            HStack(spacing: 12) {
+                TextField("Country / Jurisdiction", text: Binding(
+                    get: { fields.jurisdiction },
+                    set: { persistence.updateCardRowFields(block.id, context: personalIdentificationContext(jurisdiction: $0, expiryDate: fields.expiryDate, documentNumber: fields.documentNumber)) }
+                ))
+                .textFieldStyle(.roundedBorder)
 
-            TextField("Context", text: Binding(
-                get: { persistence.blocks.first(where: { $0.id == block.id })?.cardContext ?? block.cardContext },
-                set: { persistence.updateCardRowFields(block.id, context: $0) }
-            ))
-            .textFieldStyle(.roundedBorder)
+                TextField("Expiry Date", text: Binding(
+                    get: { fields.expiryDate },
+                    set: { persistence.updateCardRowFields(block.id, context: personalIdentificationContext(jurisdiction: fields.jurisdiction, expiryDate: $0, documentNumber: fields.documentNumber)) }
+                ))
+                .textFieldStyle(.roundedBorder)
+            }
 
-            TextField("Title", text: Binding(
-                get: { persistence.blocks.first(where: { $0.id == block.id })?.cardTitle ?? block.cardTitle },
-                set: { persistence.updateCardRowFields(block.id, title: $0) }
+            TextField("Document Number", text: Binding(
+                get: { fields.documentNumber },
+                set: { persistence.updateCardRowFields(block.id, context: personalIdentificationContext(jurisdiction: fields.jurisdiction, expiryDate: fields.expiryDate, documentNumber: $0)) }
             ))
             .textFieldStyle(.roundedBorder)
         }
@@ -1449,6 +2096,36 @@ private extension NJNoteEditorContainerView {
                     }
                 }
                 .font(.subheadline)
+            }
+        }
+    }
+
+    @ViewBuilder
+    func cardViewChooser() -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Picker("Card View", selection: $selectedCardEmbeddedView) {
+                    if isInvestmentLedgerCard {
+                        Text("Ledger").tag(NJCardEmbeddedViewKind.transactionLedger)
+                        Text("Position / P&L").tag(NJCardEmbeddedViewKind.investmentPosition)
+                    } else {
+                        Text("Rows").tag(NJCardEmbeddedViewKind.rows)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: isInvestmentLedgerCard ? 420 : 180)
+                .onChange(of: selectedCardEmbeddedView) { _, _ in
+                    persistCardEmbeddedViewPreference()
+                }
+
+                if isInvestmentLedgerCard {
+                    Text("Permanent transaction ledger. Views can filter by trade, region, currency, symbol, and institution.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 0)
             }
         }
     }

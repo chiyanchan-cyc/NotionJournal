@@ -32,6 +32,14 @@ private struct NJWeeklyWeatherBadgeModel {
     let accessibilityLabel: String
 }
 
+private struct NJFutureWeeklyEditorTarget: Identifiable {
+    let date: Date
+    let blockID: String
+    let title: String
+
+    var id: String { "\(Int(date.timeIntervalSince1970)):\(blockID)" }
+}
+
 @MainActor
 private final class NJWeeklyWeatherForecastProvider: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published private(set) var forecastByDayKey: [String: NJWeeklyWeatherDay] = [:]
@@ -370,6 +378,8 @@ struct NJReconstructedNoteView: View {
     @State private var pendingFocusID: UUID? = nil
     @State private var pendingFocusToStart: Bool = false
     @State private var pickedPhotoItem: PhotosPickerItem? = nil
+    @State private var selectedWeekStart: Date = Self.currentWeekStart()
+    @State private var futureWeeklyEditorTarget: NJFutureWeeklyEditorTarget? = nil
     @StateObject private var weeklyWeather = NJWeeklyWeatherForecastProvider()
     
     init(spec: NJReconstructedSpec) {
@@ -389,13 +399,28 @@ struct NJReconstructedNoteView: View {
         .overlay(NJHiddenShortcuts(getHandle: { focusedHandle() }))
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if let h = focusedHandle() {
-                NJProtonFloatingFormatBar(handle: h, pickedPhotoItem: $pickedPhotoItem)
+                NJProtonFloatingFormatBar(
+                    handle: h,
+                    pickedPhotoItem: $pickedPhotoItem,
+                    currentHandle: { focusedHandle() }
+                )
                     .padding(.horizontal, 8)
                     .padding(.vertical, 6)
                     .background(.ultraThinMaterial)
             }
         }
         .toolbar { toolbar() }
+        .sheet(item: $futureWeeklyEditorTarget) { target in
+            NJReconstructedNoteView(
+                spec: .custom(
+                    title: target.title,
+                    ids: [target.blockID],
+                    limit: 1,
+                    newestFirst: false
+                )
+            )
+            .environmentObject(store)
+        }
         .task { onLoadOnce() }
         .task {
             if spec.isWeekly {
@@ -429,6 +454,9 @@ struct NJReconstructedNoteView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
+                if spec.isWeekly {
+                    futureWeeklyMenu()
+                }
                 Button {
                     reloadNow()
                 } label: {
@@ -443,6 +471,8 @@ struct NJReconstructedNoteView: View {
                 .fontWeight(.semibold)
 
             if spec.isWeekly {
+                weekNavigation()
+
                 Text(weeklyWeather.statusText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -455,16 +485,104 @@ struct NJReconstructedNoteView: View {
         .padding(.horizontal, 12)
         .padding(.bottom, 10)
     }
-    
-    private func list() -> some View {
-        List {
-            ForEach(displayedBlocks, id: \.id) { b in
-                row(b)
+
+    private func weekNavigation() -> some View {
+        HStack(spacing: 10) {
+            Button {
+                stepWeek(-1)
+            } label: {
+                Image(systemName: "chevron.left")
+                    .frame(width: 30, height: 30)
+            }
+            .buttonStyle(.bordered)
+            .disabled(isCurrentWeekSelected)
+
+            Text(weekRangeTitle(for: selectedWeekStart))
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+
+            Button {
+                stepWeek(1)
+            } label: {
+                Image(systemName: "chevron.right")
+                    .frame(width: 30, height: 30)
+            }
+            .buttonStyle(.bordered)
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func futureWeeklyMenu() -> some View {
+        Menu {
+            Button {
+                openFutureWeeklyEditor(weeksAhead: 1)
+            } label: {
+                Label("Next Week", systemImage: "calendar.badge.plus")
             }
 
-            NJBlockListBottomRunwayRow()
+            Button {
+                openFutureWeeklyEditor(weeksAhead: 2)
+            } label: {
+                Label("Week After Next", systemImage: "calendar.badge.clock")
+            }
+        } label: {
+            Label("New Week", systemImage: "calendar.badge.plus")
+                .labelStyle(.iconOnly)
         }
-        .listStyle(.plain)
+        .buttonStyle(.bordered)
+        .accessibilityLabel("Create future weekly entry")
+    }
+    
+    @ViewBuilder
+    private func list() -> some View {
+        if spec.isWeekly {
+            weeklyScrollList()
+                .id(selectedWeekStart)
+        } else {
+            List {
+                ForEach(displayedBlocks, id: \.id) { b in
+                    row(b)
+                }
+
+                NJBlockListBottomRunwayRow()
+            }
+            .listStyle(.plain)
+        }
+    }
+
+    private func weeklyScrollList() -> some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(displayedBlocks, id: \.id) { b in
+                        row(b)
+                            .id(b.id)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 2)
+                            .background(persistence.rowBackgroundColor(blockID: b.blockID))
+                    }
+
+                    NJBlockListBottomRunwayRow()
+                }
+            }
+            .onChange(of: persistence.focusedBlockID) { _, id in
+                scrollFocusedBlockIntoTypingPosition(id, proxy: proxy)
+            }
+            .onChange(of: displayedBlocks.map(\.id)) { _, _ in
+                scrollFocusedBlockIntoTypingPosition(persistence.focusedBlockID, proxy: proxy)
+            }
+        }
+    }
+
+    private func scrollFocusedBlockIntoTypingPosition(_ id: UUID?, proxy: ScrollViewProxy) {
+        guard let id else { return }
+        DispatchQueue.main.async {
+            withAnimation(.easeOut(duration: 0.16)) {
+                proxy.scrollTo(id, anchor: .center)
+            }
+        }
     }
 
     private func row(_ b: NJNoteEditorContainerPersistence.BlockState) -> some View {
@@ -596,8 +714,147 @@ struct NJReconstructedNoteView: View {
         forceCommitFocusedIfAny()
         if spec.isWeekly {
             weeklyWeather.refresh()
+            persistence.updateSpec(weeklySpec(for: selectedWeekStart))
         }
         persistence.reload(makeHandle: makeWiredHandle)
+    }
+
+    private func stepWeek(_ delta: Int) {
+        guard spec.isWeekly else { return }
+        let current = Self.currentWeekStart()
+        let next = calendarForWeekly().date(byAdding: .day, value: delta * 7, to: selectedWeekStart) ?? selectedWeekStart
+        let normalized = Self.weekStart(for: next)
+        let clamped = normalized < current ? current : normalized
+        selectWeek(clamped)
+    }
+
+    private func openFutureWeeklyEditor(weeksAhead: Int) {
+        forceCommitFocusedIfAny()
+        guard let date = futureWeekStart(weeksAhead: weeksAhead) else { return }
+        selectWeek(Self.weekStart(for: date))
+
+        guard let blockID = weeklyBlockID(for: date) else { return }
+        futureWeeklyEditorTarget = NJFutureWeeklyEditorTarget(
+            date: date,
+            blockID: blockID,
+            title: futureWeeklyEditorTitle(for: date)
+        )
+    }
+
+    private func futureWeekStart(weeksAhead: Int) -> Date? {
+        calendarForWeekly().date(byAdding: .day, value: max(1, weeksAhead) * 7, to: Self.currentWeekStart())
+    }
+
+    private func selectWeek(_ weekStart: Date) {
+        let normalized = Self.weekStart(for: weekStart)
+        let current = Self.currentWeekStart()
+        let clamped = normalized < current ? current : normalized
+
+        forceCommitFocusedIfAny()
+        persistence.focusedBlockID = nil
+        pendingFocusID = nil
+        pendingFocusToStart = false
+        selectedWeekStart = clamped
+
+        if clamped > current {
+            _ = store.createFutureWeeklyCalendarNote(for: clamped)
+        }
+
+        weeklyWeather.refresh()
+        persistence.updateSpec(weeklySpec(for: clamped))
+        persistence.reload(makeHandle: makeWiredHandle)
+    }
+
+    private func weeklyBlockID(for date: Date) -> String? {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        let start = calendar.startOfDay(for: date)
+        let end = calendar.date(byAdding: .day, value: 1, to: start) ?? start
+        let startMs = Int64((start.timeIntervalSince1970 * 1000.0).rounded())
+        let endMs = Int64((end.timeIntervalSince1970 * 1000.0).rounded())
+
+        let rows = store.db.queryRows("""
+        SELECT b.block_id
+        FROM nj_block b
+        WHERE b.deleted = 0
+          AND b.created_at_ms >= \(startMs)
+          AND b.created_at_ms < \(endMs)
+          AND (
+            EXISTS (
+              SELECT 1
+              FROM nj_block_tag t
+              WHERE t.block_id = b.block_id
+                AND t.tag = '#WEEKLY' COLLATE NOCASE
+            )
+            OR LOWER(COALESCE(b.tag_json, '')) LIKE '%#weekly%'
+            OR LOWER(COALESCE(b.payload_json, '')) LIKE '%#weekly%'
+          )
+        ORDER BY b.created_at_ms ASC, b.updated_at_ms DESC
+        LIMIT 1;
+        """)
+        let blockID = rows.first?["block_id"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return blockID.isEmpty ? nil : blockID
+    }
+
+    private func futureWeeklyEditorTitle(for date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale.current
+        formatter.setLocalizedDateFormatFromTemplate("MMM d")
+        return "\(formatter.string(from: date)) #WEEKLY"
+    }
+
+    private var isCurrentWeekSelected: Bool {
+        selectedWeekStart == Self.currentWeekStart()
+    }
+
+    private func weeklySpec(for weekStart: Date) -> NJReconstructedSpec {
+        let calendar = calendarForWeekly()
+        let start = calendar.startOfDay(for: weekStart)
+        let endExclusive = calendar.date(byAdding: .day, value: 7, to: start) ?? start
+        return NJReconstructedSpec(
+            id: "recon:#WEEKLY:\(Int64(start.timeIntervalSince1970 * 1000.0))",
+            title: "WEEKLY",
+            tab: "RECONSTRUCTED",
+            match: .exact("#WEEKLY"),
+            timeField: .blockCreatedAtMs,
+            startMs: Int64(start.timeIntervalSince1970 * 1000.0),
+            endMs: Int64(endExclusive.timeIntervalSince1970 * 1000.0) - 1,
+            limit: 500,
+            newestFirst: false,
+            includeTags: [],
+            includeMode: .any,
+            excludeTags: []
+        )
+    }
+
+    private func weekRangeTitle(for weekStart: Date) -> String {
+        let calendar = calendarForWeekly()
+        let end = calendar.date(byAdding: .day, value: 6, to: weekStart) ?? weekStart
+        let formatter = DateFormatter()
+        formatter.locale = Locale.current
+        formatter.setLocalizedDateFormatFromTemplate("MMM d")
+        return "\(formatter.string(from: weekStart)) - \(formatter.string(from: end))"
+    }
+
+    private static func currentWeekStart() -> Date {
+        weekStart(for: Date())
+    }
+
+    private static func weekStart(for date: Date) -> Date {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        calendar.firstWeekday = 1
+        let day = calendar.startOfDay(for: date)
+        let weekday = calendar.component(.weekday, from: day)
+        let daysFromSunday = (weekday - calendar.firstWeekday + 7) % 7
+        return calendar.date(byAdding: .day, value: -daysFromSunday, to: day) ?? day
+    }
+
+    private func calendarForWeekly() -> Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        calendar.firstWeekday = 1
+        return calendar
     }
     
     private func onLoadOnce() {
@@ -606,7 +863,7 @@ struct NJReconstructedNoteView: View {
         loaded = true
         persistence.configure(store: store)
         NJLocalBLRunner(db: store.db).run(.deriveBlockTagIndexAndDomainV1)
-        persistence.updateSpec(spec)
+        persistence.updateSpec(spec.isWeekly ? weeklySpec(for: selectedWeekStart) : spec)
         persistence.reload(makeHandle: makeWiredHandle)
     }
 
@@ -625,6 +882,11 @@ struct NJReconstructedNoteView: View {
             guard let persistence, let handle = h, let id = handle.ownerBlockUUID else { return }
             if handle.isRunningProgrammaticUpdate { return }
             persistence.enqueueEditorChange(id, source: "recon.view.onUserTyped.\(handle.userEditSourceHint)")
+        }
+        h.onEndEditing = { [weak persistence, weak h] _, _ in
+            guard let persistence, let handle = h, let id = handle.ownerBlockUUID else { return }
+            if handle.isRunningProgrammaticUpdate { return }
+            persistence.forceEndEditingAndCommitNow(id)
         }
         h.onSnapshot = { _, _ in
             // Passive snapshots can be emitted by layout/hydration on idle devices.
@@ -712,7 +974,11 @@ struct NJReconstructedNoteView: View {
 
     private func isDailyFocusRow(_ block: NJNoteEditorContainerPersistence.BlockState) -> Bool {
         let title = firstLineText(block).lowercased()
-        return title.contains("daily focus")
+        if title.contains("daily focus") || title.contains("weekly focus") { return true }
+        return title.range(
+            of: #"^\(\d{8}\)\s+[a-z]+\s+-\s+daily$"#,
+            options: .regularExpression
+        ) != nil
     }
 
     private func firstLineText(_ block: NJNoteEditorContainerPersistence.BlockState) -> String {

@@ -270,6 +270,15 @@ final class NJTableStore {
         let created = (createdAtMs ?? 0) > 0 ? createdAtMs! : now
         let updated = (updatedAtMs ?? 0) > 0 ? updatedAtMs! : now
 
+        if let existing = loadRow(tableID: trimmedID, dbp: dbp),
+           (createdAtMs ?? 0) <= 0,
+           (updatedAtMs ?? 0) <= 0,
+           existing.shortID == shortID,
+           (existing.name ?? "") == name,
+           existing.payload.flatMap(Self.canonicalJSONString) == json {
+            return
+        }
+
         var stmt: OpaquePointer?
         let sql = """
         INSERT INTO nj_table(
@@ -390,6 +399,13 @@ final class NJTableStore {
         }
         let updatedAtMs = sqlite3_column_int64(stmt, 3)
         return (shortID, name, payload, updatedAtMs)
+    }
+
+    private nonisolated static func canonicalJSONString(_ payload: [String: Any]) -> String? {
+        guard JSONSerialization.isValidJSONObject(payload),
+              let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
+              let json = String(data: data, encoding: .utf8) else { return nil }
+        return json
     }
 
     private func isShortIDAvailable(_ shortID: String, for tableID: String, dbp: OpaquePointer?) -> Bool {

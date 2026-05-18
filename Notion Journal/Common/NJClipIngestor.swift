@@ -26,10 +26,10 @@ final class NJClipIngestor {
         }
 
         let inboxURL = base.appendingPathComponent(inboxRelPath, isDirectory: true)
-        print("NJ_CLIP_INGEST inbox=\(inboxURL.path)")
+        // print("NJ_CLIP_INGEST inbox=\(inboxURL.path)")
 
         guard fm.fileExists(atPath: inboxURL.path) else {
-            print("NJ_CLIP_INGEST inbox_not_exist")
+            // print("NJ_CLIP_INGEST inbox_not_exist")
             return
         }
 
@@ -46,11 +46,16 @@ final class NJClipIngestor {
             (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
         }
 
-        print("NJ_CLIP_INGEST folders=\(folders.count)")
+        // print("NJ_CLIP_INGEST folders=\(folders.count)")
 
         for folder in folders {
             let rawID = folder.lastPathComponent
             let clipID = rawID.lowercased()
+
+            if dbHasBlock(store: store, blockID: clipID) {
+                deleteInboxFolder(fm: fm, folderURL: folder, label: "already_ingested", clipID: clipID)
+                continue
+            }
 
             let jsonURL = folder.appendingPathComponent("\(clipID).json", isDirectory: false)
             let pdfURL = folder.appendingPathComponent("\(clipID).pdf", isDirectory: false)
@@ -70,7 +75,7 @@ final class NJClipIngestor {
 
     static func ingestOne(store: AppStore, item: ClipDiskItem) async {
         let fm = FileManager.default
-        print("NJ_CLIP_INGEST one_begin clipID=\(item.clipID) folder=\(item.folderURL.path)")
+        // print("NJ_CLIP_INGEST one_begin clipID=\(item.clipID) folder=\(item.folderURL.path)")
 
         guard let rawJSON = try? Data(contentsOf: item.jsonURL) else {
             print("NJ_CLIP_INGEST read_json_failed clipID=\(item.clipID) path=\(item.jsonURL.path)")
@@ -129,11 +134,17 @@ final class NJClipIngestor {
         let destPDF = destDir.appendingPathComponent("\(item.clipID).pdf", isDirectory: false)
         let destJSON = destDir.appendingPathComponent("\(item.clipID).json", isDirectory: false)
 
-        print("NJ_CLIP_INGEST ai_begin clipID=\(item.clipID) body_len=\(body.count)")
+        if fm.fileExists(atPath: destPDF.path), fm.fileExists(atPath: destJSON.path) {
+            print("NJ_CLIP_INGEST skip_already_archived clipID=\(item.clipID)")
+            deleteInboxFolder(fm: fm, folderURL: item.folderURL, label: "already_archived", clipID: item.clipID)
+            return
+        }
+
+        // print("NJ_CLIP_INGEST ai_begin clipID=\(item.clipID) body_len=\(body.count)")
         let r = await NJAppleIntelligenceSummarizer.summarizeAuto(text: body)
         let aiTitleRaw = (r.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let aiSummaryRaw = (r.summary ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        print("NJ_CLIP_INGEST ai_done clipID=\(item.clipID) mode=\(r.mode) err=\(r.error ?? "") title_len=\(aiTitleRaw.count) sum_len=\(aiSummaryRaw.count)")
+        // print("NJ_CLIP_INGEST ai_done clipID=\(item.clipID) mode=\(r.mode) err=\(r.error ?? "") title_len=\(aiTitleRaw.count) sum_len=\(aiSummaryRaw.count)")
 
         let finalTitle = srcTitle.isEmpty ? "Clip" : srcTitle
 
@@ -201,27 +212,31 @@ final class NJClipIngestor {
             "deleted": Int64(0)
         ]
 
-        print("NJ_CLIP_INGEST db_upsert_begin clipID=\(item.clipID)")
+        // print("NJ_CLIP_INGEST db_upsert_begin clipID=\(item.clipID)")
         store.notes.applyRemoteUpsert(entity: "block", fields: fields)
 
         let dbHas = dbHasBlock(store: store, blockID: item.clipID)
-        print("NJ_CLIP_INGEST db_upsert_done clipID=\(item.clipID) dbHas=\(dbHas)")
+        // print("NJ_CLIP_INGEST db_upsert_done clipID=\(item.clipID) dbHas=\(dbHas)")
 
         let dirtyHas = dbHasDirty(store: store, entity: "block", entityID: item.clipID)
-        print("NJ_CLIP_INGEST dirty_check clipID=\(item.clipID) dirtyHas=\(dirtyHas)")
+        // print("NJ_CLIP_INGEST dirty_check clipID=\(item.clipID) dirtyHas=\(dirtyHas)")
 
         store.sync.schedulePush(debounceMs: 0)
-        print("NJ_CLIP_INGEST push_scheduled clipID=\(item.clipID)")
+        // print("NJ_CLIP_INGEST push_scheduled clipID=\(item.clipID)")
 
         if dbHas && dirtyHas {
-            do {
-                try fm.removeItem(at: item.folderURL)
-                print("NJ_CLIP_INGEST inbox_deleted folder=\(item.folderURL.path)")
-            } catch {
-                print("NJ_CLIP_INGEST inbox_delete_failed folder=\(item.folderURL.path) err=\(error)")
-            }
+            deleteInboxFolder(fm: fm, folderURL: item.folderURL, label: "ingested", clipID: item.clipID)
         } else {
-            print("NJ_CLIP_INGEST keep_inbox_folder clipID=\(item.clipID) dbHas=\(dbHas) dirtyHas=\(dirtyHas)")
+            // print("NJ_CLIP_INGEST keep_inbox_folder clipID=\(item.clipID) dbHas=\(dbHas) dirtyHas=\(dirtyHas)")
+        }
+    }
+
+    static func deleteInboxFolder(fm: FileManager, folderURL: URL, label: String, clipID: String) {
+        do {
+            try fm.removeItem(at: folderURL)
+            // print("NJ_CLIP_INGEST inbox_deleted reason=\(label) clipID=\(clipID) folder=\(folderURL.path)")
+        } catch {
+            print("NJ_CLIP_INGEST inbox_delete_failed reason=\(label) clipID=\(clipID) folder=\(folderURL.path) err=\(error)")
         }
     }
 
@@ -229,7 +244,7 @@ final class NJClipIngestor {
         do {
             if fm.fileExists(atPath: dst.path) { try fm.removeItem(at: dst) }
             try fm.copyItem(at: src, to: dst)
-            print("NJ_CLIP_INGEST copy_ok clipID=\(clipID) \(label) src=\(src.path) dst=\(dst.path)")
+            // print("NJ_CLIP_INGEST copy_ok clipID=\(clipID) \(label) src=\(src.path) dst=\(dst.path)")
             return true
         } catch {
             print("NJ_CLIP_INGEST copy_fail clipID=\(clipID) \(label) src=\(src.path) dst=\(dst.path) err=\(error)")
@@ -241,7 +256,7 @@ final class NJClipIngestor {
         do {
             if fm.fileExists(atPath: dst.path) { try fm.removeItem(at: dst) }
             try data.write(to: dst, options: [.atomic])
-            print("NJ_CLIP_INGEST write_ok clipID=\(clipID) \(label) dst=\(dst.path) bytes=\(data.count)")
+            // print("NJ_CLIP_INGEST write_ok clipID=\(clipID) \(label) dst=\(dst.path) bytes=\(data.count)")
             return true
         } catch {
             print("NJ_CLIP_INGEST write_fail clipID=\(clipID) \(label) dst=\(dst.path) err=\(error)")

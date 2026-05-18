@@ -290,6 +290,148 @@ extension DBNoteRepository {
         }
     }
 
+    func exportTaggedBlockRows(tagFilter: String, limit: Int = 20) throws -> [NJBlockExporter.Row] {
+        let tokens = Self.parseFilterTokens(tagFilter)
+        guard !tokens.isEmpty else { return [] }
+
+        var parts: [String] = []
+        var payloadParts: [String] = []
+        var binders: [(OpaquePointer?) -> Void] = []
+        var idx = 1
+
+        for rawTok in tokens {
+            let tok = rawTok.lowercased()
+            if tok.hasSuffix(".*") {
+                let p = String(tok.dropLast(2))
+                let like = p.isEmpty ? "%" : "\(p).%"
+                parts.append("LOWER(TRIM(t.tag, '#')) LIKE ?")
+                let j = idx
+                binders.append({ stmt in sqlite3_bind_text(stmt, Int32(j), like, -1, SQLITE_TRANSIENT) })
+                idx += 1
+            } else if tok.hasSuffix(".") {
+                let like = "\(tok)%"
+                parts.append("LOWER(TRIM(t.tag, '#')) LIKE ?")
+                let j = idx
+                binders.append({ stmt in sqlite3_bind_text(stmt, Int32(j), like, -1, SQLITE_TRANSIENT) })
+                idx += 1
+            } else if tok.contains(".") {
+                parts.append("(LOWER(TRIM(t.tag, '#')) = ? OR LOWER(TRIM(t.tag, '#')) LIKE ? OR LOWER(TRIM(t.tag, '#')) LIKE ? OR LOWER(TRIM(t.tag, '#')) LIKE ?)")
+
+                let j0 = idx
+                binders.append({ stmt in sqlite3_bind_text(stmt, Int32(j0), tok, -1, SQLITE_TRANSIENT) })
+                idx += 1
+
+                let j1 = idx
+                binders.append({ stmt in sqlite3_bind_text(stmt, Int32(j1), "\(tok).%", -1, SQLITE_TRANSIENT) })
+                idx += 1
+
+                let j2 = idx
+                binders.append({ stmt in sqlite3_bind_text(stmt, Int32(j2), "%.\(tok)", -1, SQLITE_TRANSIENT) })
+                idx += 1
+
+                let j3 = idx
+                binders.append({ stmt in sqlite3_bind_text(stmt, Int32(j3), "%.\(tok).%", -1, SQLITE_TRANSIENT) })
+                idx += 1
+            } else {
+                parts.append("LOWER(TRIM(t.tag, '#')) = ?")
+                let j = idx
+                binders.append({ stmt in sqlite3_bind_text(stmt, Int32(j), tok, -1, SQLITE_TRANSIENT) })
+                idx += 1
+            }
+
+            payloadParts.append("LOWER(b.payload_json) LIKE ?")
+            let payloadIndex = idx
+            binders.append({ stmt in sqlite3_bind_text(stmt, Int32(payloadIndex), "%\(tok)%", -1, SQLITE_TRANSIENT) })
+            idx += 1
+        }
+
+        let limitIndex = idx
+        binders.append({ stmt in sqlite3_bind_int(stmt, Int32(limitIndex), Int32(max(1, limit))) })
+
+        let tsExpr = """
+        (MAX(
+            IFNULL(NULLIF(nb.updated_at_ms,0),0),
+            IFNULL(NULLIF(b.updated_at_ms,0),0),
+            IFNULL(NULLIF(nb.created_at_ms,0),0),
+            IFNULL(NULLIF(b.created_at_ms,0),0),
+            IFNULL(NULLIF(alltags.tag_updated_ms,0),0)
+        ))
+        """
+
+        let sql = """
+        SELECT
+            COALESCE(nb.note_id, '') AS note_id,
+            COALESCE(n.tab_domain, '') AS note_domain,
+            b.block_id AS block_id,
+            COALESCE(b.tag_json, '') AS block_domain_json,
+            COALESCE(b.payload_json, '') AS payload_json,
+            \(tsExpr) AS ts_ms,
+            COALESCE(alltags.tags_csv, '') AS tags_csv
+        FROM nj_block b
+        LEFT JOIN (
+            SELECT block_id, note_id, MIN(order_key) AS min_order, MAX(updated_at_ms) AS updated_at_ms, MAX(created_at_ms) AS created_at_ms
+            FROM nj_note_block
+            WHERE deleted = 0
+            GROUP BY block_id
+        ) nb ON nb.block_id = b.block_id
+        LEFT JOIN nj_note n ON n.note_id = nb.note_id AND n.deleted = 0
+        LEFT JOIN (
+            SELECT
+                block_id,
+                GROUP_CONCAT(tag, '|') AS tags_csv,
+                MAX(updated_at_ms) AS tag_updated_ms
+            FROM nj_block_tag
+            GROUP BY block_id
+        ) alltags ON alltags.block_id = b.block_id
+        WHERE b.deleted = 0
+          AND (
+              EXISTS (
+                  SELECT 1
+                  FROM nj_block_tag t
+                  WHERE t.block_id = b.block_id
+                    AND (\(parts.joined(separator: " OR ")))
+              )
+              OR (\(payloadParts.joined(separator: " OR ")))
+          )
+        ORDER BY \(tsExpr) DESC,
+                 nb.min_order ASC
+        LIMIT ?;
+        """
+
+        return db.withDB { dbp in
+            var out: [NJBlockExporter.Row] = []
+            var stmt: OpaquePointer?
+            let rc = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
+            if rc != SQLITE_OK { return out }
+            defer { sqlite3_finalize(stmt) }
+
+            for f in binders { f(stmt) }
+
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let noteID = sqlite3_column_text(stmt, 0).flatMap { String(cString: $0) } ?? ""
+                let noteDomain = sqlite3_column_text(stmt, 1).flatMap { String(cString: $0) } ?? ""
+                let blockID = sqlite3_column_text(stmt, 2).flatMap { String(cString: $0) } ?? ""
+                let tagJSON = sqlite3_column_text(stmt, 3).flatMap { String(cString: $0) } ?? ""
+                let payloadJSON = sqlite3_column_text(stmt, 4).flatMap { String(cString: $0) } ?? ""
+                let tsMs = sqlite3_column_int64(stmt, 5)
+                let tagsCSV = sqlite3_column_text(stmt, 6).flatMap { String(cString: $0) } ?? ""
+                let blockTags = tagsCSV.isEmpty ? [] : tagsCSV.split(separator: "|").map { String($0) }
+
+                out.append(NJBlockExporter.Row(
+                    blockID: blockID,
+                    noteID: noteID,
+                    noteDomain: noteDomain,
+                    tagJSON: tagJSON,
+                    tsMs: tsMs,
+                    payloadJSON: payloadJSON,
+                    blockTags: blockTags
+                ))
+            }
+
+            return out
+        }
+    }
+
     private static func parseFilterTokens(_ s: String?) -> [String] {
         let raw = (s ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if raw.isEmpty { return [] }

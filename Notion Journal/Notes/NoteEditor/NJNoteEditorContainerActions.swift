@@ -20,6 +20,12 @@ extension NJNoteEditorContainerView {
             p.enqueueEditorChange(id, source: "container.onUserTyped.\(handle.userEditSourceHint)")
         }
 
+        handle.onEndEditing = { [weak p = persistence, weak handle] _, _ in
+            guard let p, let handle, let id = handle.ownerBlockUUID else { return }
+            if handle.isRunningProgrammaticUpdate { return }
+            p.forceEndEditingAndCommitNow(id)
+        }
+
         handle.onSnapshot = { _, _ in
             // Passive snapshots can be emitted by layout/hydration on idle devices.
             // Only explicit user edits should enqueue a save.

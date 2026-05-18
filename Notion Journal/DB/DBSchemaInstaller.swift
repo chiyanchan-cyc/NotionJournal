@@ -41,7 +41,149 @@ enum DBSchemaInstaller {
                 db.exec(idx)
             }
         }
+        runPostMigrations(db: db)
         print("NJ_DB_SCHEMA_OK")
+    }
+
+    private static func runPostMigrations(db: SQLiteDB) {
+        db.exec("""
+        UPDATE nj_note
+        SET pinned_updated_at_ms = updated_at_ms
+        WHERE pinned <> 0
+          AND pinned_updated_at_ms = 0
+          AND updated_at_ms > 0;
+        """)
+        db.exec("""
+        UPDATE nj_note
+        SET favorited_updated_at_ms = updated_at_ms
+        WHERE favorited <> 0
+          AND favorited_updated_at_ms = 0
+          AND updated_at_ms > 0;
+        """)
+        db.exec("""
+        INSERT INTO nj_dirty(entity, entity_id, op, updated_at_ms, attempts, last_error, ignore)
+        SELECT 'note', note_id, 'upsert', updated_at_ms, 0, '', 0
+        FROM nj_note
+        WHERE (pinned <> 0 OR favorited <> 0)
+          AND NOT EXISTS (
+              SELECT 1 FROM nj_kv WHERE k = 'note_flag_clock_repush_v1'
+          )
+        ON CONFLICT(entity, entity_id) DO UPDATE SET
+          op = excluded.op,
+          updated_at_ms = excluded.updated_at_ms,
+          attempts = 0,
+          last_error = '',
+          ignore = 0;
+        """)
+        db.exec("""
+        INSERT OR IGNORE INTO nj_kv(k, v)
+        VALUES('note_flag_clock_repush_v1', '1');
+        """)
+        installWeeklyScaffoldGuards(db: db)
+        repushDeletedWeeklyScaffoldTombstones(db: db)
+    }
+
+    private static func installWeeklyScaffoldGuards(db: SQLiteDB) {
+        db.exec("DROP TRIGGER IF EXISTS nj_guard_orphan_weekly_block_insert;")
+        db.exec("DROP TRIGGER IF EXISTS nj_guard_orphan_weekly_block_update;")
+        db.exec("DROP TRIGGER IF EXISTS nj_guard_orphan_weekly_tag_insert;")
+    }
+
+    private static func repushDeletedWeeklyScaffoldTombstones(db: SQLiteDB) {
+        db.exec("DROP TABLE IF EXISTS _nj_deleted_weekly_scaffold;")
+        db.exec("""
+        CREATE TEMP TABLE _nj_deleted_weekly_scaffold AS
+        SELECT DISTINCT
+          n.note_id,
+          nb.instance_id,
+          b.block_id,
+          MAX(n.updated_at_ms, nb.updated_at_ms, b.updated_at_ms) AS tombstone_ms
+        FROM nj_note n
+        JOIN nj_note_block nb ON nb.note_id = n.note_id
+        JOIN nj_block b ON b.block_id = nb.block_id
+        WHERE n.title GLOB '????-??-??'
+          AND n.deleted = 1
+          AND nb.deleted = 1
+          AND b.deleted = 0
+          AND (
+            LOWER(COALESCE(b.tag_json, '')) LIKE '%#weekly%'
+            OR LOWER(COALESCE(b.payload_json, '')) LIKE '%#weekly%'
+          );
+        """)
+        db.exec("""
+        UPDATE nj_block
+        SET updated_at_ms = CASE
+              WHEN updated_at_ms >= CAST(strftime('%s','now') AS INTEGER) * 1000
+              THEN updated_at_ms
+              ELSE CAST(strftime('%s','now') AS INTEGER) * 1000
+            END,
+            dirty_bl = 1
+        WHERE block_id IN (
+          SELECT block_id
+          FROM _nj_deleted_weekly_scaffold
+          WHERE NOT EXISTS (
+            SELECT 1
+            FROM nj_dirty d
+            WHERE d.entity = 'block'
+              AND d.entity_id = _nj_deleted_weekly_scaffold.block_id
+          )
+        );
+        """)
+        db.exec("""
+        UPDATE nj_note_block
+        SET updated_at_ms = CASE
+              WHEN updated_at_ms >= CAST(strftime('%s','now') AS INTEGER) * 1000
+              THEN updated_at_ms
+              ELSE CAST(strftime('%s','now') AS INTEGER) * 1000
+            END
+        WHERE instance_id IN (
+          SELECT instance_id
+          FROM _nj_deleted_weekly_scaffold
+          WHERE NOT EXISTS (
+            SELECT 1
+            FROM nj_dirty d
+            WHERE d.entity = 'note_block'
+              AND d.entity_id = _nj_deleted_weekly_scaffold.instance_id
+          )
+        );
+        """)
+        db.exec("""
+        UPDATE nj_note
+        SET updated_at_ms = CASE
+              WHEN updated_at_ms >= CAST(strftime('%s','now') AS INTEGER) * 1000
+              THEN updated_at_ms
+              ELSE CAST(strftime('%s','now') AS INTEGER) * 1000
+            END
+        WHERE note_id IN (
+          SELECT note_id
+          FROM _nj_deleted_weekly_scaffold
+          WHERE NOT EXISTS (
+            SELECT 1
+            FROM nj_dirty d
+            WHERE d.entity = 'note'
+              AND d.entity_id = _nj_deleted_weekly_scaffold.note_id
+          )
+        );
+        """)
+        db.exec("""
+        INSERT OR REPLACE INTO nj_dirty(entity, entity_id, op, updated_at_ms, attempts, last_error, ignore)
+        SELECT 'block', b.block_id, 'upsert', b.updated_at_ms, 0, '', 0
+        FROM nj_block b
+        JOIN _nj_deleted_weekly_scaffold s ON s.block_id = b.block_id;
+        """)
+        db.exec("""
+        INSERT OR REPLACE INTO nj_dirty(entity, entity_id, op, updated_at_ms, attempts, last_error, ignore)
+        SELECT 'note_block', nb.instance_id, 'upsert', nb.updated_at_ms, 0, '', 0
+        FROM nj_note_block nb
+        JOIN _nj_deleted_weekly_scaffold s ON s.instance_id = nb.instance_id;
+        """)
+        db.exec("""
+        INSERT OR REPLACE INTO nj_dirty(entity, entity_id, op, updated_at_ms, attempts, last_error, ignore)
+        SELECT 'note', n.note_id, 'upsert', n.updated_at_ms, 0, '', 0
+        FROM nj_note n
+        JOIN _nj_deleted_weekly_scaffold s ON s.note_id = n.note_id;
+        """)
+        db.exec("DROP TABLE IF EXISTS _nj_deleted_weekly_scaffold;")
     }
 
     private static func ensureColumns(db: SQLiteDB, table: String, columns: [ColumnSpec]) {
@@ -159,6 +301,8 @@ enum DBSchemaInstaller {
                     updated_at_ms INTEGER NOT NULL,
                     pinned INTEGER NOT NULL DEFAULT 0,
                     favorited INTEGER NOT NULL DEFAULT 0,
+                    pinned_updated_at_ms INTEGER NOT NULL DEFAULT 0,
+                    favorited_updated_at_ms INTEGER NOT NULL DEFAULT 0,
                     deleted INTEGER NOT NULL DEFAULT 0
                 );
                 """,
@@ -180,6 +324,8 @@ enum DBSchemaInstaller {
                     ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
                     ColumnSpec(name: "pinned", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
                     ColumnSpec(name: "favorited", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "pinned_updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "favorited_updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
                     ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
                 ],
                 indexes: [
@@ -337,6 +483,9 @@ enum DBSchemaInstaller {
                     impact TEXT NOT NULL DEFAULT '',
                     source TEXT NOT NULL DEFAULT '',
                     notes TEXT NOT NULL DEFAULT '',
+                    analysis_summary TEXT NOT NULL DEFAULT '',
+                    analysis_updated_at_ms INTEGER NOT NULL DEFAULT 0,
+                    refresh_requested_at_ms INTEGER NOT NULL DEFAULT 0,
                     created_at_ms INTEGER NOT NULL,
                     updated_at_ms INTEGER NOT NULL,
                     deleted INTEGER NOT NULL DEFAULT 0
@@ -352,13 +501,17 @@ enum DBSchemaInstaller {
                     ColumnSpec(name: "impact", declForAlter: "TEXT NOT NULL DEFAULT ''"),
                     ColumnSpec(name: "source", declForAlter: "TEXT NOT NULL DEFAULT ''"),
                     ColumnSpec(name: "notes", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "analysis_summary", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "analysis_updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "refresh_requested_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
                     ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
                     ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
                     ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
                 ],
                 indexes: [
                     "CREATE INDEX IF NOT EXISTS idx_nj_finance_macro_event_date ON nj_finance_macro_event(date_key ASC, time_text ASC);",
-                    "CREATE INDEX IF NOT EXISTS idx_nj_finance_macro_event_updated ON nj_finance_macro_event(updated_at_ms DESC);"
+                    "CREATE INDEX IF NOT EXISTS idx_nj_finance_macro_event_updated ON nj_finance_macro_event(updated_at_ms DESC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_finance_macro_event_refresh_requested ON nj_finance_macro_event(refresh_requested_at_ms DESC);"
                 ]
             ),
             TableSpec(
@@ -809,6 +962,259 @@ enum DBSchemaInstaller {
                 ]
             ),
             TableSpec(
+                name: "nj_investment_ledger_transaction",
+                createSQL: """
+                CREATE TABLE IF NOT EXISTS nj_investment_ledger_transaction (
+                    ledger_transaction_id TEXT PRIMARY KEY,
+                    transaction_number INTEGER NOT NULL DEFAULT 0,
+                    trade_date_key TEXT NOT NULL DEFAULT '',
+                    occurred_at_ms INTEGER NOT NULL DEFAULT 0,
+                    institution TEXT NOT NULL DEFAULT '',
+                    account_id TEXT NOT NULL DEFAULT '',
+                    account_label TEXT NOT NULL DEFAULT '',
+                    broker_reference TEXT NOT NULL DEFAULT '',
+                    symbol TEXT NOT NULL DEFAULT '',
+                    instrument_name TEXT NOT NULL DEFAULT '',
+                    asset_class TEXT NOT NULL DEFAULT '',
+                    region TEXT NOT NULL DEFAULT '',
+                    trade_code TEXT NOT NULL DEFAULT '',
+                    trade_thesis TEXT NOT NULL DEFAULT '',
+                    side TEXT NOT NULL DEFAULT '',
+                    quantity REAL NOT NULL DEFAULT 0,
+                    price REAL NOT NULL DEFAULT 0,
+                    currency_code TEXT NOT NULL DEFAULT '',
+                    gross_amount REAL NOT NULL DEFAULT 0,
+                    fees REAL NOT NULL DEFAULT 0,
+                    net_amount REAL NOT NULL DEFAULT 0,
+                    fx_rate_to_base REAL NOT NULL DEFAULT 1.0,
+                    base_currency_code TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT '',
+                    source_type TEXT NOT NULL DEFAULT '',
+                    source_file_name TEXT NOT NULL DEFAULT '',
+                    raw_payload_json TEXT NOT NULL DEFAULT '',
+                    note TEXT NOT NULL DEFAULT '',
+                    created_at_ms INTEGER NOT NULL DEFAULT 0,
+                    updated_at_ms INTEGER NOT NULL DEFAULT 0,
+                    deleted INTEGER NOT NULL DEFAULT 0
+                );
+                """,
+                columns: [
+                    ColumnSpec(name: "ledger_transaction_id", declForAlter: "TEXT"),
+                    ColumnSpec(name: "transaction_number", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "trade_date_key", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "occurred_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "institution", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "account_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "account_label", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "broker_reference", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "symbol", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "instrument_name", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "asset_class", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "region", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "trade_code", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "trade_thesis", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "side", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "quantity", declForAlter: "REAL NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "price", declForAlter: "REAL NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "currency_code", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "gross_amount", declForAlter: "REAL NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "fees", declForAlter: "REAL NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "net_amount", declForAlter: "REAL NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "fx_rate_to_base", declForAlter: "REAL NOT NULL DEFAULT 1.0"),
+                    ColumnSpec(name: "base_currency_code", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "status", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "source_type", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "source_file_name", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "raw_payload_json", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "note", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
+                ],
+                indexes: [
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_nj_investment_ledger_broker_ref ON nj_investment_ledger_transaction(institution, broker_reference, symbol, side) WHERE deleted = 0;",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_investment_ledger_trade ON nj_investment_ledger_transaction(trade_code ASC, trade_date_key DESC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_investment_ledger_symbol ON nj_investment_ledger_transaction(symbol ASC, trade_date_key DESC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_investment_ledger_region ON nj_investment_ledger_transaction(region ASC, trade_date_key DESC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_investment_ledger_institution ON nj_investment_ledger_transaction(institution ASC, account_label ASC, trade_date_key DESC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_investment_ledger_updated ON nj_investment_ledger_transaction(updated_at_ms DESC);"
+                ]
+            ),
+            TableSpec(
+                name: "nj_investment_chart_drawing",
+                createSQL: """
+                CREATE TABLE IF NOT EXISTS nj_investment_chart_drawing (
+                    drawing_id TEXT PRIMARY KEY,
+                    symbol_key TEXT NOT NULL DEFAULT '',
+                    drawing_type TEXT NOT NULL DEFAULT 'trend',
+                    start_x REAL NOT NULL DEFAULT 0,
+                    start_y REAL NOT NULL DEFAULT 0,
+                    end_x REAL NOT NULL DEFAULT 0,
+                    end_y REAL NOT NULL DEFAULT 0,
+                    created_at_ms INTEGER NOT NULL DEFAULT 0,
+                    updated_at_ms INTEGER NOT NULL DEFAULT 0,
+                    deleted INTEGER NOT NULL DEFAULT 0
+                );
+                """,
+                columns: [
+                    ColumnSpec(name: "drawing_id", declForAlter: "TEXT"),
+                    ColumnSpec(name: "symbol_key", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "drawing_type", declForAlter: "TEXT NOT NULL DEFAULT 'trend'"),
+                    ColumnSpec(name: "start_x", declForAlter: "REAL NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "start_y", declForAlter: "REAL NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "end_x", declForAlter: "REAL NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "end_y", declForAlter: "REAL NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
+                ],
+                indexes: [
+                    "CREATE INDEX IF NOT EXISTS idx_nj_investment_chart_drawing_symbol ON nj_investment_chart_drawing(symbol_key ASC, drawing_type ASC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_investment_chart_drawing_updated ON nj_investment_chart_drawing(updated_at_ms DESC);"
+                ]
+            ),
+            TableSpec(
+                name: "nj_investment_symbol",
+                createSQL: """
+                CREATE TABLE IF NOT EXISTS nj_investment_symbol (
+                    symbol_id TEXT PRIMARY KEY,
+                    display_symbol TEXT NOT NULL DEFAULT '',
+                    name TEXT NOT NULL DEFAULT '',
+                    asset_class TEXT NOT NULL DEFAULT '',
+                    market TEXT NOT NULL DEFAULT '',
+                    exchange TEXT NOT NULL DEFAULT '',
+                    currency TEXT NOT NULL DEFAULT '',
+                    ib_symbol TEXT NOT NULL DEFAULT '',
+                    ib_sec_type TEXT NOT NULL DEFAULT '',
+                    ib_exchange TEXT NOT NULL DEFAULT '',
+                    ib_currency TEXT NOT NULL DEFAULT '',
+                    news_keywords_json TEXT NOT NULL DEFAULT '[]',
+                    macro_tags_json TEXT NOT NULL DEFAULT '[]',
+                    status TEXT NOT NULL DEFAULT 'inactive',
+                    created_at_ms INTEGER NOT NULL DEFAULT 0,
+                    updated_at_ms INTEGER NOT NULL DEFAULT 0,
+                    deleted INTEGER NOT NULL DEFAULT 0
+                );
+                """,
+                columns: [
+                    ColumnSpec(name: "symbol_id", declForAlter: "TEXT"),
+                    ColumnSpec(name: "display_symbol", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "name", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "asset_class", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "market", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "exchange", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "currency", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "ib_symbol", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "ib_sec_type", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "ib_exchange", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "ib_currency", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "news_keywords_json", declForAlter: "TEXT NOT NULL DEFAULT '[]'"),
+                    ColumnSpec(name: "macro_tags_json", declForAlter: "TEXT NOT NULL DEFAULT '[]'"),
+                    ColumnSpec(name: "status", declForAlter: "TEXT NOT NULL DEFAULT 'inactive'"),
+                    ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
+                ],
+                indexes: [
+                    "CREATE INDEX IF NOT EXISTS idx_nj_investment_symbol_status ON nj_investment_symbol(status ASC, market ASC, symbol_id ASC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_investment_symbol_market ON nj_investment_symbol(market ASC, exchange ASC, symbol_id ASC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_investment_symbol_updated ON nj_investment_symbol(updated_at_ms DESC);"
+                ]
+            ),
+            TableSpec(
+                name: "nj_investment_symbol_convention",
+                createSQL: """
+                CREATE TABLE IF NOT EXISTS nj_investment_symbol_convention (
+                    convention_id TEXT PRIMARY KEY,
+                    symbol_id TEXT NOT NULL DEFAULT '',
+                    display_symbol TEXT NOT NULL DEFAULT '',
+                    platform TEXT NOT NULL DEFAULT '',
+                    platform_symbol TEXT NOT NULL DEFAULT '',
+                    platform_category TEXT NOT NULL DEFAULT '',
+                    platform_instrument_id TEXT NOT NULL DEFAULT '',
+                    platform_exchange TEXT NOT NULL DEFAULT '',
+                    platform_currency TEXT NOT NULL DEFAULT '',
+                    priority INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT '',
+                    verified_at_ms INTEGER NOT NULL DEFAULT 0,
+                    aliases_json TEXT NOT NULL DEFAULT '[]',
+                    notes TEXT NOT NULL DEFAULT '',
+                    created_at_ms INTEGER NOT NULL DEFAULT 0,
+                    updated_at_ms INTEGER NOT NULL DEFAULT 0,
+                    deleted INTEGER NOT NULL DEFAULT 0
+                );
+                """,
+                columns: [
+                    ColumnSpec(name: "convention_id", declForAlter: "TEXT"),
+                    ColumnSpec(name: "symbol_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "display_symbol", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "platform", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "platform_symbol", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "platform_category", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "platform_instrument_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "platform_exchange", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "platform_currency", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "priority", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "status", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "verified_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "aliases_json", declForAlter: "TEXT NOT NULL DEFAULT '[]'"),
+                    ColumnSpec(name: "notes", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
+                ],
+                indexes: [
+                    "CREATE INDEX IF NOT EXISTS idx_nj_investment_symbol_convention_symbol ON nj_investment_symbol_convention(symbol_id ASC, platform ASC, priority ASC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_investment_symbol_convention_platform ON nj_investment_symbol_convention(platform ASC, platform_category ASC, platform_symbol ASC);",
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_nj_investment_symbol_convention_unique ON nj_investment_symbol_convention(symbol_id, platform, platform_symbol) WHERE deleted = 0;"
+                ]
+            ),
+            TableSpec(
+                name: "nj_investment_symbol_relationship",
+                createSQL: """
+                CREATE TABLE IF NOT EXISTS nj_investment_symbol_relationship (
+                    relationship_id TEXT PRIMARY KEY,
+                    symbol_id TEXT NOT NULL DEFAULT '',
+                    source_type TEXT NOT NULL DEFAULT '',
+                    source_id TEXT NOT NULL DEFAULT '',
+                    source_title TEXT NOT NULL DEFAULT '',
+                    role TEXT NOT NULL DEFAULT '',
+                    priority INTEGER NOT NULL DEFAULT 3,
+                    status TEXT NOT NULL DEFAULT 'watch',
+                    alert_mode TEXT NOT NULL DEFAULT 'digest',
+                    opened_at_ms INTEGER NOT NULL DEFAULT 0,
+                    closed_at_ms INTEGER NOT NULL DEFAULT 0,
+                    notes TEXT NOT NULL DEFAULT '',
+                    created_at_ms INTEGER NOT NULL DEFAULT 0,
+                    updated_at_ms INTEGER NOT NULL DEFAULT 0,
+                    deleted INTEGER NOT NULL DEFAULT 0
+                );
+                """,
+                columns: [
+                    ColumnSpec(name: "relationship_id", declForAlter: "TEXT"),
+                    ColumnSpec(name: "symbol_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "source_type", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "source_id", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "source_title", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "role", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "priority", declForAlter: "INTEGER NOT NULL DEFAULT 3"),
+                    ColumnSpec(name: "status", declForAlter: "TEXT NOT NULL DEFAULT 'watch'"),
+                    ColumnSpec(name: "alert_mode", declForAlter: "TEXT NOT NULL DEFAULT 'digest'"),
+                    ColumnSpec(name: "opened_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "closed_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "notes", declForAlter: "TEXT NOT NULL DEFAULT ''"),
+                    ColumnSpec(name: "created_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0"),
+                    ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
+                ],
+                indexes: [
+                    "CREATE INDEX IF NOT EXISTS idx_nj_investment_symbol_relationship_symbol ON nj_investment_symbol_relationship(symbol_id ASC, status ASC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_investment_symbol_relationship_source ON nj_investment_symbol_relationship(source_type ASC, source_id ASC, status ASC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_investment_symbol_relationship_status ON nj_investment_symbol_relationship(status ASC, priority ASC);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_investment_symbol_relationship_updated ON nj_investment_symbol_relationship(updated_at_ms DESC);"
+                ]
+            ),
+            TableSpec(
                 name: "nj_time_slot",
                 createSQL: """
                 CREATE TABLE IF NOT EXISTS nj_time_slot (
@@ -955,7 +1361,8 @@ enum DBSchemaInstaller {
                     ColumnSpec(name: "deleted", declForAlter: "INTEGER NOT NULL DEFAULT 0")
                 ],
                 indexes: [
-                    "CREATE INDEX IF NOT EXISTS idx_nj_note_block_note_order ON nj_note_block(note_id, deleted, order_key);"
+                    "CREATE INDEX IF NOT EXISTS idx_nj_note_block_note_order ON nj_note_block(note_id, deleted, order_key);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_note_block_block_deleted_note ON nj_note_block(block_id, deleted, note_id);"
                 ]
             ),
 
@@ -1169,7 +1576,8 @@ enum DBSchemaInstaller {
                     ColumnSpec(name: "updated_at_ms", declForAlter: "INTEGER NOT NULL DEFAULT 0")
                 ],
                 indexes: [
-                    "CREATE INDEX IF NOT EXISTS idx_nj_block_tag_block ON nj_block_tag(block_id);"
+                    "CREATE INDEX IF NOT EXISTS idx_nj_block_tag_block ON nj_block_tag(block_id);",
+                    "CREATE INDEX IF NOT EXISTS idx_nj_block_tag_tag_nocase_block ON nj_block_tag(tag COLLATE NOCASE, block_id);"
                 ]
             ),
 

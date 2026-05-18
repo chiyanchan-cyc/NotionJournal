@@ -203,7 +203,9 @@ struct NJBlockHostView: View {
 
     private func requestFocusIfAllowed() {
         guard !suppressFocusForCurrentTap else { return }
-        if !isFocused {
+        if isFocused {
+            protonHandle.focus()
+        } else {
             onFocus()
         }
     }

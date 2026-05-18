@@ -152,7 +152,13 @@ struct NJPayloadConverterV1 {
     }
 
     static func makeRTFBase64(_ text: String) -> String {
-        let attr = NSAttributedString(string: text)
+        let attr = NSAttributedString(
+            string: text,
+            attributes: [
+                .font: NJEditorCanonicalBodyFont(size: 17),
+                .foregroundColor: UIColor.label
+            ]
+        )
         let r = NSRange(location: 0, length: attr.length)
         let data = try? attr.data(from: r, documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf])
         return data?.base64EncodedString() ?? ""

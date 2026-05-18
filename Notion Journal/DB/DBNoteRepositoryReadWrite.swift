@@ -113,8 +113,8 @@ extension DBNoteRepository {
         noteTable.deleteNote(NJNoteID(noteID))
     }
 
-    func markNoteDeleted(noteID: String) {
-        noteTable.markNoteDeleted(noteID: noteID)
+    func markNoteDeleted(noteID: String, nowMs: Int64? = nil) {
+        noteTable.markNoteDeleted(noteID: noteID, nowMs: nowMs)
     }
 
     func setPinned(noteID: String, pinned: Bool) {

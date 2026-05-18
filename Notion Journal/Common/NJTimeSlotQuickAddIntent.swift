@@ -96,6 +96,17 @@ struct NJTimeSlotAppShortcuts: AppShortcutsProvider {
             shortTitle: "Log Time Slot",
             systemImageName: "applewatch"
         )
+
+        AppShortcut(
+            intent: NJOpenInvestmentShortcutMenuIntent(),
+            phrases: [
+                "Open investment shortcut in \(.applicationName)",
+                "Show trading menu in \(.applicationName)",
+                "Open smart investment in \(.applicationName)"
+            ],
+            shortTitle: "Investment",
+            systemImageName: "chart.line.uptrend.xyaxis"
+        )
     }
 }
 #endif

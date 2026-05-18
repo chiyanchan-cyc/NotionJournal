@@ -218,11 +218,11 @@ extension DBNoteRepository {
         let now = DBNoteRepository.nowMs()
         let normalizedProtonJSON = normalizePersistableProtonJSON(protonJSON)
 
-        print("NJ_SAVE_SINGLE_PROTON_BLOCK block_id=\(blockID) proton_json_bytes=\(normalizedProtonJSON.utf8.count)")
-        print("NJ_SAVE_SINGLE_PROTON_BLOCK proton_json_preview=\(String(normalizedProtonJSON.prefix(240)))")
+        // print("NJ_SAVE_SINGLE_PROTON_BLOCK block_id=\(blockID) proton_json_bytes=\(normalizedProtonJSON.utf8.count)")
+        // print("NJ_SAVE_SINGLE_PROTON_BLOCK proton_json_preview=\(String(normalizedProtonJSON.prefix(240)))")
 
         let shouldEnqueue = !DBDirtyQueueTable.isInPullScope()
-        print("NJ_SAVE_SINGLE_PROTON_BLOCK enqueue_allowed=\(shouldEnqueue ? 1 : 0)")
+        // print("NJ_SAVE_SINGLE_PROTON_BLOCK enqueue_allowed=\(shouldEnqueue ? 1 : 0)")
 
         var didCommit = false
         var didEnqueue = false
@@ -409,12 +409,12 @@ extension DBNoteRepository {
                 if newPayload == normalized && effectiveTagJSON == oldTagJSON {
                     _ = exec("ROLLBACK;")
                     didCommit = true
-                    print("NJ_SAVE_SINGLE_PROTON_BLOCK NO_CHANGE block_id=\(blockID)")
+                    // print("NJ_SAVE_SINGLE_PROTON_BLOCK NO_CHANGE block_id=\(blockID)")
                     break
                 }
 
-                print("NJ_SAVE_SINGLE_PROTON_BLOCK payload_bytes=\(newPayload.utf8.count)")
-                print("NJ_SAVE_SINGLE_PROTON_BLOCK payload_preview=\(String(newPayload.prefix(260)))")
+                // print("NJ_SAVE_SINGLE_PROTON_BLOCK payload_bytes=\(newPayload.utf8.count)")
+                // print("NJ_SAVE_SINGLE_PROTON_BLOCK payload_preview=\(String(newPayload.prefix(260)))")
 
                 let rcBlock = upsertBlock(blockID, newPayload, tagJSON, now, goalID)
                 if rcBlock != SQLITE_DONE {
@@ -465,7 +465,7 @@ extension DBNoteRepository {
                 }
 
                 didCommit = true
-                print("NJ_SAVE_SINGLE_PROTON_BLOCK TX_DONE enqueued=\(didEnqueue ? 1 : 0)")
+                // print("NJ_SAVE_SINGLE_PROTON_BLOCK TX_DONE enqueued=\(didEnqueue ? 1 : 0)")
                 break
             }
 

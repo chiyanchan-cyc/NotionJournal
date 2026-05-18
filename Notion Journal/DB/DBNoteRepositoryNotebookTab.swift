@@ -13,6 +13,8 @@ extension DBNoteRepository {
             let rc0 = sqlite3_prepare_v2(dbp, """
             SELECT notebook_id, title, color_hex, created_at_ms, updated_at_ms, is_archived
             FROM nj_notebook
+            WHERE deleted = 0
+              AND is_archived = 0
             ORDER BY updated_at_ms DESC;
             """, -1, &stmt, nil)
             if rc0 != SQLITE_OK { db.dbgErr(dbp, "listNotebooks.prepare", rc0); return [] }
@@ -39,6 +41,8 @@ extension DBNoteRepository {
             SELECT tab_id, notebook_id, title, domain_key, color_hex, ord, created_at_ms, updated_at_ms, is_hidden
             FROM nj_tab
             WHERE notebook_id = ?
+              AND deleted = 0
+              AND is_hidden = 0
             ORDER BY ord ASC, updated_at_ms DESC;
             """, -1, &stmt, nil)
             if rc0 != SQLITE_OK { db.dbgErr(dbp, "listTabs.prepare", rc0); return [] }

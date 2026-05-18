@@ -58,9 +58,14 @@ struct NJDebugCKNoteBlockView: View {
         localCount = countLocal()
 
         append("BEGIN recordType=\(recordType) applyLocal=\(applyLocal) localBefore=\(localCount)")
+        guard NJCloudKitRuntime.unavailableReason(containerID: "iCloud.com.CYC.NotionJournal") == nil else {
+            append("SKIP CloudKit unavailable for this runtime")
+            isRunning = false
+            return
+        }
 
         do {
-            let ckdb = CKContainer(identifier: "iCloud.com.CYC.NotionJournal").privateCloudDatabase
+            let ckdb = NJCloudKitRuntime.container(containerID: "iCloud.com.CYC.NotionJournal").privateCloudDatabase
             let predicate = NSPredicate(format: "deleted == 0")
             let query = CKQuery(recordType: recordType, predicate: predicate)
 

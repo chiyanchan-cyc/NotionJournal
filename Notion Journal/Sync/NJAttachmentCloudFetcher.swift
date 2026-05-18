@@ -13,7 +13,12 @@ enum NJAttachmentCloudFetcher {
         }
 
         Task {
-            let container = CKContainer(identifier: NJCloudConfig.containerID)
+            guard NJCloudKitRuntime.unavailableReason(containerID: NJCloudConfig.containerID) == nil else {
+                await MainActor.run { completion(nil) }
+                return
+            }
+
+            let container = NJCloudKitRuntime.container(containerID: NJCloudConfig.containerID)
             let db = container.privateCloudDatabase
             let recordID = CKRecord.ID(recordName: attachmentID)
             do {
@@ -63,8 +68,12 @@ enum NJTableCloudFetcher {
     static func fetchTable(tableID: String) async -> [String: Any]? {
         let trimmedID = tableID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedID.isEmpty else { return nil }
+        guard NJCloudKitRuntime.unavailableReason(containerID: NJCloudConfig.containerID) == nil else {
+            print("NJ_TABLE_DIRECT_FETCH_SKIP table_id=\(trimmedID) reason=cloudkit_unavailable")
+            return nil
+        }
 
-        let container = CKContainer(identifier: NJCloudConfig.containerID)
+        let container = NJCloudKitRuntime.container(containerID: NJCloudConfig.containerID)
         let db = container.privateCloudDatabase
         let recordID = CKRecord.ID(recordName: trimmedID)
 

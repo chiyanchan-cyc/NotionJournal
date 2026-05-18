@@ -261,6 +261,88 @@ final class DBNoteBlockTable {
             if rc1 != SQLITE_DONE { db.dbgErr(dbp, "applyNJNoteBlock.step", rc1) }
         }
         // Remote apply must not enqueue dirty again; local edit paths already do that.
+        if deleted == 0, !noteID.isEmpty, !blockID.isEmpty {
+            tombstoneDuplicateLiveLinks(
+                noteID: noteID,
+                blockID: blockID,
+                canonicalInstanceID: instanceID,
+                nowMs: max(updatedAtMs, DBNoteRepository.nowMs())
+            )
+        }
+    }
+
+    private func tombstoneDuplicateLiveLinks(
+        noteID: String,
+        blockID: String,
+        canonicalInstanceID: String,
+        nowMs: Int64
+    ) {
+        struct Duplicate {
+            let instanceID: String
+            let updatedAtMs: Int64
+        }
+
+        let duplicates: [Duplicate] = db.withDB { dbp in
+            var out: [Duplicate] = []
+            var stmt: OpaquePointer?
+            let rc0 = sqlite3_prepare_v2(dbp, """
+            SELECT instance_id, updated_at_ms
+            FROM nj_note_block
+            WHERE note_id=? COLLATE NOCASE
+              AND block_id=? COLLATE NOCASE
+              AND deleted=0
+              AND instance_id<>? COLLATE NOCASE;
+            """, -1, &stmt, nil)
+            if rc0 != SQLITE_OK {
+                db.dbgErr(dbp, "tombstoneDuplicateLiveLinks.load.prepare", rc0)
+                return out
+            }
+            defer { sqlite3_finalize(stmt) }
+
+            sqlite3_bind_text(stmt, 1, noteID, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 2, blockID, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 3, canonicalInstanceID, -1, SQLITE_TRANSIENT)
+
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let iid = sqlite3_column_text(stmt, 0).flatMap { String(cString: $0) } ?? ""
+                if iid.isEmpty { continue }
+                out.append(Duplicate(instanceID: iid, updatedAtMs: sqlite3_column_int64(stmt, 1)))
+            }
+            return out
+        }
+
+        guard !duplicates.isEmpty else { return }
+
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let rc0 = sqlite3_prepare_v2(dbp, """
+            UPDATE nj_note_block
+            SET deleted=1,
+                updated_at_ms=?
+            WHERE instance_id=? COLLATE NOCASE
+              AND deleted=0;
+            """, -1, &stmt, nil)
+            if rc0 != SQLITE_OK {
+                db.dbgErr(dbp, "tombstoneDuplicateLiveLinks.update.prepare", rc0)
+                return
+            }
+            defer { sqlite3_finalize(stmt) }
+
+            for duplicate in duplicates {
+                let tombstoneMs = max(nowMs, duplicate.updatedAtMs + 1)
+                sqlite3_reset(stmt)
+                sqlite3_clear_bindings(stmt)
+                sqlite3_bind_int64(stmt, 1, tombstoneMs)
+                sqlite3_bind_text(stmt, 2, duplicate.instanceID, -1, SQLITE_TRANSIENT)
+                let rc = sqlite3_step(stmt)
+                if rc == SQLITE_DONE {
+                    enqueueDirty(entity: "note_block", entityID: duplicate.instanceID, op: "upsert", updatedAtMs: tombstoneMs)
+                    print("NJ_NOTE_BLOCK_DEDUPE_REMOTE_APPLY note_id=\(noteID) block_id=\(blockID) keep=\(canonicalInstanceID) tombstone=\(duplicate.instanceID)")
+                } else {
+                    db.dbgErr(dbp, "tombstoneDuplicateLiveLinks.update.step", rc)
+                }
+            }
+        }
     }
 
     func updateEditorLease(instanceID: String, deviceID: String, nowMs: Int64, expiresAtMs: Int64) {

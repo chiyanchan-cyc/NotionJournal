@@ -4,7 +4,9 @@ import Network
 
 final class NJCloudKitTransport {
     private let entitiesUsingFullScanPull: Set<String> = [
-        "finance_transaction"
+        "finance_transaction",
+        "investment_symbol",
+        "investment_symbol_relationship"
     ]
 
     let recordDirtyError: (
@@ -145,15 +147,17 @@ final class NJCloudKitTransport {
                 op = CKQueryOperation(query: q)
             }
 
-            if cursor == nil {
-                print("NJ_CK_QUERY_START entity=\(entity) recordType=\(recordType) mode=\(queryMode) since=\(sinceMs)")
-            }
+            // if cursor == nil {
+            //     print("NJ_CK_QUERY_START entity=\(entity) recordType=\(recordType) mode=\(queryMode) since=\(sinceMs)")
+            // }
 
             op.resultsLimit = 200
 
             var batch: [CKRecord] = []
-            op.recordFetchedBlock = { r in
-                batch.append(r)
+            op.recordMatchedBlock = { _, result in
+                if case .success(let record) = result {
+                    batch.append(record)
+                }
             }
 
             let (nextCursor, err) = await withCheckedContinuation { (cont: CheckedContinuation<(CKQueryOperation.Cursor?, Error?), Never>) in
@@ -251,13 +255,13 @@ final class NJCloudKitTransport {
             }
         }
 
-        print("NJ_CK_FETCH_RECORDS_OK entity=\(entity) requested=\(cleanIDs.count) rows=\(rows.count)")
+        // print("NJ_CK_FETCH_RECORDS_OK entity=\(entity) requested=\(cleanIDs.count) rows=\(rows.count)")
         return rows
     }
 
 
     func pushEntity(entity: String, recordType: String, rows: [(String, [String: Any])]) async -> [String] {
-        let lock = NSLock()
+        let savedQueue = DispatchQueue(label: "NotionJournal.NJCloudKitTransport.savedSet")
         var savedSet = Set<String>()
         savedSet.reserveCapacity(rows.count)
 
@@ -313,19 +317,7 @@ final class NJCloudKitTransport {
                     rec["domain_tag"] = domainTag as CKRecordValue
                 }
 
-                let protonLen: Int = {
-                    if let d = payload.data(using: .utf8),
-                       let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
-                       let sections = o["sections"] as? [String: Any],
-                       let proton1 = sections["proton1"] as? [String: Any],
-                       let data = proton1["data"] as? [String: Any],
-                       let pj = data["proton_json"] as? String {
-                        return pj.utf8.count
-                    }
-                    return 0
-                }()
-
-                let rowUpdated = toMs(f["updated_at_ms"])
+                // Payload size / row timestamp probes were only useful while tracing CloudKit block writes.
                         }
             
             if rec["device_id"] == nil { rec["device_id"] = deviceID as CKRecordValue }
@@ -347,10 +339,10 @@ final class NJCloudKitTransport {
             op.perRecordSaveBlock = { rid, result in
                 switch result {
                 case .success:
-                    lock.lock()
-                    savedSet.insert(rid.recordName)
-                    lock.unlock()
-                    print("NJ_CK_PUSH_REC_OK entity=\(entity) id=\(rid.recordName)")
+                    _ = savedQueue.sync {
+                        savedSet.insert(rid.recordName)
+                    }
+                    // print("NJ_CK_PUSH_REC_OK entity=\(entity) id=\(rid.recordName)")
                 case .failure(let e):
                     if let ck = e as? CKError {
                         let retryAfterAny = ck.userInfo[CKErrorRetryAfterKey]
@@ -404,11 +396,9 @@ final class NJCloudKitTransport {
             self.db.add(op)
         }
 
-        lock.lock()
-        let saved = Array(savedSet)
-        lock.unlock()
+        let saved = savedQueue.sync { Array(savedSet) }
 
-        let missing = Set(tryIDs).subtracting(savedSet)
+        let missing = savedQueue.sync { Set(tryIDs).subtracting(savedSet) }
         if !missing.isEmpty {
             print("NJ_CK_PUSH_RETURN_MISSING entity=\(entity) try=\(tryIDs.count) saved=\(saved.count) missing=\(missing.count) missingHead=\(Array(missing.prefix(20)))")
         }

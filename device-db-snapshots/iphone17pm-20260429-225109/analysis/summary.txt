@@ -1,0 +1,6 @@
+table_name         rows  max_notes  max_title
+-----------------  ----  ---------  ---------
+macro_events       342   188        47       
+transactions       895   270        8        
+research_sessions  7     0          20       
+cards              12    120        26       

@@ -55,6 +55,10 @@ struct NJOutlineDetailView: View {
     @State private var showGanttTaskSheet = false
     @State private var ganttTaskNodeID: String? = nil
     @State private var ganttTaskProgressPct: Double = 0
+    @State private var ganttTaskStartEnabled = false
+    @State private var ganttTaskEndEnabled = false
+    @State private var ganttTaskStartDate = Date()
+    @State private var ganttTaskEndDate = Date()
     @FocusState private var focusedNodeID: String?
 
     private enum GanttTimeScope: String, CaseIterable {
@@ -409,6 +413,20 @@ struct NJOutlineDetailView: View {
         .sheet(isPresented: $showGanttTaskSheet) {
             NavigationStack {
                 Form {
+                    Section("Timeline") {
+                        Toggle("Start", isOn: $ganttTaskStartEnabled)
+                        if ganttTaskStartEnabled {
+                            DatePicker("Start Date", selection: $ganttTaskStartDate, displayedComponents: .date)
+                                .datePickerStyle(.compact)
+                        }
+
+                        Toggle("Deadline (End)", isOn: $ganttTaskEndEnabled)
+                        if ganttTaskEndEnabled {
+                            DatePicker("End Date", selection: $ganttTaskEndDate, displayedComponents: .date)
+                                .datePickerStyle(.compact)
+                        }
+                    }
+
                     Section("Progress") {
                         HStack {
                             Slider(value: $ganttTaskProgressPct, in: 0...100, step: 1)
@@ -420,18 +438,22 @@ struct NJOutlineDetailView: View {
                 }
                 .font(.system(size: 12))
                 .navigationTitle(ganttTaskSheetTitle())
+                .onChange(of: ganttTaskStartEnabled) { _, _ in normalizeGanttTaskDateRange() }
+                .onChange(of: ganttTaskStartDate) { _, _ in normalizeGanttTaskDateRange() }
+                .onChange(of: ganttTaskEndEnabled) { _, _ in normalizeGanttTaskDateRange() }
+                .onChange(of: ganttTaskEndDate) { _, _ in normalizeGanttTaskDateRange() }
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
                         Button("Cancel") { showGanttTaskSheet = false }
                     }
                     ToolbarItem(placement: .confirmationAction) {
                         Button("Save") {
-                            saveGanttTaskProgress()
+                            saveGanttTaskDetails()
                         }
                     }
                 }
             }
-            .presentationDetents([.fraction(0.28), .medium])
+            .presentationDetents([.medium])
         }
         .confirmationDialog(
             "Node Actions",
@@ -1811,6 +1833,22 @@ struct NJOutlineDetailView: View {
         guard outline.node(nodeID) != nil else { return }
         ganttTaskNodeID = nodeID
         ganttTaskProgressPct = ganttProgressPercent(nodeID: nodeID)
+        let filter = outline.nodeFilter(nodeID: nodeID)
+        if let startMs = asInt64(filter["start_ms"]) {
+            ganttTaskStartEnabled = true
+            ganttTaskStartDate = Date(timeIntervalSince1970: TimeInterval(startMs) / 1000.0)
+        } else {
+            ganttTaskStartEnabled = false
+            ganttTaskStartDate = Date()
+        }
+        if let endMs = asInt64(filter["end_ms"]) {
+            ganttTaskEndEnabled = true
+            ganttTaskEndDate = Date(timeIntervalSince1970: TimeInterval(endMs) / 1000.0)
+        } else {
+            ganttTaskEndEnabled = false
+            ganttTaskEndDate = Date()
+        }
+        normalizeGanttTaskDateRange()
         showGanttTaskSheet = true
     }
 
@@ -1820,13 +1858,31 @@ struct NJOutlineDetailView: View {
         return t.isEmpty ? "Task" : t
     }
 
-    private func saveGanttTaskProgress() {
+    private func normalizeGanttTaskDateRange() {
+        guard ganttTaskStartEnabled else { return }
+        if ganttTaskEndEnabled && ganttTaskEndDate < ganttTaskStartDate {
+            ganttTaskEndDate = ganttTaskStartDate
+        }
+    }
+
+    private func saveGanttTaskDetails() {
         guard let id = ganttTaskNodeID else {
             showGanttTaskSheet = false
             return
         }
+        normalizeGanttTaskDateRange()
         let pct = Int64(max(0, min(100, Int(ganttTaskProgressPct.rounded()))))
         var filter = outline.nodeFilter(nodeID: id)
+        if ganttTaskStartEnabled {
+            filter["start_ms"] = dayStartMs(ganttTaskStartDate)
+        } else {
+            filter.removeValue(forKey: "start_ms")
+        }
+        if ganttTaskEndEnabled {
+            filter["end_ms"] = dayEndMs(ganttTaskEndDate)
+        } else {
+            filter.removeValue(forKey: "end_ms")
+        }
         filter["progress_pct"] = pct
         outline.setNodeFilter(nodeID: id, filter: filter)
         if let n = outline.node(id), n.isChecklist {
@@ -2443,6 +2499,9 @@ private struct NJOutlineFrappeGanttView: UIViewRepresentable {
             .gantt_tree_content { font-size: 11px; }
             .gantt_tree_content .nj-title { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; line-height:1.1; }
             .gantt_tree_content .nj-path { color:#666; font-size:10px; margin-top:1px; display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; line-height:1.1; }
+            .nj-week-header { display:flex; flex-direction:column; align-items:center; justify-content:center; height:100%; line-height:1.05; }
+            .nj-week-header span { font-weight:600; }
+            .nj-week-header small { display:block; margin-top:3px; color:#6b7280; font-size:10px; font-weight:500; }
             .gantt_task_line { background:#8fb6ff; border-color:#6f9df6; }
             .gantt_task_progress { background:#e5484d !important; opacity:0.95; }
             .gantt_task_line.nj-gantt-done { background:#4caf50; border-color:#4caf50; }
@@ -2535,9 +2594,16 @@ private struct NJOutlineFrappeGanttView: UIViewRepresentable {
                 const fmtDay = function(date){
                   return weekDay(date) + ' ' + (date.getMonth() + 1) + '/' + date.getDate();
                 };
-                const fmtHour = gantt.date.date_to_str('%H:%i');
                 const fmtMonth = gantt.date.date_to_str('%F %Y');
-                const fmtWeekStart = gantt.date.date_to_str('%d %M');
+                const shortMonth = gantt.date.date_to_str('%M');
+                const fmtWeekRange = function(date) {
+                  const end = gantt.date.add(date, 1, 'week');
+                  return shortMonth(date) + ' ' + date.getDate() + '-' + shortMonth(end) + ' ' + end.getDate();
+                };
+                const fmtWeekHeader = function(date) {
+                  const week = gantt.date.date_to_str('%W')(date);
+                  return "<div class='nj-week-header'><span>Week " + week + "</span><small>" + fmtWeekRange(date) + "</small></div>";
+                };
                 gantt.config.scale_height = 56;
                 if (mode === 'Day') {
                   gantt.config.min_column_width = 56;
@@ -2555,10 +2621,7 @@ private struct NJOutlineFrappeGanttView: UIViewRepresentable {
                   gantt.config.date_scale = 'Week %W';
                   gantt.config.subscales = [];
                   gantt.config.scales = [
-                    { unit: 'week', step: 1, format: function(date){
-                        const week = gantt.date.date_to_str('%W')(date);
-                        return 'Week ' + week;
-                    }}
+                    { unit: 'week', step: 1, format: fmtWeekHeader }
                   ];
                 } else if (mode === 'Month') {
                   gantt.config.min_column_width = 120;
@@ -2576,10 +2639,7 @@ private struct NJOutlineFrappeGanttView: UIViewRepresentable {
                   gantt.config.date_scale = 'Week %W';
                   gantt.config.subscales = [{ unit: 'day', step: 1, date: '%D %j' }];
                   gantt.config.scales = [
-                    { unit: 'week', step: 1, format: function(date){
-                        const week = gantt.date.date_to_str('%W')(date);
-                        return 'Week ' + week;
-                    }},
+                    { unit: 'week', step: 1, format: fmtWeekHeader },
                     { unit: 'day', step: 1, format: function(date){ return fmtDay(date); } }
                   ];
                 }
@@ -2671,7 +2731,11 @@ private struct NJOutlineFrappeGanttView: UIViewRepresentable {
                   gantt.parse({ data: safeTasks, links: safeLinks });
                   if (gantt.resetLayout) { try { gantt.resetLayout(); } catch (_) {} }
                   if (gantt.render) gantt.render();
-                  if (gantt.scrollTo) gantt.scrollTo(currentScroll.x || 0, currentScroll.y || 0);
+                  if ((currentScroll.x || currentScroll.y) && gantt.scrollTo) {
+                    gantt.scrollTo(currentScroll.x || 0, currentScroll.y || 0);
+                  } else if (gantt.showDate) {
+                    gantt.showDate(new Date());
+                  }
                   post('debug', { message: 'DHTMLX Gantt booted', count: safeTasks.length, links: safeLinks.length, viewMode: viewMode, scales: (gantt.config.scales || []).map(function(s){ return s.unit; }) });
                 } catch (e) {
                   el.innerHTML = "<div class='nj-empty'>Gantt render error</div>";
@@ -2712,9 +2776,9 @@ private struct NJOutlineFrappeGanttView: UIViewRepresentable {
                let kind = body["kind"] as? String,
                let payload = body["payload"] as? [String: Any] {
                 onEvent(kind, payload)
-                print("NJ_GANTT_DEBUG kind=\(kind) payload=\(payload)")
+                // print("NJ_GANTT_DEBUG kind=\(kind) payload=\(payload)")
             } else {
-                print("NJ_GANTT_DEBUG raw=\(message.body)")
+                // print("NJ_GANTT_DEBUG raw=\(message.body)")
             }
         }
     }
@@ -2757,7 +2821,7 @@ private struct NJOutlineMindElixirView: UIViewRepresentable {
 
         let jsText = loadBundledTextFile(name: "mind-elixir", ext: "js")
         let cssText = loadBundledTextFile(name: "style", ext: "css")
-        print("NJ_MIND_ASSET_BYTES js=\(jsText.utf8.count) css=\(cssText.utf8.count)")
+        // print("NJ_MIND_ASSET_BYTES js=\(jsText.utf8.count) css=\(cssText.utf8.count)")
 
         let config = WKWebViewConfiguration()
         config.userContentController = content
@@ -3204,9 +3268,9 @@ private struct NJOutlineMindElixirView: UIViewRepresentable {
 
             if type == "debug" {
                 if let payload = raw["payload"] as? [String: Any] {
-                    print("NJ_MIND_DEBUG", payload)
+                    // print("NJ_MIND_DEBUG", payload)
                 } else {
-                    print("NJ_MIND_DEBUG", raw)
+                    // print("NJ_MIND_DEBUG", raw)
                 }
                 return
             }
@@ -3236,7 +3300,7 @@ private struct NJOutlineMindElixirView: UIViewRepresentable {
                 }()
                 let parent = (payload["toParent"] as? String) ?? parentFromObj
                 let idx = (payload["index"] as? Int) ?? (primaryObj?["index"] as? Int) ?? (primaryObj?["ord"] as? Int)
-                print("NJ_MIND_MOVE name=\(name) id=\(id ?? "nil") parent=\(parent ?? "nil") idx=\(idx ?? -1)")
+                // print("NJ_MIND_MOVE name=\(name) id=\(id ?? "nil") parent=\(parent ?? "nil") idx=\(idx ?? -1)")
                 onEvent(NJOutlineMindElixirEvent(kind: .move, nodeID: id, toParentNodeID: parent, toIndex: idx))
             } else if name.contains("insertsibling") {
                 let topic = (primaryObj?["topic"] as? String) ?? ""

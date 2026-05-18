@@ -531,6 +531,7 @@ final class DBFinanceMacroEventTable {
             var stmt: OpaquePointer?
             let sql = """
             SELECT event_id, date_key, title, category, region, time_text, impact, source, notes,
+                   analysis_summary, analysis_updated_at_ms, refresh_requested_at_ms,
                    created_at_ms, updated_at_ms, deleted
             FROM nj_finance_macro_event
             WHERE deleted = 0 AND date_key BETWEEN ? AND ?
@@ -553,14 +554,34 @@ final class DBFinanceMacroEventTable {
         list(startKey: dateKey, endKey: dateKey)
     }
 
+    func load(eventID: String) -> NJFinanceMacroEvent? {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT event_id, date_key, title, category, region, time_text, impact, source, notes,
+                   analysis_summary, analysis_updated_at_ms, refresh_requested_at_ms,
+                   created_at_ms, updated_at_ms, deleted
+            FROM nj_finance_macro_event
+            WHERE event_id = ?
+            LIMIT 1;
+            """
+            guard sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, eventID, -1, SQLITE_TRANSIENT)
+            guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+            return readEvent(stmt)
+        }
+    }
+
     func upsert(_ row: NJFinanceMacroEvent) {
         db.withDB { dbp in
             var stmt: OpaquePointer?
             let sql = """
             INSERT INTO nj_finance_macro_event(
                 event_id, date_key, title, category, region, time_text, impact, source, notes,
+                analysis_summary, analysis_updated_at_ms, refresh_requested_at_ms,
                 created_at_ms, updated_at_ms, deleted
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(event_id) DO UPDATE SET
                 date_key = excluded.date_key,
                 title = excluded.title,
@@ -570,6 +591,9 @@ final class DBFinanceMacroEventTable {
                 impact = excluded.impact,
                 source = excluded.source,
                 notes = excluded.notes,
+                analysis_summary = excluded.analysis_summary,
+                analysis_updated_at_ms = excluded.analysis_updated_at_ms,
+                refresh_requested_at_ms = excluded.refresh_requested_at_ms,
                 created_at_ms = CASE
                     WHEN nj_finance_macro_event.created_at_ms IS NULL OR nj_finance_macro_event.created_at_ms = 0
                     THEN excluded.created_at_ms
@@ -590,9 +614,12 @@ final class DBFinanceMacroEventTable {
             sqlite3_bind_text(stmt, 7, row.impact, -1, SQLITE_TRANSIENT)
             sqlite3_bind_text(stmt, 8, row.source, -1, SQLITE_TRANSIENT)
             sqlite3_bind_text(stmt, 9, row.notes, -1, SQLITE_TRANSIENT)
-            sqlite3_bind_int64(stmt, 10, row.createdAtMs)
-            sqlite3_bind_int64(stmt, 11, row.updatedAtMs)
-            sqlite3_bind_int64(stmt, 12, row.deleted)
+            sqlite3_bind_text(stmt, 10, row.analysisSummary, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int64(stmt, 11, row.analysisUpdatedAtMs)
+            sqlite3_bind_int64(stmt, 12, row.refreshRequestedAtMs)
+            sqlite3_bind_int64(stmt, 13, row.createdAtMs)
+            sqlite3_bind_int64(stmt, 14, row.updatedAtMs)
+            sqlite3_bind_int64(stmt, 15, row.deleted)
             _ = sqlite3_step(stmt)
         }
         enqueueDirty("finance_macro_event", row.eventID, "upsert", row.updatedAtMs)
@@ -616,35 +643,24 @@ final class DBFinanceMacroEventTable {
     }
 
     func loadFields(eventID: String) -> [String: Any]? {
-        db.withDB { dbp in
-            var stmt: OpaquePointer?
-            let sql = """
-            SELECT event_id, date_key, title, category, region, time_text, impact, source, notes,
-                   created_at_ms, updated_at_ms, deleted
-            FROM nj_finance_macro_event
-            WHERE event_id = ?
-            LIMIT 1;
-            """
-            guard sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
-            defer { sqlite3_finalize(stmt) }
-            sqlite3_bind_text(stmt, 1, eventID, -1, SQLITE_TRANSIENT)
-            guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
-            let row = readEvent(stmt)
-            return [
-                "event_id": row.eventID,
-                "date_key": row.dateKey,
-                "title": row.title,
-                "category": row.category,
-                "region": row.region,
-                "time_text": row.timeText,
-                "impact": row.impact,
-                "source": row.source,
-                "notes": row.notes,
-                "created_at_ms": row.createdAtMs,
-                "updated_at_ms": row.updatedAtMs,
-                "deleted": row.deleted
-            ]
-        }
+        guard let row = load(eventID: eventID) else { return nil }
+        return [
+            "event_id": row.eventID,
+            "date_key": row.dateKey,
+            "title": row.title,
+            "category": row.category,
+            "region": row.region,
+            "time_text": row.timeText,
+            "impact": row.impact,
+            "source": row.source,
+            "notes": row.notes,
+            "analysis_summary": row.analysisSummary,
+            "analysis_updated_at_ms": row.analysisUpdatedAtMs,
+            "refresh_requested_at_ms": row.refreshRequestedAtMs,
+            "created_at_ms": row.createdAtMs,
+            "updated_at_ms": row.updatedAtMs,
+            "deleted": row.deleted
+        ]
     }
 
     func applyRemote(_ fields: [String: Any]) {
@@ -660,6 +676,9 @@ final class DBFinanceMacroEventTable {
             impact: (fields["impact"] as? String) ?? "",
             source: (fields["source"] as? String) ?? "",
             notes: (fields["notes"] as? String) ?? "",
+            analysisSummary: (fields["analysis_summary"] as? String) ?? (fields["analysisSummary"] as? String) ?? "",
+            analysisUpdatedAtMs: (fields["analysis_updated_at_ms"] as? Int64) ?? ((fields["analysis_updated_at_ms"] as? NSNumber)?.int64Value ?? 0),
+            refreshRequestedAtMs: (fields["refresh_requested_at_ms"] as? Int64) ?? ((fields["refresh_requested_at_ms"] as? NSNumber)?.int64Value ?? 0),
             createdAtMs: (fields["created_at_ms"] as? Int64) ?? ((fields["created_at_ms"] as? NSNumber)?.int64Value ?? 0),
             updatedAtMs: (fields["updated_at_ms"] as? Int64) ?? ((fields["updated_at_ms"] as? NSNumber)?.int64Value ?? 0),
             deleted: (fields["deleted"] as? Int64) ?? ((fields["deleted"] as? NSNumber)?.int64Value ?? 0)
@@ -678,9 +697,12 @@ final class DBFinanceMacroEventTable {
             impact: String(cString: sqlite3_column_text(stmt, 6)),
             source: String(cString: sqlite3_column_text(stmt, 7)),
             notes: String(cString: sqlite3_column_text(stmt, 8)),
-            createdAtMs: sqlite3_column_int64(stmt, 9),
-            updatedAtMs: sqlite3_column_int64(stmt, 10),
-            deleted: sqlite3_column_int64(stmt, 11)
+            analysisSummary: String(cString: sqlite3_column_text(stmt, 9)),
+            analysisUpdatedAtMs: sqlite3_column_int64(stmt, 10),
+            refreshRequestedAtMs: sqlite3_column_int64(stmt, 11),
+            createdAtMs: sqlite3_column_int64(stmt, 12),
+            updatedAtMs: sqlite3_column_int64(stmt, 13),
+            deleted: sqlite3_column_int64(stmt, 14)
         )
     }
 }
@@ -1655,5 +1677,958 @@ final class DBFinanceTransactionTable {
             updatedAtMs: sqlite3_column_int64(stmt, 26),
             deleted: sqlite3_column_int64(stmt, 27)
         )
+    }
+}
+
+final class DBInvestmentLedgerTransactionTable {
+    let db: SQLiteDB
+    let enqueueDirty: (String, String, String, Int64) -> Void
+
+    init(db: SQLiteDB, enqueueDirty: @escaping (String, String, String, Int64) -> Void) {
+        self.db = db
+        self.enqueueDirty = enqueueDirty
+    }
+
+    func listRecent(limit: Int = 200) -> [NJInvestmentLedgerTransaction] {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT ledger_transaction_id, transaction_number, trade_date_key, occurred_at_ms,
+                   institution, account_id, account_label, broker_reference, symbol, instrument_name,
+                   asset_class, region, trade_code, trade_thesis, side, quantity, price, currency_code,
+                   gross_amount, fees, net_amount, fx_rate_to_base, base_currency_code, status,
+                   source_type, source_file_name, raw_payload_json, note, created_at_ms, updated_at_ms, deleted
+            FROM nj_investment_ledger_transaction
+            WHERE deleted = 0
+            ORDER BY transaction_number ASC, occurred_at_ms ASC, updated_at_ms DESC
+            LIMIT ?;
+            """
+            guard sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_int(stmt, 1, Int32(max(1, limit)))
+            var out: [NJInvestmentLedgerTransaction] = []
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                out.append(read(stmt))
+            }
+            return out
+        }
+    }
+
+    func load(ledgerTransactionID: String) -> NJInvestmentLedgerTransaction? {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT ledger_transaction_id, transaction_number, trade_date_key, occurred_at_ms,
+                   institution, account_id, account_label, broker_reference, symbol, instrument_name,
+                   asset_class, region, trade_code, trade_thesis, side, quantity, price, currency_code,
+                   gross_amount, fees, net_amount, fx_rate_to_base, base_currency_code, status,
+                   source_type, source_file_name, raw_payload_json, note, created_at_ms, updated_at_ms, deleted
+            FROM nj_investment_ledger_transaction
+            WHERE ledger_transaction_id = ?
+            LIMIT 1;
+            """
+            guard sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, ledgerTransactionID, -1, SQLITE_TRANSIENT)
+            guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+            return read(stmt)
+        }
+    }
+
+    func upsert(_ row: NJInvestmentLedgerTransaction, enqueue: Bool = true) {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            INSERT INTO nj_investment_ledger_transaction(
+                ledger_transaction_id, transaction_number, trade_date_key, occurred_at_ms,
+                institution, account_id, account_label, broker_reference, symbol, instrument_name,
+                asset_class, region, trade_code, trade_thesis, side, quantity, price, currency_code,
+                gross_amount, fees, net_amount, fx_rate_to_base, base_currency_code, status,
+                source_type, source_file_name, raw_payload_json, note, created_at_ms, updated_at_ms, deleted
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(ledger_transaction_id) DO UPDATE SET
+                transaction_number = excluded.transaction_number,
+                trade_date_key = excluded.trade_date_key,
+                occurred_at_ms = excluded.occurred_at_ms,
+                institution = excluded.institution,
+                account_id = excluded.account_id,
+                account_label = excluded.account_label,
+                broker_reference = excluded.broker_reference,
+                symbol = excluded.symbol,
+                instrument_name = excluded.instrument_name,
+                asset_class = excluded.asset_class,
+                region = excluded.region,
+                trade_code = excluded.trade_code,
+                trade_thesis = excluded.trade_thesis,
+                side = excluded.side,
+                quantity = excluded.quantity,
+                price = excluded.price,
+                currency_code = excluded.currency_code,
+                gross_amount = excluded.gross_amount,
+                fees = excluded.fees,
+                net_amount = excluded.net_amount,
+                fx_rate_to_base = excluded.fx_rate_to_base,
+                base_currency_code = excluded.base_currency_code,
+                status = excluded.status,
+                source_type = excluded.source_type,
+                source_file_name = excluded.source_file_name,
+                raw_payload_json = excluded.raw_payload_json,
+                note = excluded.note,
+                created_at_ms = CASE
+                    WHEN nj_investment_ledger_transaction.created_at_ms IS NULL OR nj_investment_ledger_transaction.created_at_ms = 0
+                    THEN excluded.created_at_ms
+                    ELSE nj_investment_ledger_transaction.created_at_ms
+                END,
+                updated_at_ms = excluded.updated_at_ms,
+                deleted = excluded.deleted;
+            """
+            guard sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+            defer { sqlite3_finalize(stmt) }
+            bind(row, stmt)
+            _ = sqlite3_step(stmt)
+        }
+        if enqueue {
+            enqueueDirty("investment_ledger_transaction", row.ledgerTransactionID, "upsert", row.updatedAtMs)
+        }
+    }
+
+    func loadFields(ledgerTransactionID: String) -> [String: Any]? {
+        guard let row = load(ledgerTransactionID: ledgerTransactionID) else { return nil }
+        return [
+            "ledger_transaction_id": row.ledgerTransactionID,
+            "transaction_number": row.transactionNumber,
+            "trade_date_key": row.tradeDateKey,
+            "occurred_at_ms": row.occurredAtMs,
+            "institution": row.institution,
+            "account_id": row.accountID,
+            "account_label": row.accountLabel,
+            "broker_reference": row.brokerReference,
+            "symbol": row.symbol,
+            "instrument_name": row.instrumentName,
+            "asset_class": row.assetClass,
+            "region": row.region,
+            "trade_code": row.tradeCode,
+            "trade_thesis": row.tradeThesis,
+            "side": row.side,
+            "quantity": row.quantity,
+            "price": row.price,
+            "currency_code": row.currencyCode,
+            "gross_amount": row.grossAmount,
+            "fees": row.fees,
+            "net_amount": row.netAmount,
+            "fx_rate_to_base": row.fxRateToBase,
+            "base_currency_code": row.baseCurrencyCode,
+            "status": row.status,
+            "source_type": row.sourceType,
+            "source_file_name": row.sourceFileName,
+            "raw_payload_json": row.rawPayloadJSON,
+            "note": row.note,
+            "created_at_ms": row.createdAtMs,
+            "updated_at_ms": row.updatedAtMs,
+            "deleted": row.deleted
+        ]
+    }
+
+    func applyRemote(_ fields: [String: Any]) {
+        let id = (fields["ledger_transaction_id"] as? String) ?? (fields["ledgerTransactionID"] as? String) ?? ""
+        guard !id.isEmpty else { return }
+        upsert(
+            NJInvestmentLedgerTransaction(
+                ledgerTransactionID: id,
+                transactionNumber: int64(fields["transaction_number"]),
+                tradeDateKey: string(fields["trade_date_key"]),
+                occurredAtMs: int64(fields["occurred_at_ms"]),
+                institution: string(fields["institution"]),
+                accountID: string(fields["account_id"]),
+                accountLabel: string(fields["account_label"]),
+                brokerReference: string(fields["broker_reference"]),
+                symbol: string(fields["symbol"]),
+                instrumentName: string(fields["instrument_name"]),
+                assetClass: string(fields["asset_class"]),
+                region: string(fields["region"]),
+                tradeCode: string(fields["trade_code"]),
+                tradeThesis: string(fields["trade_thesis"]),
+                side: string(fields["side"]),
+                quantity: double(fields["quantity"]),
+                price: double(fields["price"]),
+                currencyCode: string(fields["currency_code"]),
+                grossAmount: double(fields["gross_amount"]),
+                fees: double(fields["fees"]),
+                netAmount: double(fields["net_amount"]),
+                fxRateToBase: double(fields["fx_rate_to_base"], fallback: 1.0),
+                baseCurrencyCode: string(fields["base_currency_code"]),
+                status: string(fields["status"]),
+                sourceType: string(fields["source_type"]),
+                sourceFileName: string(fields["source_file_name"]),
+                rawPayloadJSON: string(fields["raw_payload_json"]),
+                note: string(fields["note"]),
+                createdAtMs: int64(fields["created_at_ms"]),
+                updatedAtMs: int64(fields["updated_at_ms"]),
+                deleted: int64(fields["deleted"])
+            ),
+            enqueue: false
+        )
+    }
+
+    private func bind(_ row: NJInvestmentLedgerTransaction, _ stmt: OpaquePointer?) {
+        sqlite3_bind_text(stmt, 1, row.ledgerTransactionID, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_int64(stmt, 2, row.transactionNumber)
+        sqlite3_bind_text(stmt, 3, row.tradeDateKey, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_int64(stmt, 4, row.occurredAtMs)
+        sqlite3_bind_text(stmt, 5, row.institution, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 6, row.accountID, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 7, row.accountLabel, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 8, row.brokerReference, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 9, row.symbol, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 10, row.instrumentName, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 11, row.assetClass, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 12, row.region, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 13, row.tradeCode, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 14, row.tradeThesis, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 15, row.side, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_double(stmt, 16, row.quantity)
+        sqlite3_bind_double(stmt, 17, row.price)
+        sqlite3_bind_text(stmt, 18, row.currencyCode, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_double(stmt, 19, row.grossAmount)
+        sqlite3_bind_double(stmt, 20, row.fees)
+        sqlite3_bind_double(stmt, 21, row.netAmount)
+        sqlite3_bind_double(stmt, 22, row.fxRateToBase)
+        sqlite3_bind_text(stmt, 23, row.baseCurrencyCode, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 24, row.status, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 25, row.sourceType, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 26, row.sourceFileName, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 27, row.rawPayloadJSON, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 28, row.note, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_int64(stmt, 29, row.createdAtMs)
+        sqlite3_bind_int64(stmt, 30, row.updatedAtMs)
+        sqlite3_bind_int64(stmt, 31, row.deleted)
+    }
+
+    private func read(_ stmt: OpaquePointer?) -> NJInvestmentLedgerTransaction {
+        NJInvestmentLedgerTransaction(
+            ledgerTransactionID: text(stmt, 0),
+            transactionNumber: sqlite3_column_int64(stmt, 1),
+            tradeDateKey: text(stmt, 2),
+            occurredAtMs: sqlite3_column_int64(stmt, 3),
+            institution: text(stmt, 4),
+            accountID: text(stmt, 5),
+            accountLabel: text(stmt, 6),
+            brokerReference: text(stmt, 7),
+            symbol: text(stmt, 8),
+            instrumentName: text(stmt, 9),
+            assetClass: text(stmt, 10),
+            region: text(stmt, 11),
+            tradeCode: text(stmt, 12),
+            tradeThesis: text(stmt, 13),
+            side: text(stmt, 14),
+            quantity: sqlite3_column_double(stmt, 15),
+            price: sqlite3_column_double(stmt, 16),
+            currencyCode: text(stmt, 17),
+            grossAmount: sqlite3_column_double(stmt, 18),
+            fees: sqlite3_column_double(stmt, 19),
+            netAmount: sqlite3_column_double(stmt, 20),
+            fxRateToBase: sqlite3_column_double(stmt, 21),
+            baseCurrencyCode: text(stmt, 22),
+            status: text(stmt, 23),
+            sourceType: text(stmt, 24),
+            sourceFileName: text(stmt, 25),
+            rawPayloadJSON: text(stmt, 26),
+            note: text(stmt, 27),
+            createdAtMs: sqlite3_column_int64(stmt, 28),
+            updatedAtMs: sqlite3_column_int64(stmt, 29),
+            deleted: sqlite3_column_int64(stmt, 30)
+        )
+    }
+
+    private func text(_ stmt: OpaquePointer?, _ column: Int32) -> String {
+        sqlite3_column_text(stmt, column).flatMap { String(cString: $0) } ?? ""
+    }
+
+    private func string(_ value: Any?) -> String {
+        value as? String ?? ""
+    }
+
+    private func int64(_ value: Any?) -> Int64 {
+        if let value = value as? Int64 { return value }
+        if let value = value as? Int { return Int64(value) }
+        if let value = value as? NSNumber { return value.int64Value }
+        if let value = value as? String { return Int64(value) ?? 0 }
+        return 0
+    }
+
+    private func double(_ value: Any?, fallback: Double = 0) -> Double {
+        if let value = value as? Double { return value }
+        if let value = value as? NSNumber { return value.doubleValue }
+        if let value = value as? String { return Double(value) ?? fallback }
+        return fallback
+    }
+}
+
+final class DBInvestmentChartDrawingTable {
+    let db: SQLiteDB
+    let enqueueDirty: (String, String, String, Int64) -> Void
+
+    init(db: SQLiteDB, enqueueDirty: @escaping (String, String, String, Int64) -> Void) {
+        self.db = db
+        self.enqueueDirty = enqueueDirty
+    }
+
+    func listActive() -> [NJInvestmentChartDrawing] {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT drawing_id, symbol_key, drawing_type, start_x, start_y, end_x, end_y,
+                   created_at_ms, updated_at_ms, deleted
+            FROM nj_investment_chart_drawing
+            WHERE deleted = 0
+            ORDER BY symbol_key ASC, drawing_type ASC, updated_at_ms DESC;
+            """
+            guard sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(stmt) }
+            var out: [NJInvestmentChartDrawing] = []
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                out.append(read(stmt))
+            }
+            return out
+        }
+    }
+
+    func load(drawingID: String) -> NJInvestmentChartDrawing? {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT drawing_id, symbol_key, drawing_type, start_x, start_y, end_x, end_y,
+                   created_at_ms, updated_at_ms, deleted
+            FROM nj_investment_chart_drawing
+            WHERE drawing_id = ?
+            LIMIT 1;
+            """
+            guard sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, drawingID, -1, SQLITE_TRANSIENT)
+            guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+            return read(stmt)
+        }
+    }
+
+    func upsert(_ row: NJInvestmentChartDrawing, enqueue: Bool = true) {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            INSERT INTO nj_investment_chart_drawing(
+                drawing_id, symbol_key, drawing_type, start_x, start_y, end_x, end_y,
+                created_at_ms, updated_at_ms, deleted
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(drawing_id) DO UPDATE SET
+                symbol_key = excluded.symbol_key,
+                drawing_type = excluded.drawing_type,
+                start_x = excluded.start_x,
+                start_y = excluded.start_y,
+                end_x = excluded.end_x,
+                end_y = excluded.end_y,
+                created_at_ms = CASE
+                    WHEN nj_investment_chart_drawing.created_at_ms IS NULL OR nj_investment_chart_drawing.created_at_ms = 0
+                    THEN excluded.created_at_ms
+                    ELSE nj_investment_chart_drawing.created_at_ms
+                END,
+                updated_at_ms = excluded.updated_at_ms,
+                deleted = excluded.deleted;
+            """
+            guard sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+            defer { sqlite3_finalize(stmt) }
+            bind(row, stmt)
+            _ = sqlite3_step(stmt)
+        }
+        if enqueue {
+            enqueueDirty("investment_chart_drawing", row.drawingID, "upsert", row.updatedAtMs)
+        }
+    }
+
+    func markDeleted(drawingID: String, symbolKey: String, nowMs: Int64) {
+        let existing = load(drawingID: drawingID)
+        upsert(
+            NJInvestmentChartDrawing(
+                drawingID: drawingID,
+                symbolKey: existing?.symbolKey ?? symbolKey,
+                drawingType: existing?.drawingType ?? "trend",
+                startX: existing?.startX ?? 0,
+                startY: existing?.startY ?? 0,
+                endX: existing?.endX ?? 0,
+                endY: existing?.endY ?? 0,
+                createdAtMs: existing?.createdAtMs ?? nowMs,
+                updatedAtMs: nowMs,
+                deleted: 1
+            )
+        )
+    }
+
+    func loadFields(drawingID: String) -> [String: Any]? {
+        guard let row = load(drawingID: drawingID) else { return nil }
+        return [
+            "drawing_id": row.drawingID,
+            "symbol_key": row.symbolKey,
+            "drawing_type": row.drawingType,
+            "start_x": row.startX,
+            "start_y": row.startY,
+            "end_x": row.endX,
+            "end_y": row.endY,
+            "created_at_ms": row.createdAtMs,
+            "updated_at_ms": row.updatedAtMs,
+            "deleted": row.deleted
+        ]
+    }
+
+    func applyRemote(_ fields: [String: Any]) {
+        let id = string(fields["drawing_id"]).isEmpty ? string(fields["id"]) : string(fields["drawing_id"])
+        guard !id.isEmpty else { return }
+        upsert(
+            NJInvestmentChartDrawing(
+                drawingID: id,
+                symbolKey: string(fields["symbol_key"]),
+                drawingType: string(fields["drawing_type"], fallback: "trend"),
+                startX: double(fields["start_x"]),
+                startY: double(fields["start_y"]),
+                endX: double(fields["end_x"]),
+                endY: double(fields["end_y"]),
+                createdAtMs: int64(fields["created_at_ms"]),
+                updatedAtMs: int64(fields["updated_at_ms"]),
+                deleted: int64(fields["deleted"])
+            ),
+            enqueue: false
+        )
+    }
+
+    private func bind(_ row: NJInvestmentChartDrawing, _ stmt: OpaquePointer?) {
+        sqlite3_bind_text(stmt, 1, row.drawingID, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 2, row.symbolKey, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 3, row.drawingType, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_double(stmt, 4, row.startX)
+        sqlite3_bind_double(stmt, 5, row.startY)
+        sqlite3_bind_double(stmt, 6, row.endX)
+        sqlite3_bind_double(stmt, 7, row.endY)
+        sqlite3_bind_int64(stmt, 8, row.createdAtMs)
+        sqlite3_bind_int64(stmt, 9, row.updatedAtMs)
+        sqlite3_bind_int64(stmt, 10, row.deleted)
+    }
+
+    private func read(_ stmt: OpaquePointer?) -> NJInvestmentChartDrawing {
+        NJInvestmentChartDrawing(
+            drawingID: text(stmt, 0),
+            symbolKey: text(stmt, 1),
+            drawingType: text(stmt, 2),
+            startX: sqlite3_column_double(stmt, 3),
+            startY: sqlite3_column_double(stmt, 4),
+            endX: sqlite3_column_double(stmt, 5),
+            endY: sqlite3_column_double(stmt, 6),
+            createdAtMs: sqlite3_column_int64(stmt, 7),
+            updatedAtMs: sqlite3_column_int64(stmt, 8),
+            deleted: sqlite3_column_int64(stmt, 9)
+        )
+    }
+
+    private func text(_ stmt: OpaquePointer?, _ column: Int32) -> String {
+        sqlite3_column_text(stmt, column).flatMap { String(cString: $0) } ?? ""
+    }
+
+    private func string(_ value: Any?, fallback: String = "") -> String {
+        if let value = value as? String { return value }
+        if let value { return "\(value)" }
+        return fallback
+    }
+
+    private func int64(_ value: Any?) -> Int64 {
+        if let value = value as? Int64 { return value }
+        if let value = value as? Int { return Int64(value) }
+        if let value = value as? NSNumber { return value.int64Value }
+        if let value = value as? String { return Int64(value) ?? 0 }
+        return 0
+    }
+
+    private func double(_ value: Any?) -> Double {
+        if let value = value as? Double { return value }
+        if let value = value as? Int { return Double(value) }
+        if let value = value as? NSNumber { return value.doubleValue }
+        if let value = value as? String { return Double(value) ?? 0 }
+        return 0
+    }
+}
+
+struct NJInvestmentSymbolRecord: Identifiable, Hashable {
+    var id: String { symbolID }
+    var symbolID: String
+    var displaySymbol: String
+    var name: String
+    var assetClass: String
+    var market: String
+    var exchange: String
+    var currency: String
+    var ibSymbol: String
+    var ibSecType: String
+    var ibExchange: String
+    var ibCurrency: String
+    var newsKeywordsJSON: String
+    var macroTagsJSON: String
+    var status: String
+    var createdAtMs: Int64
+    var updatedAtMs: Int64
+    var deleted: Int64
+}
+
+struct NJInvestmentSymbolRelationshipRecord: Identifiable, Hashable {
+    var id: String { relationshipID }
+    var relationshipID: String
+    var symbolID: String
+    var sourceType: String
+    var sourceID: String
+    var sourceTitle: String
+    var role: String
+    var priority: Int64
+    var status: String
+    var alertMode: String
+    var openedAtMs: Int64
+    var closedAtMs: Int64
+    var notes: String
+    var createdAtMs: Int64
+    var updatedAtMs: Int64
+    var deleted: Int64
+}
+
+final class DBInvestmentSymbolTable {
+    let db: SQLiteDB
+    let enqueueDirty: (String, String, String, Int64) -> Void
+
+    init(db: SQLiteDB, enqueueDirty: @escaping (String, String, String, Int64) -> Void) {
+        self.db = db
+        self.enqueueDirty = enqueueDirty
+    }
+
+    func listActive() -> [NJInvestmentSymbolRecord] {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT symbol_id, display_symbol, name, asset_class, market, exchange, currency,
+                   ib_symbol, ib_sec_type, ib_exchange, ib_currency, news_keywords_json,
+                   macro_tags_json, status, created_at_ms, updated_at_ms, deleted
+            FROM nj_investment_symbol
+            WHERE deleted = 0 AND status = 'active'
+            ORDER BY market ASC, exchange ASC, display_symbol ASC;
+            """
+            guard sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(stmt) }
+            var out: [NJInvestmentSymbolRecord] = []
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                out.append(read(stmt))
+            }
+            return out
+        }
+    }
+
+    func load(symbolID: String) -> NJInvestmentSymbolRecord? {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT symbol_id, display_symbol, name, asset_class, market, exchange, currency,
+                   ib_symbol, ib_sec_type, ib_exchange, ib_currency, news_keywords_json,
+                   macro_tags_json, status, created_at_ms, updated_at_ms, deleted
+            FROM nj_investment_symbol
+            WHERE symbol_id = ?
+            LIMIT 1;
+            """
+            guard sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, symbolID, -1, SQLITE_TRANSIENT)
+            guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+            return read(stmt)
+        }
+    }
+
+    func upsert(_ row: NJInvestmentSymbolRecord, enqueue: Bool = true) {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            INSERT INTO nj_investment_symbol(
+                symbol_id, display_symbol, name, asset_class, market, exchange, currency,
+                ib_symbol, ib_sec_type, ib_exchange, ib_currency, news_keywords_json,
+                macro_tags_json, status, created_at_ms, updated_at_ms, deleted
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(symbol_id) DO UPDATE SET
+                display_symbol = excluded.display_symbol,
+                name = excluded.name,
+                asset_class = excluded.asset_class,
+                market = excluded.market,
+                exchange = excluded.exchange,
+                currency = excluded.currency,
+                ib_symbol = excluded.ib_symbol,
+                ib_sec_type = excluded.ib_sec_type,
+                ib_exchange = excluded.ib_exchange,
+                ib_currency = excluded.ib_currency,
+                news_keywords_json = excluded.news_keywords_json,
+                macro_tags_json = excluded.macro_tags_json,
+                status = excluded.status,
+                created_at_ms = CASE
+                    WHEN nj_investment_symbol.created_at_ms IS NULL OR nj_investment_symbol.created_at_ms = 0
+                    THEN excluded.created_at_ms
+                    ELSE nj_investment_symbol.created_at_ms
+                END,
+                updated_at_ms = excluded.updated_at_ms,
+                deleted = excluded.deleted;
+            """
+            guard sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+            defer { sqlite3_finalize(stmt) }
+            bind(row, stmt)
+            _ = sqlite3_step(stmt)
+        }
+        if enqueue {
+            enqueueDirty("investment_symbol", row.symbolID, "upsert", row.updatedAtMs)
+        }
+    }
+
+    func loadFields(symbolID: String) -> [String: Any]? {
+        guard let row = load(symbolID: symbolID) else { return nil }
+        return [
+            "symbol_id": row.symbolID,
+            "display_symbol": row.displaySymbol,
+            "name": row.name,
+            "asset_class": row.assetClass,
+            "market": row.market,
+            "exchange": row.exchange,
+            "currency": row.currency,
+            "ib_symbol": row.ibSymbol,
+            "ib_sec_type": row.ibSecType,
+            "ib_exchange": row.ibExchange,
+            "ib_currency": row.ibCurrency,
+            "news_keywords_json": row.newsKeywordsJSON,
+            "macro_tags_json": row.macroTagsJSON,
+            "status": row.status,
+            "created_at_ms": row.createdAtMs,
+            "updated_at_ms": row.updatedAtMs,
+            "deleted": row.deleted
+        ]
+    }
+
+    func applyRemote(_ fields: [String: Any]) {
+        let id = string(fields["symbol_id"]).isEmpty ? string(fields["id"]) : string(fields["symbol_id"])
+        guard !id.isEmpty else { return }
+        upsert(
+            NJInvestmentSymbolRecord(
+                symbolID: id,
+                displaySymbol: string(fields["display_symbol"]),
+                name: string(fields["name"]),
+                assetClass: string(fields["asset_class"]),
+                market: string(fields["market"]),
+                exchange: string(fields["exchange"]),
+                currency: string(fields["currency"]),
+                ibSymbol: string(fields["ib_symbol"]),
+                ibSecType: string(fields["ib_sec_type"]),
+                ibExchange: string(fields["ib_exchange"]),
+                ibCurrency: string(fields["ib_currency"]),
+                newsKeywordsJSON: string(fields["news_keywords_json"], fallback: "[]"),
+                macroTagsJSON: string(fields["macro_tags_json"], fallback: "[]"),
+                status: string(fields["status"], fallback: "inactive"),
+                createdAtMs: int64(fields["created_at_ms"]),
+                updatedAtMs: int64(fields["updated_at_ms"]),
+                deleted: int64(fields["deleted"])
+            ),
+            enqueue: false
+        )
+    }
+
+    private func bind(_ row: NJInvestmentSymbolRecord, _ stmt: OpaquePointer?) {
+        sqlite3_bind_text(stmt, 1, row.symbolID, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 2, row.displaySymbol, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 3, row.name, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 4, row.assetClass, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 5, row.market, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 6, row.exchange, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 7, row.currency, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 8, row.ibSymbol, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 9, row.ibSecType, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 10, row.ibExchange, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 11, row.ibCurrency, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 12, row.newsKeywordsJSON, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 13, row.macroTagsJSON, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 14, row.status, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_int64(stmt, 15, row.createdAtMs)
+        sqlite3_bind_int64(stmt, 16, row.updatedAtMs)
+        sqlite3_bind_int64(stmt, 17, row.deleted)
+    }
+
+    private func read(_ stmt: OpaquePointer?) -> NJInvestmentSymbolRecord {
+        NJInvestmentSymbolRecord(
+            symbolID: text(stmt, 0),
+            displaySymbol: text(stmt, 1),
+            name: text(stmt, 2),
+            assetClass: text(stmt, 3),
+            market: text(stmt, 4),
+            exchange: text(stmt, 5),
+            currency: text(stmt, 6),
+            ibSymbol: text(stmt, 7),
+            ibSecType: text(stmt, 8),
+            ibExchange: text(stmt, 9),
+            ibCurrency: text(stmt, 10),
+            newsKeywordsJSON: text(stmt, 11),
+            macroTagsJSON: text(stmt, 12),
+            status: text(stmt, 13),
+            createdAtMs: sqlite3_column_int64(stmt, 14),
+            updatedAtMs: sqlite3_column_int64(stmt, 15),
+            deleted: sqlite3_column_int64(stmt, 16)
+        )
+    }
+
+    private func text(_ stmt: OpaquePointer?, _ column: Int32) -> String {
+        sqlite3_column_text(stmt, column).flatMap { String(cString: $0) } ?? ""
+    }
+
+    private func string(_ value: Any?, fallback: String = "") -> String {
+        if let value = value as? String { return value }
+        if let value { return "\(value)" }
+        return fallback
+    }
+
+    private func int64(_ value: Any?) -> Int64 {
+        if let value = value as? Int64 { return value }
+        if let value = value as? Int { return Int64(value) }
+        if let value = value as? NSNumber { return value.int64Value }
+        if let value = value as? String { return Int64(value) ?? 0 }
+        return 0
+    }
+}
+
+final class DBInvestmentSymbolRelationshipTable {
+    let db: SQLiteDB
+    let enqueueDirty: (String, String, String, Int64) -> Void
+
+    init(db: SQLiteDB, enqueueDirty: @escaping (String, String, String, Int64) -> Void) {
+        self.db = db
+        self.enqueueDirty = enqueueDirty
+    }
+
+    func listActive() -> [NJInvestmentSymbolRelationshipRecord] {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT relationship_id, symbol_id, source_type, source_id, source_title, role,
+                   priority, status, alert_mode, opened_at_ms, closed_at_ms, notes,
+                   created_at_ms, updated_at_ms, deleted
+            FROM nj_investment_symbol_relationship
+            WHERE deleted = 0 AND status IN ('watch', 'active', 'research')
+            ORDER BY priority ASC, source_type ASC, source_title ASC, symbol_id ASC;
+            """
+            guard sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(stmt) }
+            var out: [NJInvestmentSymbolRelationshipRecord] = []
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                out.append(read(stmt))
+            }
+            return out
+        }
+    }
+
+    func load(relationshipID: String) -> NJInvestmentSymbolRelationshipRecord? {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT relationship_id, symbol_id, source_type, source_id, source_title, role,
+                   priority, status, alert_mode, opened_at_ms, closed_at_ms, notes,
+                   created_at_ms, updated_at_ms, deleted
+            FROM nj_investment_symbol_relationship
+            WHERE relationship_id = ?
+            LIMIT 1;
+            """
+            guard sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, relationshipID, -1, SQLITE_TRANSIENT)
+            guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+            return read(stmt)
+        }
+    }
+
+    func hasActiveRelationship(symbolID: String) -> Bool {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT 1 FROM nj_investment_symbol_relationship
+            WHERE symbol_id = ? AND deleted = 0 AND status IN ('watch', 'active', 'research')
+            LIMIT 1;
+            """
+            guard sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, symbolID, -1, SQLITE_TRANSIENT)
+            return sqlite3_step(stmt) == SQLITE_ROW
+        }
+    }
+
+    func upsert(_ row: NJInvestmentSymbolRelationshipRecord, enqueue: Bool = true) {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            INSERT INTO nj_investment_symbol_relationship(
+                relationship_id, symbol_id, source_type, source_id, source_title, role,
+                priority, status, alert_mode, opened_at_ms, closed_at_ms, notes,
+                created_at_ms, updated_at_ms, deleted
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(relationship_id) DO UPDATE SET
+                symbol_id = excluded.symbol_id,
+                source_type = excluded.source_type,
+                source_id = excluded.source_id,
+                source_title = excluded.source_title,
+                role = excluded.role,
+                priority = excluded.priority,
+                status = excluded.status,
+                alert_mode = excluded.alert_mode,
+                opened_at_ms = excluded.opened_at_ms,
+                closed_at_ms = excluded.closed_at_ms,
+                notes = excluded.notes,
+                created_at_ms = CASE
+                    WHEN nj_investment_symbol_relationship.created_at_ms IS NULL OR nj_investment_symbol_relationship.created_at_ms = 0
+                    THEN excluded.created_at_ms
+                    ELSE nj_investment_symbol_relationship.created_at_ms
+                END,
+                updated_at_ms = excluded.updated_at_ms,
+                deleted = excluded.deleted;
+            """
+            guard sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+            defer { sqlite3_finalize(stmt) }
+            bind(row, stmt)
+            _ = sqlite3_step(stmt)
+        }
+        if enqueue {
+            enqueueDirty("investment_symbol_relationship", row.relationshipID, "upsert", row.updatedAtMs)
+        }
+    }
+
+    func closeSource(sourceType: String, sourceID: String, nowMs: Int64) -> [String] {
+        let relationships: [NJInvestmentSymbolRelationshipRecord] = db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT relationship_id, symbol_id, source_type, source_id, source_title, role,
+                   priority, status, alert_mode, opened_at_ms, closed_at_ms, notes,
+                   created_at_ms, updated_at_ms, deleted
+            FROM nj_investment_symbol_relationship
+            WHERE source_type = ? AND source_id = ? AND deleted = 0 AND status != 'closed';
+            """
+            guard sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, sourceType, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 2, sourceID, -1, SQLITE_TRANSIENT)
+            var out: [NJInvestmentSymbolRelationshipRecord] = []
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                out.append(read(stmt))
+            }
+            return out
+        }
+
+        var touchedSymbols: [String] = []
+        for row in relationships {
+            var closed = row
+            closed.status = "closed"
+            closed.closedAtMs = nowMs
+            closed.updatedAtMs = nowMs
+            upsert(closed)
+            touchedSymbols.append(row.symbolID)
+        }
+        return Array(Set(touchedSymbols))
+    }
+
+    func loadFields(relationshipID: String) -> [String: Any]? {
+        guard let row = load(relationshipID: relationshipID) else { return nil }
+        return [
+            "relationship_id": row.relationshipID,
+            "symbol_id": row.symbolID,
+            "source_type": row.sourceType,
+            "source_id": row.sourceID,
+            "source_title": row.sourceTitle,
+            "role": row.role,
+            "priority": row.priority,
+            "status": row.status,
+            "alert_mode": row.alertMode,
+            "opened_at_ms": row.openedAtMs,
+            "closed_at_ms": row.closedAtMs,
+            "notes": row.notes,
+            "created_at_ms": row.createdAtMs,
+            "updated_at_ms": row.updatedAtMs,
+            "deleted": row.deleted
+        ]
+    }
+
+    func applyRemote(_ fields: [String: Any]) {
+        let id = string(fields["relationship_id"]).isEmpty ? string(fields["id"]) : string(fields["relationship_id"])
+        guard !id.isEmpty else { return }
+        upsert(
+            NJInvestmentSymbolRelationshipRecord(
+                relationshipID: id,
+                symbolID: string(fields["symbol_id"]),
+                sourceType: string(fields["source_type"]),
+                sourceID: string(fields["source_id"]),
+                sourceTitle: string(fields["source_title"]),
+                role: string(fields["role"]),
+                priority: int64(fields["priority"]),
+                status: string(fields["status"], fallback: "watch"),
+                alertMode: string(fields["alert_mode"], fallback: "digest"),
+                openedAtMs: int64(fields["opened_at_ms"]),
+                closedAtMs: int64(fields["closed_at_ms"]),
+                notes: string(fields["notes"]),
+                createdAtMs: int64(fields["created_at_ms"]),
+                updatedAtMs: int64(fields["updated_at_ms"]),
+                deleted: int64(fields["deleted"])
+            ),
+            enqueue: false
+        )
+    }
+
+    private func bind(_ row: NJInvestmentSymbolRelationshipRecord, _ stmt: OpaquePointer?) {
+        sqlite3_bind_text(stmt, 1, row.relationshipID, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 2, row.symbolID, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 3, row.sourceType, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 4, row.sourceID, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 5, row.sourceTitle, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 6, row.role, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_int64(stmt, 7, row.priority)
+        sqlite3_bind_text(stmt, 8, row.status, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_text(stmt, 9, row.alertMode, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_int64(stmt, 10, row.openedAtMs)
+        sqlite3_bind_int64(stmt, 11, row.closedAtMs)
+        sqlite3_bind_text(stmt, 12, row.notes, -1, SQLITE_TRANSIENT)
+        sqlite3_bind_int64(stmt, 13, row.createdAtMs)
+        sqlite3_bind_int64(stmt, 14, row.updatedAtMs)
+        sqlite3_bind_int64(stmt, 15, row.deleted)
+    }
+
+    private func read(_ stmt: OpaquePointer?) -> NJInvestmentSymbolRelationshipRecord {
+        NJInvestmentSymbolRelationshipRecord(
+            relationshipID: text(stmt, 0),
+            symbolID: text(stmt, 1),
+            sourceType: text(stmt, 2),
+            sourceID: text(stmt, 3),
+            sourceTitle: text(stmt, 4),
+            role: text(stmt, 5),
+            priority: sqlite3_column_int64(stmt, 6),
+            status: text(stmt, 7),
+            alertMode: text(stmt, 8),
+            openedAtMs: sqlite3_column_int64(stmt, 9),
+            closedAtMs: sqlite3_column_int64(stmt, 10),
+            notes: text(stmt, 11),
+            createdAtMs: sqlite3_column_int64(stmt, 12),
+            updatedAtMs: sqlite3_column_int64(stmt, 13),
+            deleted: sqlite3_column_int64(stmt, 14)
+        )
+    }
+
+    private func text(_ stmt: OpaquePointer?, _ column: Int32) -> String {
+        sqlite3_column_text(stmt, column).flatMap { String(cString: $0) } ?? ""
+    }
+
+    private func string(_ value: Any?, fallback: String = "") -> String {
+        if let value = value as? String { return value }
+        if let value { return "\(value)" }
+        return fallback
+    }
+
+    private func int64(_ value: Any?) -> Int64 {
+        if let value = value as? Int64 { return value }
+        if let value = value as? Int { return Int64(value) }
+        if let value = value as? NSNumber { return value.int64Value }
+        if let value = value as? String { return Int64(value) ?? 0 }
+        return 0
     }
 }

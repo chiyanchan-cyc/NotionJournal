@@ -2,12 +2,12 @@ import Foundation
 import SQLite3
 
 private enum NJLog {
-    static let push = true
-    static let pull = false
-    static let noisy = false
-    static func p(_ s: String) { if push { print(s) } }
-    static func l(_ s: String) { if pull { print(s) } }
-    static func n(_ s: String) { if noisy { print(s) } }
+    nonisolated static var push: Bool { false }
+    nonisolated static var pull: Bool { false }
+    nonisolated static var noisy: Bool { false }
+    nonisolated static func p(_ s: String) { if push { print(s) } }
+    nonisolated static func l(_ s: String) { if pull { print(s) } }
+    nonisolated static func n(_ s: String) { if noisy { print(s) } }
 }
 
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
@@ -17,6 +17,15 @@ actor NJCloudSyncCoordinator {
     private let transport: NJCloudKitTransport
     private var isSyncing = false
     private var pendingSync = false
+    private var isPulling = false
+    private let syncDisabledEntities: Set<String> = [
+        "health_sample",
+        "finance_macro_event",
+        "investment_chart_drawing",
+        "renewal_item",
+        "card_schema",
+        "card"
+    ]
     private let maxFutureCursorSkewMs: Int64 = 60_000
     private let overlapPullMsByEntity: [String: Int64] = [
         "block": 300_000,
@@ -24,7 +33,9 @@ actor NJCloudSyncCoordinator {
         "note_block": 300_000,
         "attachment": 300_000,
         "note": 120_000,
-        "finance_transaction": 300_000
+        "finance_transaction": 300_000,
+        "investment_ledger_transaction": 300_000,
+        "investment_chart_drawing": 300_000
     ]
 
     init(repo: DBNoteRepository, transport: NJCloudKitTransport) {
@@ -57,21 +68,62 @@ actor NJCloudSyncCoordinator {
         }
     }
 
+    func pushPendingOnly() async {
+        if isSyncing {
+            pendingSync = true
+            return
+        }
+        isSyncing = true
+        defer { isSyncing = false }
+
+        for _ in 0..<6 {
+            pendingSync = false
+
+            let beforeCount = await MainActor.run {
+                repo.pendingDirtyCount()
+            }
+            if beforeCount <= 0 { break }
+
+            await pushAll()
+
+            let remainingDirty = await MainActor.run {
+                repo.pendingDirtyCount()
+            }
+            if remainingDirty <= 0 || remainingDirty >= beforeCount { break }
+        }
+    }
+
     func pullAll(forceSinceZero: Bool) async {
+        if isPulling {
+            NJLog.l("NJ_CK_PULL_SKIP reason=in_flight forceSinceZero=\(forceSinceZero)")
+            return
+        }
+        isPulling = true
+        defer { isPulling = false }
+
         let order: [(String, String)] = await MainActor.run { NJCloudSchema.syncOrder }
 
         for (entity, recordType) in order {
+            if syncDisabledEntities.contains(entity) {
+                NJLog.l("NJ_CK_PULL_SKIP entity=\(entity) reason=pull_query_not_deployed")
+                continue
+            }
+
             let cursorMs: Int64 = forceSinceZero ? 0 : await loadLastPullMs(entity: entity)
             let overlapMs = overlapPullMsByEntity[entity] ?? 0
             let sinceMs = max(0, cursorMs - overlapMs)
 
+            NJLog.l("NJ_CK_PULL_BEGIN entity=\(entity) recordType=\(recordType) forceSinceZero=\(forceSinceZero) cursor=\(cursorMs) since=\(sinceMs)")
             var (rawRows, newMax) = await transport.pullEntityAll(entity: entity, recordType: recordType, sinceMs: sinceMs)
+            NJLog.l("NJ_CK_PULL_TRANSPORT_DONE entity=\(entity) rawRows=\(rawRows.count) newMax=\(newMax)")
 
             if entity == "table" {
                 let tableIDs = await MainActor.run {
                     NJTableStore.shared.listKnownTableIDs()
                 }
+                NJLog.l("NJ_CK_PULL_TABLE_DIRECT_BEGIN requested=\(tableIDs.count)")
                 let directRows = await transport.fetchEntityRecords(entity: entity, recordType: recordType, ids: tableIDs)
+                NJLog.l("NJ_CK_PULL_TABLE_DIRECT_DONE requested=\(tableIDs.count) rows=\(directRows.count)")
                 if !directRows.isEmpty {
                     rawRows.append(contentsOf: directRows)
                     for row in directRows {
@@ -86,27 +138,42 @@ actor NJCloudSyncCoordinator {
             }
 
             if !rows.isEmpty {
+                NJLog.l("NJ_CK_PULL_APPLY_BEGIN entity=\(entity) rows=\(rows.count)")
                 await MainActor.run {
                     DBDirtyQueueTable.withPullScope {
                         repo.applyPulled(entity: entity, rows: rows)
                     }
                 }
+                NJLog.l("NJ_CK_PULL_APPLY_DONE entity=\(entity) rows=\(rows.count)")
             }
 
             if newMax > cursorMs {
                 await saveLastPullMs(entity: entity, ms: newMax)
             }
 
-//            print("NJ_CK_PULL_OK entity=\(entity) rows=\(rows.count) newMax=\(newMax)")
+            NJLog.l("NJ_CK_PULL_END entity=\(entity) rows=\(rows.count) newMax=\(newMax) savedCursor=\(newMax > cursorMs ? 1 : 0)")
         }
     }
 
     func pushAll() async {
         let order: [(String, String)] = await MainActor.run { NJCloudSchema.syncOrder }
 
-        let batch = await MainActor.run {
+        let rawBatch = await MainActor.run {
             repo.takeDirtyBatchDetailed(limit: 50)
         }
+        let supportedEntities = Set(order.map(\.0)).subtracting(syncDisabledEntities)
+        let skippedBatch = rawBatch.filter { !supportedEntities.contains($0.entity) }
+        if !skippedBatch.isEmpty {
+            let skippedCounts = Dictionary(grouping: skippedBatch, by: { $0.entity }).mapValues(\.count)
+            NJLog.p("NJ_PUSH_SKIP_UNSUPPORTED byEntity=\(skippedCounts)")
+            for item in skippedBatch {
+                await MainActor.run {
+                    repo.clearDirty(entity: item.entity, entityID: item.entityID)
+                }
+            }
+        }
+
+        let batch = rawBatch.filter { supportedEntities.contains($0.entity) }
 
         let sample = batch.prefix(5).map { "\($0.entity):\($0.entityID):\($0.op)" }
         let entityCounts = Dictionary(grouping: batch, by: { $0.entity }).mapValues(\.count)
@@ -198,6 +265,14 @@ actor NJCloudSyncCoordinator {
             return (row["planning_key"] as? String) ?? (row["id"] as? String) ?? ""
         case "finance_transaction":
             return (row["transaction_id"] as? String) ?? (row["id"] as? String) ?? ""
+        case "investment_ledger_transaction":
+            return (row["ledger_transaction_id"] as? String) ?? (row["id"] as? String) ?? ""
+        case "investment_chart_drawing":
+            return (row["drawing_id"] as? String) ?? (row["id"] as? String) ?? ""
+        case "investment_symbol":
+            return (row["symbol_id"] as? String) ?? (row["id"] as? String) ?? ""
+        case "investment_symbol_relationship":
+            return (row["relationship_id"] as? String) ?? (row["id"] as? String) ?? ""
         case "agent_heartbeat_run":
             return (row["run_id"] as? String) ?? (row["id"] as? String) ?? ""
         case "agent_backfill_task":

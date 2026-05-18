@@ -348,8 +348,8 @@ final class DBBlockTable {
         }
     }
 
-    func markBlockDeleted(blockID: String) {
-        let now = DBNoteRepository.nowMs()
+    func markBlockDeleted(blockID: String, nowMs: Int64? = nil) {
+        let now = nowMs ?? DBNoteRepository.nowMs()
         db.withDB { dbp in
             var stmt: OpaquePointer?
             let rc0 = sqlite3_prepare_v2(dbp, """
@@ -672,22 +672,92 @@ final class DBBlockTable {
         }
     }
 
-    private func hasPendingLocalPush(blockID: String) -> Bool {
+    private func pendingLocalPushUpdatedAtMs(blockID: String) -> Int64? {
         db.withDB { dbp in
             var stmt: OpaquePointer?
             let rc = sqlite3_prepare_v2(dbp, """
-            SELECT 1
+            SELECT updated_at_ms
             FROM nj_dirty
             WHERE entity='block'
               AND entity_id=? COLLATE NOCASE
               AND ignore=0
             LIMIT 1;
             """, -1, &stmt, nil)
-            if rc != SQLITE_OK { return false }
+            if rc != SQLITE_OK { return nil }
             defer { sqlite3_finalize(stmt) }
 
             sqlite3_bind_text(stmt, 1, blockID, -1, SQLITE_TRANSIENT)
+            guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+            return sqlite3_column_int64(stmt, 0)
+        }
+    }
+
+    private func isFutureCreatedAttachedWeeklyBlock(blockID: String, nowMs: Int64) -> Bool {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let rc = sqlite3_prepare_v2(dbp, """
+            SELECT 1
+            FROM nj_block b
+            WHERE b.block_id=? COLLATE NOCASE
+              AND b.deleted=0
+              AND b.created_at_ms > ?
+              AND EXISTS (
+                SELECT 1
+                FROM nj_note_block nb
+                WHERE nb.block_id=b.block_id
+                  AND nb.deleted=0
+              )
+              AND EXISTS (
+                SELECT 1
+                FROM nj_block_tag t
+                WHERE t.block_id=b.block_id
+                  AND t.tag='#WEEKLY' COLLATE NOCASE
+              )
+            LIMIT 1;
+            """, -1, &stmt, nil)
+            if rc != SQLITE_OK {
+                db.dbgErr(dbp, "isFutureCreatedAttachedWeeklyBlock.prepare", rc)
+                return false
+            }
+            defer { sqlite3_finalize(stmt) }
+
+            sqlite3_bind_text(stmt, 1, blockID, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int64(stmt, 2, nowMs)
             return sqlite3_step(stmt) == SQLITE_ROW
+        }
+    }
+
+    private func clearPendingLocalPush(blockID: String) {
+        db.withDB { dbp in
+            var dirtyStmt: OpaquePointer?
+            let dirtyRC = sqlite3_prepare_v2(dbp, """
+            DELETE FROM nj_dirty
+            WHERE entity='block'
+              AND entity_id=? COLLATE NOCASE;
+            """, -1, &dirtyStmt, nil)
+            if dirtyRC == SQLITE_OK {
+                sqlite3_bind_text(dirtyStmt, 1, blockID, -1, SQLITE_TRANSIENT)
+                let rc = sqlite3_step(dirtyStmt)
+                if rc != SQLITE_DONE { db.dbgErr(dbp, "clearPendingLocalPush.dirty.step", rc) }
+            } else {
+                db.dbgErr(dbp, "clearPendingLocalPush.dirty.prepare", dirtyRC)
+            }
+            sqlite3_finalize(dirtyStmt)
+
+            var blockStmt: OpaquePointer?
+            let blockRC = sqlite3_prepare_v2(dbp, """
+            UPDATE nj_block
+            SET dirty_bl=0
+            WHERE block_id=? COLLATE NOCASE;
+            """, -1, &blockStmt, nil)
+            if blockRC == SQLITE_OK {
+                sqlite3_bind_text(blockStmt, 1, blockID, -1, SQLITE_TRANSIENT)
+                let rc = sqlite3_step(blockStmt)
+                if rc != SQLITE_DONE { db.dbgErr(dbp, "clearPendingLocalPush.block.step", rc) }
+            } else {
+                db.dbgErr(dbp, "clearPendingLocalPush.block.prepare", blockRC)
+            }
+            sqlite3_finalize(blockStmt)
         }
     }
    
@@ -943,20 +1013,81 @@ final class DBBlockTable {
         let existing = loadNJBlock(blockID: blockID)
         let existingDeleted = (existing?["deleted"] as? Int64) ?? 0
         let existingUpdatedAtMs = (existing?["updated_at_ms"] as? Int64) ?? 0
+        let existingBlockType = (existing?["block_type"] as? String) ?? ""
+        let existingDomainTag = (existing?["domain_tag"] as? String) ?? ""
+        let existingTagJSON = (existing?["tag_json"] as? String) ?? ""
+        let existingGoalID = (existing?["goal_id"] as? String) ?? ""
+        let existingLineageID = (existing?["lineage_id"] as? String) ?? ""
+        let existingParentBlockID = (existing?["parent_block_id"] as? String) ?? ""
         let existingPayload = (existing?["payload_json"] as? String) ?? ""
         let incomingPayload = (f["payload_json"] as? String) ?? ""
-        let localPendingPush = hasPendingLocalPush(blockID: blockID)
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        let pendingLocalPushUpdatedAtMs = pendingLocalPushUpdatedAtMs(blockID: blockID)
+        let localPendingPush = pendingLocalPushUpdatedAtMs != nil
+        let activeLocalEditorLease = hasActiveLocalEditorLease(blockID: blockID, nowMs: nowMs)
+        let repairSkewMs: Int64 = 5 * 60 * 1000
+        let isFutureWeeklySeed = isFutureCreatedAttachedWeeklyBlock(blockID: blockID, nowMs: nowMs)
+        let localTimestampLooksPoisoned = existingUpdatedAtMs > nowMs + repairSkewMs
+        let remoteTimestampLooksSane = updatedAtMs > 0 && updatedAtMs <= nowMs + repairSkewMs
+        let pendingTimestampMatchesLocal = pendingLocalPushUpdatedAtMs == existingUpdatedAtMs
+        let pendingTimestampWasJustMade =
+            existingUpdatedAtMs > 0 &&
+            abs(nowMs - existingUpdatedAtMs) <= repairSkewMs
+        let acceptRemoteOverFutureTimestampRepair =
+            existingDeleted == 0 &&
+            isFutureWeeklySeed &&
+            hasPayloadKey &&
+            !activeLocalEditorLease &&
+            remoteTimestampLooksSane &&
+            (
+                localTimestampLooksPoisoned ||
+                (localPendingPush && pendingTimestampMatchesLocal && pendingTimestampWasJustMade)
+            )
 
-        // Prefer local content while a local block change is still pending push.
-        if existingDeleted == 0, localPendingPush {
-            print("NJ_BLOCK_PULL_SKIP_PENDING_LOCAL_PUSH block_id=\(blockID) remote_updated_at_ms=\(updatedAtMs) local_updated_at_ms=\(existingUpdatedAtMs)")
+        if existingDeleted != 0,
+           existingUpdatedAtMs >= updatedAtMs,
+           updatedAtMs > 0 {
             return
+        }
+
+        let acceptRemoteNewerOverPendingPush =
+            existingDeleted == 0 &&
+            localPendingPush &&
+            updatedAtMs > existingUpdatedAtMs &&
+            updatedAtMs > 0
+
+        let isEqualTimestampCloudEcho =
+            existingDeleted == deleted &&
+            updatedAtMs == existingUpdatedAtMs &&
+            updatedAtMs > 0 &&
+            (!hasPayloadKey || incomingPayload == existingPayload) &&
+            blockType == existingBlockType &&
+            domainTag == existingDomainTag &&
+            tagJSON == existingTagJSON &&
+            (goalID.isEmpty || goalID == existingGoalID) &&
+            lineageID == existingLineageID &&
+            parentBlockID == existingParentBlockID
+
+        // Prefer local content while a local block change is still pending push,
+        // but do not let a stale dirty row pin an older payload forever.
+        if existingDeleted == 0, localPendingPush {
+            if acceptRemoteNewerOverPendingPush {
+                print("NJ_BLOCK_PULL_ACCEPT_REMOTE_NEWER_OVER_PENDING_LOCAL_PUSH block_id=\(blockID) remote_updated_at_ms=\(updatedAtMs) local_updated_at_ms=\(existingUpdatedAtMs)")
+            } else if acceptRemoteOverFutureTimestampRepair {
+                print("NJ_BLOCK_PULL_ACCEPT_REMOTE_OVER_FUTURE_TIMESTAMP_REPAIR block_id=\(blockID) remote_updated_at_ms=\(updatedAtMs) local_updated_at_ms=\(existingUpdatedAtMs)")
+            } else if isEqualTimestampCloudEcho {
+                print("NJ_BLOCK_PULL_CLEAR_EQUAL_TIMESTAMP_ECHO block_id=\(blockID) remote_updated_at_ms=\(updatedAtMs) local_updated_at_ms=\(existingUpdatedAtMs)")
+                clearPendingLocalPush(blockID: blockID)
+                return
+            } else {
+                print("NJ_BLOCK_PULL_SKIP_PENDING_LOCAL_PUSH block_id=\(blockID) remote_updated_at_ms=\(updatedAtMs) local_updated_at_ms=\(existingUpdatedAtMs)")
+                return
+            }
         }
 
         if existingDeleted == 0,
            hasPayloadKey,
-           hasActiveLocalEditorLease(blockID: blockID, nowMs: nowMs) {
+           activeLocalEditorLease {
             print("NJ_BLOCK_PULL_SKIP_ACTIVE_LOCAL_LEASE block_id=\(blockID) remote_updated_at_ms=\(updatedAtMs) local_updated_at_ms=\(existingUpdatedAtMs)")
             return
         }
@@ -973,6 +1104,7 @@ final class DBBlockTable {
         if existingDeleted == 0,
            existingUpdatedAtMs >= updatedAtMs,
            updatedAtMs > 0,
+           !acceptRemoteOverFutureTimestampRepair,
            !shouldUpgradePlaceholderOnTie {
             return
         }
@@ -1051,6 +1183,10 @@ final class DBBlockTable {
 
             let rc1 = sqlite3_step(stmt)
             if rc1 != SQLITE_DONE { db.dbgErr(dbp, "applyNJBlock.step", rc1) }
+        }
+
+        if acceptRemoteNewerOverPendingPush || acceptRemoteOverFutureTimestampRepair {
+            clearPendingLocalPush(blockID: blockID)
         }
 
         if !DBDirtyQueueTable.isInPullScope() {

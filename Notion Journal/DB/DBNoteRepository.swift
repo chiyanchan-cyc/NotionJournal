@@ -29,6 +29,10 @@ final class DBNoteRepository {
     let financeJournalLinkTable: DBFinanceJournalLinkTable
     let financeSourceItemTable: DBFinanceSourceItemTable
     let financeTransactionTable: DBFinanceTransactionTable
+    let investmentLedgerTransactionTable: DBInvestmentLedgerTransactionTable
+    let investmentChartDrawingTable: DBInvestmentChartDrawingTable
+    let investmentSymbolTable: DBInvestmentSymbolTable
+    let investmentSymbolRelationshipTable: DBInvestmentSymbolRelationshipTable
     let agentHeartbeatRunTable: DBAgentHeartbeatRunTable
     let agentBackfillTaskTable: DBAgentBackfillTaskTable
     let timeSlotTable: DBTimeSlotTable
@@ -112,6 +116,22 @@ final class DBNoteRepository {
             db: db,
             enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
         )
+        self.investmentLedgerTransactionTable = DBInvestmentLedgerTransactionTable(
+            db: db,
+            enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
+        )
+        self.investmentChartDrawingTable = DBInvestmentChartDrawingTable(
+            db: db,
+            enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
+        )
+        self.investmentSymbolTable = DBInvestmentSymbolTable(
+            db: db,
+            enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
+        )
+        self.investmentSymbolRelationshipTable = DBInvestmentSymbolRelationshipTable(
+            db: db,
+            enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
+        )
         self.agentHeartbeatRunTable = DBAgentHeartbeatRunTable(
             db: db,
             enqueueDirty: { e, id, op, ms in dq.enqueueDirty(entity: e, entityID: id, op: op, updatedAtMs: ms) }
@@ -155,6 +175,10 @@ final class DBNoteRepository {
             financeJournalLinkTable: self.financeJournalLinkTable,
             financeSourceItemTable: self.financeSourceItemTable,
             financeTransactionTable: self.financeTransactionTable,
+            investmentLedgerTransactionTable: self.investmentLedgerTransactionTable,
+            investmentChartDrawingTable: self.investmentChartDrawingTable,
+            investmentSymbolTable: self.investmentSymbolTable,
+            investmentSymbolRelationshipTable: self.investmentSymbolRelationshipTable,
             agentHeartbeatRunTable: self.agentHeartbeatRunTable,
             agentBackfillTaskTable: self.agentBackfillTaskTable,
             timeSlotTable: self.timeSlotTable,
@@ -162,9 +186,63 @@ final class DBNoteRepository {
             renewalItemTable: self.renewalItemTable,
             cardTable: self.cardTable
         )
-        let migration = self.blockTable.migrateAllBlockPayloadsToProtonDocV2(nowMs: Self.nowMs())
-        if migration.changed > 0 {
-            print("NJ_DB_BLOCK_PAYLOAD_V2_MIGRATION scanned=\(migration.scanned) changed=\(migration.changed)")
+        let migrationKey = "block_payload_v2_migration_done_v2"
+        if kvValue(migrationKey) != "1" {
+            let migration = hasLegacyBlockPayloadStorage()
+                ? self.blockTable.migrateAllBlockPayloadsToProtonDocV2(nowMs: Self.nowMs())
+                : (scanned: 0, changed: 0)
+            setKV(migrationKey, "1")
+            if migration.changed > 0 {
+                print("NJ_DB_BLOCK_PAYLOAD_V2_MIGRATION scanned=\(migration.scanned) changed=\(migration.changed)")
+            }
+        }
+    }
+
+    private func hasLegacyBlockPayloadStorage() -> Bool {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let rc = sqlite3_prepare_v2(
+                dbp,
+                "SELECT 1 FROM nj_block WHERE payload_json LIKE '%\"rtf_base64\"%' LIMIT 1;",
+                -1,
+                &stmt,
+                nil
+            )
+            if rc != SQLITE_OK { return false }
+            defer { sqlite3_finalize(stmt) }
+            return sqlite3_step(stmt) == SQLITE_ROW
+        }
+    }
+
+    private func kvValue(_ key: String) -> String {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let rc = sqlite3_prepare_v2(dbp, "SELECT v FROM nj_kv WHERE k=? LIMIT 1;", -1, &stmt, nil)
+            if rc != SQLITE_OK { return "" }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, key, -1, SQLITE_TRANSIENT)
+            guard sqlite3_step(stmt) == SQLITE_ROW, let c = sqlite3_column_text(stmt, 0) else {
+                return ""
+            }
+            return String(cString: c)
+        }
+    }
+
+    private func setKV(_ key: String, _ value: String) {
+        db.withDB { dbp in
+            var stmt: OpaquePointer?
+            let rc = sqlite3_prepare_v2(
+                dbp,
+                "INSERT INTO nj_kv(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v;",
+                -1,
+                &stmt,
+                nil
+            )
+            if rc != SQLITE_OK { return }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, key, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 2, value, -1, SQLITE_TRANSIENT)
+            _ = sqlite3_step(stmt)
         }
     }
     
@@ -297,8 +375,8 @@ final class DBNoteRepository {
         }
     }
 
-    func markBlockDeleted(blockID: String) {
-        blockTable.markBlockDeleted(blockID: blockID)
+    func markBlockDeleted(blockID: String, nowMs: Int64? = nil) {
+        blockTable.markBlockDeleted(blockID: blockID, nowMs: nowMs)
     }
 
     func loadBlockTagJSON(blockID: String) -> String {
@@ -365,11 +443,15 @@ final class DBNoteRepository {
         blockTable.setGoalID(blockID: blockID, goalID: goalID, updatedAtMs: Self.nowMs())
     }
 
-    func createQuickNoteBlock(payloadJSON: String, createdAtMs: Int64? = nil, tags: [String] = []) -> String? {
+    func createQuickNoteBlock(payloadJSON: String, createdAtMs: Int64? = nil, tags: [String] = [], blockType: String = "quick") -> String? {
         let title = NJQuickNotePayload.title(from: payloadJSON)
         if title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return nil }
         let blockID = UUID().uuidString
-        let now = createdAtMs ?? Self.nowMs()
+        let now = Self.nowMs()
+        let created = createdAtMs ?? now
+        let cleanedBlockType = blockType.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "quick"
+            : blockType.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanedTags = Array(Set(tags.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })).sorted()
         let tagJSON: String = {
             guard !cleanedTags.isEmpty,
@@ -381,14 +463,14 @@ final class DBNoteRepository {
 
         blockTable.applyNJBlock([
             "block_id": blockID,
-            "block_type": "quick",
+            "block_type": cleanedBlockType,
             "payload_json": payloadJSON,
             "domain_tag": "",
             "tag_json": tagJSON,
             "goal_id": "",
             "lineage_id": "",
             "parent_block_id": "",
-            "created_at_ms": now,
+            "created_at_ms": created,
             "updated_at_ms": now,
             "deleted": Int64(0)
         ])
@@ -487,6 +569,12 @@ final class DBNoteRepository {
             for (_, f) in rows { applyRemoteUpsert(entity: "finance_source_item", fields: f) }
         case "finance_transaction":
             for (_, f) in rows { applyRemoteUpsert(entity: "finance_transaction", fields: f) }
+        case "investment_chart_drawing":
+            for (_, f) in rows { applyRemoteUpsert(entity: "investment_chart_drawing", fields: f) }
+        case "investment_symbol":
+            for (_, f) in rows { applyRemoteUpsert(entity: "investment_symbol", fields: f) }
+        case "investment_symbol_relationship":
+            for (_, f) in rows { applyRemoteUpsert(entity: "investment_symbol_relationship", fields: f) }
         case "agent_heartbeat_run":
             for (_, f) in rows { applyRemoteUpsert(entity: "agent_heartbeat_run", fields: f) }
         case "agent_backfill_task":
@@ -634,6 +722,9 @@ final class DBNoteRepository {
         case "finance_journal_link": table = "nj_finance_journal_link"
         case "finance_source_item": table = "nj_finance_source_item"
         case "finance_transaction": table = "nj_finance_transaction"
+        case "investment_chart_drawing": table = "nj_investment_chart_drawing"
+        case "investment_symbol": table = "nj_investment_symbol"
+        case "investment_symbol_relationship": table = "nj_investment_symbol_relationship"
         case "agent_heartbeat_run": table = "nj_agent_heartbeat_run"
         case "agent_backfill_task": table = "nj_agent_backfill_task"
         case "time_slot": table = "nj_time_slot"
@@ -664,6 +755,137 @@ final class DBNoteRepository {
     func hasBlock(blockID: String) -> Bool {
         blockTable.hasBlock(blockID: blockID)
     }
+
+    @discardableResult
+    func clearFutureTimestampRepairDirtyForAttachedBlocks(nowMs: Int64, skewMs: Int64 = 5 * 60 * 1000) -> Int {
+        return db.withDB { dbp in
+            let sql = """
+            DELETE FROM nj_dirty
+            WHERE (
+                entity = 'block'
+                AND entity_id IN (
+                    SELECT b.block_id
+                    FROM nj_block b
+                    WHERE b.deleted = 0
+                      AND b.created_at_ms > ?
+                      AND EXISTS (
+                        SELECT 1
+                        FROM nj_note_block nb
+                        WHERE nb.block_id = b.block_id
+                          AND nb.deleted = 0
+                      )
+                      AND EXISTS (
+                        SELECT 1
+                        FROM nj_block_tag t
+                        WHERE t.block_id = b.block_id
+                          AND t.tag = '#WEEKLY' COLLATE NOCASE
+                      )
+                )
+            )
+            OR (
+                entity = 'note_block'
+                AND entity_id IN (
+                    SELECT nb.instance_id
+                    FROM nj_note_block nb
+                    JOIN nj_block b ON b.block_id = nb.block_id
+                    WHERE nb.deleted = 0
+                      AND b.deleted = 0
+                      AND b.created_at_ms > ?
+                      AND EXISTS (
+                        SELECT 1
+                        FROM nj_block_tag t
+                        WHERE t.block_id = b.block_id
+                          AND t.tag = '#WEEKLY' COLLATE NOCASE
+                      )
+                )
+            )
+            OR (
+                entity = 'note'
+                AND entity_id IN (
+                    SELECT nb.note_id
+                    FROM nj_note_block nb
+                    JOIN nj_block b ON b.block_id = nb.block_id
+                    WHERE nb.deleted = 0
+                      AND b.deleted = 0
+                      AND b.created_at_ms > ?
+                      AND EXISTS (
+                        SELECT 1
+                        FROM nj_block_tag t
+                        WHERE t.block_id = b.block_id
+                          AND t.tag = '#WEEKLY' COLLATE NOCASE
+                      )
+                )
+            );
+            """
+            var stmt: OpaquePointer?
+            let rc0 = sqlite3_prepare_v2(dbp, sql, -1, &stmt, nil)
+            if rc0 != SQLITE_OK {
+                db.dbgErr(dbp, "clearFutureTimestampRepairDirtyForAttachedBlocks.prepare", rc0)
+                sqlite3_finalize(stmt)
+                return 0
+            }
+            defer { sqlite3_finalize(stmt) }
+
+            sqlite3_bind_int64(stmt, 1, nowMs)
+            sqlite3_bind_int64(stmt, 2, nowMs)
+            sqlite3_bind_int64(stmt, 3, nowMs)
+
+            let rc1 = sqlite3_step(stmt)
+            if rc1 != SQLITE_DONE {
+                db.dbgErr(dbp, "clearFutureTimestampRepairDirtyForAttachedBlocks.step", rc1)
+                return 0
+            }
+            return Int(sqlite3_changes(dbp))
+        }
+    }
+
+    @discardableResult
+    func repairFutureUpdatedAtAttachedBlocks(nowMs: Int64, skewMs: Int64 = 5 * 60 * 1000) -> Int {
+        let threshold = nowMs + skewMs
+        let affected = db.queryRows("""
+        SELECT DISTINCT b.block_id, nb.note_id, nb.instance_id
+        FROM nj_note_block nb
+        JOIN nj_block b ON b.block_id = nb.block_id
+        JOIN nj_note n ON n.note_id = nb.note_id
+        WHERE b.deleted = 0
+          AND b.updated_at_ms > \(threshold)
+          AND nb.deleted = 0
+          AND n.deleted = 0;
+        """)
+
+        guard !affected.isEmpty else { return 0 }
+
+        var blockIDs = Set<String>()
+        var noteIDs = Set<String>()
+        var instanceIDs = Set<String>()
+        for row in affected {
+            if let blockID = row["block_id"], !blockID.isEmpty {
+                blockIDs.insert(blockID)
+            }
+            if let noteID = row["note_id"], !noteID.isEmpty {
+                noteIDs.insert(noteID)
+            }
+            if let instanceID = row["instance_id"], !instanceID.isEmpty {
+                instanceIDs.insert(instanceID)
+            }
+        }
+
+        for blockID in blockIDs {
+            updateBlockPayloadJSON(
+                blockID: blockID,
+                payloadJSON: loadBlockPayloadJSON(blockID: blockID),
+                updatedAtMs: nowMs
+            )
+        }
+        for noteID in noteIDs {
+            enqueueDirty(entity: "note", entityID: noteID, op: "upsert", updatedAtMs: nowMs)
+        }
+        for instanceID in instanceIDs {
+            enqueueDirty(entity: "note_block", entityID: instanceID, op: "upsert", updatedAtMs: nowMs)
+        }
+
+        return blockIDs.count
+    }
     
     func listNotes(tabDomainKey: String) -> [NJNote] {
         noteTable.listNotes(tabDomainKey: tabDomainKey)
@@ -693,8 +915,8 @@ final class DBNoteRepository {
         noteTable.deleteNote(NJNoteID(noteID))
     }
     
-    func markNoteDeleted(noteID: String) {
-        noteTable.markNoteDeleted(noteID: noteID)
+    func markNoteDeleted(noteID: String, nowMs: Int64? = nil) {
+        noteTable.markNoteDeleted(noteID: noteID, nowMs: nowMs)
     }
 
     func setPinned(noteID: String, pinned: Bool) {
@@ -926,12 +1148,31 @@ final class DBNoteRepository {
         financeMacroEventTable.list(dateKey: dateKey)
     }
 
+    func financeMacroEvent(eventID: String) -> NJFinanceMacroEvent? {
+        financeMacroEventTable.load(eventID: eventID)
+    }
+
     func financeDailyBrief(dateKey: String) -> NJFinanceDailyBrief? {
         financeDailyBriefTable.load(dateKey: dateKey)
     }
 
     func upsertFinanceMacroEvent(_ row: NJFinanceMacroEvent) {
         financeMacroEventTable.upsert(row)
+    }
+
+    func requestFinanceMacroEventRefresh(eventID: String, reason: String, nowMs: Int64) {
+        guard var row = financeMacroEvent(eventID: eventID) else { return }
+        row.refreshRequestedAtMs = nowMs
+        row.updatedAtMs = nowMs
+        if !reason.isEmpty {
+            let marker = "Refresh requested: \(reason)"
+            if row.notes.isEmpty {
+                row.notes = marker
+            } else if !row.notes.contains(marker) {
+                row.notes += "\n\(marker)"
+            }
+        }
+        upsertFinanceMacroEvent(row)
     }
 
     func listFinanceDailyBriefs(startKey: String, endKey: String) -> [NJFinanceDailyBrief] {
@@ -1000,6 +1241,59 @@ final class DBNoteRepository {
 
     func upsertFinanceTransaction(_ row: NJFinanceTransaction) {
         financeTransactionTable.upsert(row)
+    }
+
+    func listInvestmentLedgerTransactions(limit: Int = 200) -> [NJInvestmentLedgerTransaction] {
+        investmentLedgerTransactionTable.listRecent(limit: limit)
+    }
+
+    func upsertInvestmentLedgerTransaction(_ row: NJInvestmentLedgerTransaction) {
+        investmentLedgerTransactionTable.upsert(row)
+    }
+
+    func listInvestmentChartDrawings() -> [NJInvestmentChartDrawing] {
+        investmentChartDrawingTable.listActive()
+    }
+
+    func upsertInvestmentChartDrawing(_ row: NJInvestmentChartDrawing) {
+        investmentChartDrawingTable.upsert(row)
+    }
+
+    func deleteInvestmentChartDrawing(drawingID: String, symbolKey: String, nowMs: Int64) {
+        investmentChartDrawingTable.markDeleted(drawingID: drawingID, symbolKey: symbolKey, nowMs: nowMs)
+    }
+
+    func listActiveInvestmentSymbols() -> [NJInvestmentSymbolRecord] {
+        investmentSymbolTable.listActive()
+    }
+
+    func listActiveInvestmentSymbolRelationships() -> [NJInvestmentSymbolRelationshipRecord] {
+        investmentSymbolRelationshipTable.listActive()
+    }
+
+    func upsertInvestmentSymbol(_ row: NJInvestmentSymbolRecord) {
+        investmentSymbolTable.upsert(row)
+    }
+
+    func upsertInvestmentSymbolRelationship(_ row: NJInvestmentSymbolRelationshipRecord) {
+        investmentSymbolRelationshipTable.upsert(row)
+        refreshInvestmentSymbolStatus(symbolID: row.symbolID, nowMs: row.updatedAtMs)
+    }
+
+    func closeInvestmentSymbolRelationships(sourceType: String, sourceID: String, nowMs: Int64) {
+        let symbolIDs = investmentSymbolRelationshipTable.closeSource(sourceType: sourceType, sourceID: sourceID, nowMs: nowMs)
+        for symbolID in symbolIDs {
+            refreshInvestmentSymbolStatus(symbolID: symbolID, nowMs: nowMs)
+        }
+    }
+
+    private func refreshInvestmentSymbolStatus(symbolID: String, nowMs: Int64) {
+        guard var symbol = investmentSymbolTable.load(symbolID: symbolID) else { return }
+        let nextStatus = investmentSymbolRelationshipTable.hasActiveRelationship(symbolID: symbolID) ? "active" : "inactive"
+        guard symbol.status != nextStatus || symbol.updatedAtMs < nowMs else { return }
+        symbol.status = nextStatus
+        symbol.updatedAtMs = nowMs
+        investmentSymbolTable.upsert(symbol)
     }
 
     func saveFinanceDay(dateKey: String, events: [NJFinanceMacroEvent], brief: NJFinanceDailyBrief?, nowMs: Int64) {
@@ -1163,12 +1457,38 @@ final class DBNoteRepository {
             let instanceID = personalIdentificationNoteBlockInstanceID(for: row.renewalItemID)
             let blockID = "personal-id-block.\(row.renewalItemID)"
             let rowNumber = String(format: "PID-%04d", index + 1)
-            let contextParts = [row.jurisdiction, row.expiryDateKey]
+            let contextParts = [row.jurisdiction, row.expiryDateKey, row.documentNumberHint]
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
             let titleParts = [row.personName, row.documentName]
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
+            let cardStatus = displayCardToken(row.status)
+            let cardPriority = displayCardToken(row.priority)
+            let cardCategory = row.documentType.isEmpty ? "Personal ID" : row.documentType
+            let cardArea = row.personName.isEmpty ? "Me" : row.personName
+            let cardContext = contextParts.joined(separator: " • ")
+            let cardTitle = titleParts.isEmpty ? "Personal Identification" : titleParts.joined(separator: " - ")
+            let createdAtMs = row.createdAtMs > 0 ? row.createdAtMs : now
+            let existing = noteBlockTable.loadNJNoteBlock(instanceID: instanceID)
+            let existingUpdatedAtMs = (existing?["updated_at_ms"] as? Int64) ?? 0
+            let updatedAtMs = max(row.updatedAtMs, existingUpdatedAtMs, createdAtMs)
+
+            if let existing,
+               (existing["note_id"] as? String) == noteID,
+               (existing["block_id"] as? String) == blockID,
+               (existing["order_key"] as? Double) == Double(index + 1),
+               ((existing["is_checked"] as? Int64) ?? 0) == 0,
+               (existing["card_row_id"] as? String) == rowNumber,
+               (existing["card_status"] as? String) == cardStatus,
+               (existing["card_priority"] as? String) == cardPriority,
+               (existing["card_category"] as? String) == cardCategory,
+               (existing["card_area"] as? String) == cardArea,
+               (existing["card_context"] as? String) == cardContext,
+               (existing["card_title"] as? String) == cardTitle,
+               ((existing["deleted"] as? Int64) ?? 0) == row.deleted {
+                continue
+            }
 
             noteBlockTable.applyNJNoteBlock([
                 "instance_id": instanceID,
@@ -1177,17 +1497,17 @@ final class DBNoteRepository {
                 "order_key": Double(index + 1),
                 "is_checked": Int64(0),
                 "card_row_id": rowNumber,
-                "card_status": displayCardToken(row.status),
-                "card_priority": displayCardToken(row.priority),
-                "card_category": row.documentType.isEmpty ? "Personal ID" : row.documentType,
-                "card_area": row.personName.isEmpty ? "Me" : row.personName,
-                "card_context": contextParts.joined(separator: " • "),
-                "card_title": titleParts.isEmpty ? "Personal Identification" : titleParts.joined(separator: " - "),
-                "created_at_ms": row.createdAtMs > 0 ? row.createdAtMs : now,
-                "updated_at_ms": max(row.updatedAtMs, now),
+                "card_status": cardStatus,
+                "card_priority": cardPriority,
+                "card_category": cardCategory,
+                "card_area": cardArea,
+                "card_context": cardContext,
+                "card_title": cardTitle,
+                "created_at_ms": createdAtMs,
+                "updated_at_ms": updatedAtMs,
                 "deleted": row.deleted
             ])
-            noteBlockTable.enqueueDirty(entity: "note_block", entityID: instanceID, op: "upsert", updatedAtMs: now)
+            noteBlockTable.enqueueDirty(entity: "note_block", entityID: instanceID, op: "upsert", updatedAtMs: updatedAtMs)
         }
     }
 

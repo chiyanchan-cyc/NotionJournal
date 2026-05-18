@@ -10,15 +10,19 @@ struct RootView: View {
     @State private var syncTick: Int = 0
     @State private var showProtonListLab: Bool = false
     @State private var splitViewVisibility: NavigationSplitViewVisibility = .all
+    @State private var lastActivationRunAtMs: Int64 = 0
+    @State private var activationRunInProgress = false
+    private let activationRunDebounceMs: Int64 = 30_000
 
     var body: some View {
         GeometryReader { proxy in
-            let isPhoneLandscape = UIDevice.current.userInterfaceIdiom == .phone && proxy.size.width > proxy.size.height
-            let isPhonePortrait = UIDevice.current.userInterfaceIdiom == .phone && proxy.size.height >= proxy.size.width
+            let isPhone = UIDevice.current.userInterfaceIdiom == .phone
+            let isPhoneLandscape = isPhone && proxy.size.width > proxy.size.height
 
             Group {
-                if store.sync.initialPullCompleted {
-                    if isPhonePortrait && store.selectedModule == .investment {
+                if store.localDataReady {
+                    if isPhone && store.selectedModule == .investment {
+                        // let _ = print("NJ_INV_DEBUG ROOT_BRANCH phone_investment size=\(Int(proxy.size.width))x\(Int(proxy.size.height)) section=\(store.selectedInvestmentSection.rawValue) trade=\(store.selectedInvestmentTradeTab.rawValue)")
                         NavigationStack {
                             NJInvestmentModuleView()
                                 .environmentObject(store)
@@ -34,14 +38,15 @@ struct RootView: View {
                                 }
                         }
                         .onAppear {
-                            runActivationTasks()
+                            runActivationTasks(source: "phone_investment_on_appear")
                         }
                         .onChange(of: scenePhase) { ph in
                             if ph == .active {
-                                runActivationTasks()
+                                runActivationTasks(source: "phone_investment_scene_active")
                             }
                         }
                     } else {
+                        // let _ = store.selectedModule == .investment ? print("NJ_INV_DEBUG ROOT_BRANCH split_investment size=\(Int(proxy.size.width))x\(Int(proxy.size.height)) section=\(store.selectedInvestmentSection.rawValue) trade=\(store.selectedInvestmentTradeTab.rawValue)") : ()
                         NavigationSplitView(columnVisibility: $splitViewVisibility) {
                             Sidebar(
                                 selectedNoteID: $selectedNoteID,
@@ -106,11 +111,11 @@ struct RootView: View {
                             }
                         }
                         .onAppear {
-                            runActivationTasks()
+                            runActivationTasks(source: "split_on_appear")
                         }
                         .onChange(of: scenePhase) { ph in
                             if ph == .active {
-                                runActivationTasks()
+                                runActivationTasks(source: "split_scene_active")
                             }
                         }
                         .onChange(of: store.selectedNotebookID) { _ in
@@ -150,6 +155,44 @@ struct RootView: View {
         } message: {
             Text("Updated \(store.goalMigrationCount) goal(s) to In Progress based on goal tags.")
         }
+        .confirmationDialog(
+            investmentShortcutDialogTitle,
+            isPresented: investmentShortcutDialogBinding,
+            titleVisibility: .visible
+        ) {
+            if let market = store.pendingInvestmentShortcutMarket {
+                ForEach(NJInvestmentShortcutDestination.options(for: market)) { destination in
+                    Button {
+                        store.openInvestmentShortcutDestination(destination)
+                    } label: {
+                        Label(destination.title, systemImage: destination.systemImageName)
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                store.pendingInvestmentShortcutMarket = nil
+            }
+        } message: {
+            Text("Choose the Investment workspace to open.")
+        }
+    }
+
+    private var investmentShortcutDialogTitle: String {
+        if let market = store.pendingInvestmentShortcutMarket {
+            return "\(market.title) Trading Shortcut"
+        }
+        return "Investment Shortcut"
+    }
+
+    private var investmentShortcutDialogBinding: Binding<Bool> {
+        Binding(
+            get: { store.pendingInvestmentShortcutMarket != nil },
+            set: { isPresented in
+                if !isPresented {
+                    store.pendingInvestmentShortcutMarket = nil
+                }
+            }
+        )
     }
 
     private var sidebarToggleButton: some View {
@@ -166,11 +209,25 @@ struct RootView: View {
         .shadow(color: Color.black.opacity(0.12), radius: 8, y: 2)
     }
 
-    private func runActivationTasks() {
+    private func runActivationTasks(source: String) {
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        if activationRunInProgress {
+            // print("NJ_APP_ACTIVE skip source=\(source) reason=in_progress")
+            return
+        }
+        if lastActivationRunAtMs > 0, now - lastActivationRunAtMs < activationRunDebounceMs {
+            // print("NJ_APP_ACTIVE skip source=\(source) reason=debounce elapsed_ms=\(now - lastActivationRunAtMs)")
+            return
+        }
+
+        activationRunInProgress = true
+        lastActivationRunAtMs = now
+        // print("NJ_APP_ACTIVE start source=\(source)")
         store.runClipIngestIfNeeded()
         store.runAudioIngestIfNeeded()
         store.runAudioTranscribeIfNeeded()
         store.runTimeModuleInboxIngestIfNeeded()
+        store.consumePendingInvestmentShortcutFromSharedDefaults()
         store.syncOnAppActivationIfNeeded()
         store.syncTimeSlotOverrunNotifications()
         store.publishTimeSlotWidgetSnapshot()
@@ -178,6 +235,8 @@ struct RootView: View {
         NJHealthLogger.shared.configure(db: store.db)
         NJHealthLogger.shared.appDidBecomeActive()
         NJGPSLogger.shared.refreshAuthorityUI()
+        activationRunInProgress = false
+        // print("NJ_APP_ACTIVE done source=\(source)")
     }
 
     private func openLinkedNote(_ notification: Notification) {

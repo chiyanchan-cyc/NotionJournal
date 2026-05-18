@@ -88,10 +88,10 @@ final class NJAudioIngestor {
         }
 
         let inboxURL = base.appendingPathComponent(inboxRelPath, isDirectory: true)
-        print("NJ_AUDIO_INGEST inbox=\(inboxURL.path)")
+        // print("NJ_AUDIO_INGEST inbox=\(inboxURL.path)")
 
         guard fm.fileExists(atPath: inboxURL.path) else {
-            print("NJ_AUDIO_INGEST inbox_not_exist")
+            // print("NJ_AUDIO_INGEST inbox_not_exist")
             return
         }
 
@@ -108,11 +108,16 @@ final class NJAudioIngestor {
             (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
         }
 
-        print("NJ_AUDIO_INGEST folders=\(folders.count)")
+        // print("NJ_AUDIO_INGEST folders=\(folders.count)")
 
         for folder in folders {
             let rawID = folder.lastPathComponent
             let blockID = rawID.lowercased()
+
+            if dbHasBlock(store: store, blockID: blockID) {
+                deleteInboxFolder(fm: fm, folderURL: folder, label: "already_ingested", blockID: blockID)
+                continue
+            }
 
             let jsonURL = folder.appendingPathComponent("\(blockID).json", isDirectory: false)
             if !fm.fileExists(atPath: jsonURL.path) {
@@ -142,7 +147,7 @@ final class NJAudioIngestor {
 
     static func ingestOne(store: AppStore, item: AudioDiskItem) async {
         let fm = FileManager.default
-        print("NJ_AUDIO_INGEST one_begin blockID=\(item.blockID) folder=\(item.folderURL.path)")
+        // print("NJ_AUDIO_INGEST one_begin blockID=\(item.blockID) folder=\(item.folderURL.path)")
 
         guard let rawJSON = try? Data(contentsOf: item.jsonURL) else {
             print("NJ_AUDIO_INGEST read_json_failed blockID=\(item.blockID) path=\(item.jsonURL.path)")
@@ -192,6 +197,13 @@ final class NJAudioIngestor {
 
         let destAudio = destDir.appendingPathComponent("\(item.blockID).\(item.audioExt)", isDirectory: false)
         let destPDF = destDir.appendingPathComponent("\(item.blockID).pdf", isDirectory: false)
+
+        if fm.fileExists(atPath: destAudio.path) {
+            print("NJ_AUDIO_INGEST skip_already_archived blockID=\(item.blockID)")
+            deleteInboxFolder(fm: fm, folderURL: item.folderURL, label: "already_archived", blockID: item.blockID)
+            return
+        }
+
         let audioOK = copyFile(fm: fm, src: item.audioURL, dst: destAudio, label: "AUDIO", blockID: item.blockID)
 
         if !audioOK {
@@ -276,27 +288,22 @@ final class NJAudioIngestor {
             "deleted": Int64(0)
         ]
 
-        print("NJ_AUDIO_INGEST db_upsert_begin blockID=\(item.blockID)")
+        // print("NJ_AUDIO_INGEST db_upsert_begin blockID=\(item.blockID)")
         store.notes.applyRemoteUpsert(entity: "block", fields: fields)
 
         let dbHas = dbHasBlock(store: store, blockID: item.blockID)
-        print("NJ_AUDIO_INGEST db_upsert_done blockID=\(item.blockID) dbHas=\(dbHas)")
+        // print("NJ_AUDIO_INGEST db_upsert_done blockID=\(item.blockID) dbHas=\(dbHas)")
 
         let dirtyHas = dbHasDirty(store: store, entity: "block", entityID: item.blockID)
-        print("NJ_AUDIO_INGEST dirty_check blockID=\(item.blockID) dirtyHas=\(dirtyHas)")
+        // print("NJ_AUDIO_INGEST dirty_check blockID=\(item.blockID) dirtyHas=\(dirtyHas)")
 
         store.sync.schedulePush(debounceMs: 0)
-        print("NJ_AUDIO_INGEST push_scheduled blockID=\(item.blockID)")
+        // print("NJ_AUDIO_INGEST push_scheduled blockID=\(item.blockID)")
 
         if dbHas && dirtyHas {
-            do {
-                try fm.removeItem(at: item.folderURL)
-                print("NJ_AUDIO_INGEST inbox_deleted folder=\(item.folderURL.path)")
-            } catch {
-                print("NJ_AUDIO_INGEST inbox_delete_failed folder=\(item.folderURL.path) err=\(error)")
-            }
+            deleteInboxFolder(fm: fm, folderURL: item.folderURL, label: "ingested", blockID: item.blockID)
         } else {
-            print("NJ_AUDIO_INGEST keep_inbox_folder blockID=\(item.blockID) dbHas=\(dbHas) dirtyHas=\(dirtyHas)")
+            // print("NJ_AUDIO_INGEST keep_inbox_folder blockID=\(item.blockID) dbHas=\(dbHas) dirtyHas=\(dirtyHas)")
         }
     }
 
@@ -319,11 +326,20 @@ final class NJAudioIngestor {
         do {
             if fm.fileExists(atPath: dst.path) { try fm.removeItem(at: dst) }
             try fm.copyItem(at: src, to: dst)
-            print("NJ_AUDIO_INGEST copy_ok blockID=\(blockID) \(label) src=\(src.path) dst=\(dst.path)")
+            // print("NJ_AUDIO_INGEST copy_ok blockID=\(blockID) \(label) src=\(src.path) dst=\(dst.path)")
             return true
         } catch {
             print("NJ_AUDIO_INGEST copy_fail blockID=\(blockID) \(label) src=\(src.path) dst=\(dst.path) err=\(error)")
             return false
+        }
+    }
+
+    static func deleteInboxFolder(fm: FileManager, folderURL: URL, label: String, blockID: String) {
+        do {
+            try fm.removeItem(at: folderURL)
+            // print("NJ_AUDIO_INGEST inbox_deleted reason=\(label) blockID=\(blockID) folder=\(folderURL.path)")
+        } catch {
+            print("NJ_AUDIO_INGEST inbox_delete_failed reason=\(label) blockID=\(blockID) folder=\(folderURL.path) err=\(error)")
         }
     }
 
@@ -373,7 +389,7 @@ final class NJAudioIngestor {
                 try FileManager.default.removeItem(at: dst)
             }
             try data.write(to: dst, options: .atomic)
-            print("NJ_AUDIO_INGEST pdf_placeholder_ok blockID=\(blockID) dst=\(dst.path)")
+            // print("NJ_AUDIO_INGEST pdf_placeholder_ok blockID=\(blockID) dst=\(dst.path)")
             return true
         } catch {
             print("NJ_AUDIO_INGEST pdf_placeholder_fail blockID=\(blockID) dst=\(dst.path) err=\(error)")

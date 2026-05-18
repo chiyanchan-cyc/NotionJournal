@@ -87,6 +87,21 @@ extension DBNoteRepository {
                 applyRemoteUpsert(entity: "attachment", fields: f)
             }
 
+        case "investment_chart_drawing":
+            for (id, f) in rows where !shouldIgnoreSelfEcho(entity: "investment_chart_drawing", entityID: id, fields: f) {
+                applyRemoteUpsert(entity: "investment_chart_drawing", fields: f)
+            }
+
+        case "investment_symbol":
+            for (id, f) in rows where !shouldIgnoreSelfEcho(entity: "investment_symbol", entityID: id, fields: f) {
+                applyRemoteUpsert(entity: "investment_symbol", fields: f)
+            }
+
+        case "investment_symbol_relationship":
+            for (id, f) in rows where !shouldIgnoreSelfEcho(entity: "investment_symbol_relationship", entityID: id, fields: f) {
+                applyRemoteUpsert(entity: "investment_symbol_relationship", fields: f)
+            }
+
         case "note_block":
             func noteID(_ f: [String: Any]) -> String { (f["note_id"] as? String) ?? (f["noteID"] as? String) ?? "" }
 

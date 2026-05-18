@@ -47,7 +47,24 @@ struct ModuleToolbarButtons: View {
         let title: String
         let systemImage: String
         let isOn: Bool
+        let badgeCount: Int
         let action: () -> Void
+
+        init(
+            id: String,
+            title: String,
+            systemImage: String,
+            isOn: Bool,
+            badgeCount: Int = 0,
+            action: @escaping () -> Void
+        ) {
+            self.id = id
+            self.title = title
+            self.systemImage = systemImage
+            self.isOn = isOn
+            self.badgeCount = badgeCount
+            self.action = action
+        }
     }
 
     let items: [Item]
@@ -58,15 +75,28 @@ struct ModuleToolbarButtons: View {
                 Button {
                     item.action()
                 } label: {
-                    Label(item.title, systemImage: item.systemImage)
-                        .labelStyle(.iconOnly)
-                        .font(.system(size: 12, weight: .semibold))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(item.isOn ? Color.accentColor.opacity(0.22) : Color(UIColor.secondarySystemBackground))
-                        )
+                    ZStack(alignment: .topTrailing) {
+                        Label(item.title, systemImage: item.systemImage)
+                            .labelStyle(.iconOnly)
+                            .font(.system(size: 12, weight: .semibold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(item.isOn ? Color.accentColor.opacity(0.22) : Color(UIColor.secondarySystemBackground))
+                            )
+                        if item.badgeCount > 0 {
+                            Text(item.badgeCount > 99 ? "99+" : "\(item.badgeCount)")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(.white)
+                                .monospacedDigit()
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(Color.red)
+                                .clipShape(Capsule())
+                                .offset(x: 6, y: -6)
+                        }
+                    }
                 }
                 .buttonStyle(.plain)
             }

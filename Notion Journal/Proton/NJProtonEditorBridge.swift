@@ -414,6 +414,18 @@ func NJInstallTextViewCanPerformActionHook(_ tv: UITextView) {
 
     typealias OrigFn = @convention(c) (AnyObject, Selector, Selector, Any?) -> Bool
     let newBlock: @convention(block) (UITextView, Selector, Any?) -> Bool = { t, action, sender in
+        let selectorName = NSStringFromSelector(action).lowercased()
+        let isWritingToolsSelector =
+            selectorName.contains("writing") ||
+            selectorName.contains("proofread") ||
+            selectorName.contains("rewrite") ||
+            selectorName.contains("summar")
+
+        if (objc_getAssociatedObject(t, &NJTextViewTableOwnerKey) as? NJWeakTableAttachmentBox)?.owner != nil,
+           isWritingToolsSelector {
+            return false
+        }
+
         var allowed = false
         if let imp = NJCanPerformActionOriginalIMPByClass[key] {
             let f = unsafeBitCast(imp, to: OrigFn.self)
@@ -1223,13 +1235,6 @@ final class NJProtonEditorHandle {
 
         private static func decodeRTFBase64(_ b64: String) -> NSAttributedString? {
             guard let data = Data(base64Encoded: b64) else { return nil }
-            if let rtfd = try? NSAttributedString(
-                data: data,
-                options: [.documentType: NSAttributedString.DocumentType.rtfd],
-                documentAttributes: nil
-            ) {
-                return rtfd
-            }
             return try? NSAttributedString(
                 data: data,
                 options: [.documentType: NSAttributedString.DocumentType.rtf],
@@ -1650,6 +1655,7 @@ final class NJProtonEditorHandle {
                 let tableID = rawTableID.isEmpty ? attachmentID : rawTableID
                 let loadedCanonical = NJTableStore.shared.loadCanonicalPayload(tableID: tableID)
                 let table = loadedCanonical ?? embeddedTable
+                // print("NJ_TABLE_DECODE_START attachment_id=\(attachmentID) table_id=\(tableID) source=\(loadedCanonical == nil ? "embedded" : "store")")
                 if loadedCanonical == nil {
                     var migrated = table
                     migrated["table_id"] = tableID
@@ -1659,6 +1665,7 @@ final class NJProtonEditorHandle {
                 let cols = (table["cols"] as? Int) ?? 2
                 let cellsAny = (table["cells"] as? [Any]) ?? []
                 let cellsJSON = cellsAny.compactMap { $0 as? [String: Any] }
+                // print("NJ_TABLE_DECODE_PAYLOAD table_id=\(tableID) rows=\(rows) cols=\(cols) cells=\(cellsJSON.count)")
                 let widthValues = ((table["column_widths"] as? [Any]) ?? []).compactMap {
                     if let n = $0 as? NSNumber { return CGFloat(truncating: n) }
                     if let d = $0 as? Double { return CGFloat(d) }
@@ -1707,34 +1714,10 @@ final class NJProtonEditorHandle {
                     ignoresOptimizedInit: true
                 )
 
-                var cells: [GridCell] = []
-                cells.reserveCapacity(max(1, rows) * max(1, cols))
-
-                for r in 0..<max(1, rows) {
-                    for c in 0..<max(1, cols) {
-                        let cell = GridCell(rowSpan: [r], columnSpan: [c], initialHeight: NJTableDefaultRowHeight, ignoresOptimizedInit: true)
-                        cell.editor.forceApplyAttributedText = true
-                        cells.append(cell)
-                    }
-                }
-
-                for c in cellsJSON {
-                    let row = (c["row"] as? Int) ?? 0
-                    let col = (c["col"] as? Int) ?? 0
-                    let rtf = (c["rtf_base64"] as? String) ?? ""
-                    let idx = (row * max(1, cols)) + col
-                    if idx >= 0 && idx < cells.count {
-                        let cell = cells[idx]
-                        if let a = decodeRTFBase64(rtf) {
-                            cell.editor.attributedText = a
-                        }
-                    }
-                }
-
                 let tableAttachment = NJTableAttachmentFactory.make(
                     attachmentID: attachmentID,
                     config: config,
-                    cells: cells,
+                    cellPayloads: cellsJSON,
                     columnWidths: widthValues.count == max(1, cols) ? widthValues : nil,
                     columnAlignments: alignmentValues.count == max(1, cols) ? alignmentValues : nil,
                     columnTypes: columnTypeValues.count == max(1, cols) ? columnTypeValues : nil,
@@ -1752,6 +1735,7 @@ final class NJProtonEditorHandle {
                         onAttachmentLayoutChange?()
                     }
                 )
+                // print("NJ_TABLE_DECODE_DONE table_id=\(tableID) rows=\(rows) cols=\(cols)")
                 return tableAttachment.string
             }
 
@@ -1846,13 +1830,6 @@ final class NJProtonEditorHandle {
 
         private static func decodeRTFBase64(_ b64: String) -> NSAttributedString? {
             guard let data = Data(base64Encoded: b64) else { return nil }
-            if let rtfd = try? NSAttributedString(
-                data: data,
-                options: [.documentType: NSAttributedString.DocumentType.rtfd],
-                documentAttributes: nil
-            ) {
-                return rtfd
-            }
             return try? NSAttributedString(
                 data: data,
                 options: [.documentType: NSAttributedString.DocumentType.rtf],
@@ -2354,6 +2331,17 @@ final class NJProtonEditorHandle {
         return findTextView(in: editor) === tv
     }
 
+    @discardableResult
+    func undoLastEdit() -> Bool {
+        guard let tv = activeTextView(),
+              let undoManager = tv.undoManager,
+              undoManager.canUndo else { return false }
+        isEditing = true
+        undoManager.undo()
+        snapshot(markUserEdit: true)
+        return true
+    }
+
     func insertImageAttachment(_ image: UIImage, width: CGFloat = 400) {
         guard let editor else { return }
         guard let tv = findTextView(in: editor) else { return }
@@ -2410,7 +2398,7 @@ final class NJProtonEditorHandle {
         let s = NSMutableAttributedString(attributedString: sourceText ?? NSAttributedString(string: ""))
         let rawRange = tv?.selectedRange ?? editor.selectedRange
         let r = clampedSelection(rawRange, maxLength: s.length)
-        print("NJ_PHOTO_INSERT owner=\(String(describing: ownerBlockUUID)) sel=\(r.location):\(r.length) textLen=\(s.length)")
+        // print("NJ_PHOTO_INSERT owner=\(String(describing: ownerBlockUUID)) sel=\(r.location):\(r.length) textLen=\(s.length)")
         let breakout = shouldBreakOutOfListForAttachment(in: editor, selectedRange: r)
         let insertion = attachmentInsertionString(
             att.string,
@@ -4516,13 +4504,6 @@ final class NJProtonEditorHandle {
 
     private func decodeRTFBase64(_ b64: String) -> NSAttributedString? {
         guard let data = Data(base64Encoded: b64) else { return nil }
-        if let rtfd = try? NSAttributedString(
-            data: data,
-            options: [.documentType: NSAttributedString.DocumentType.rtfd],
-            documentAttributes: nil
-        ) {
-            return rtfd
-        }
         return try? NSAttributedString(
             data: data,
             options: [.documentType: NSAttributedString.DocumentType.rtf],
@@ -4933,7 +4914,7 @@ struct NJProtonEditorView: UIViewRepresentable {
             pendingLocalTextMutations.append(ExpectedTextMutation(expectedLength: expectedLength, issuedAtMs: now))
             pendingLocalTextMutations = Array(pendingLocalTextMutations.suffix(8))
             if let id = handle.ownerBlockUUID {
-                print("NJ_EDITOR_LOCAL_MUTATION_TOKEN block_id=\(id.uuidString) expected_len=\(expectedLength) range=\(range.location),\(range.length) repl_len=\(replacementLength)")
+                // print("NJ_EDITOR_LOCAL_MUTATION_TOKEN block_id=\(id.uuidString) expected_len=\(expectedLength) range=\(range.location),\(range.length) repl_len=\(replacementLength)")
             }
         }
 
@@ -4959,13 +4940,13 @@ struct NJProtonEditorView: UIViewRepresentable {
             let signature = textChangeSignature(for: tv)
             if signature == lastPersistedTextChangeSignature && now - lastPersistedTextChangeAtMs < 150 {
                 if let id = handle.ownerBlockUUID {
-                    print("NJ_EDITOR_IGNORE_DUP_TEXT_CHANGE block_id=\(id.uuidString) len=\(length) sel=\(tv.selectedRange.location),\(tv.selectedRange.length)")
+                    // print("NJ_EDITOR_IGNORE_DUP_TEXT_CHANGE block_id=\(id.uuidString) len=\(length) sel=\(tv.selectedRange.location),\(tv.selectedRange.length)")
                 }
                 return false
             }
             guard consumeMatchingLocalTextMutation(currentLength: length, now: now) else {
                 if let id = handle.ownerBlockUUID {
-                    print("NJ_EDITOR_IGNORE_NONUSER_TEXT_CHANGE block_id=\(id.uuidString) len=\(length) sel=\(tv.selectedRange.location),\(tv.selectedRange.length) pending_tokens=\(pendingLocalTextMutations.count)")
+                    // print("NJ_EDITOR_IGNORE_NONUSER_TEXT_CHANGE block_id=\(id.uuidString) len=\(length) sel=\(tv.selectedRange.location),\(tv.selectedRange.length) pending_tokens=\(pendingLocalTextMutations.count)")
                 }
                 return false
             }
@@ -5015,8 +4996,6 @@ struct NJProtonEditorView: UIViewRepresentable {
 
                 self.handle.onSnapshot?(ev.attributedText, ev.selectedRange)
                 self.updateMeasuredHeight(from: ev)
-
-
             }
 
             textDidEndObs = NotificationCenter.default.addObserver(

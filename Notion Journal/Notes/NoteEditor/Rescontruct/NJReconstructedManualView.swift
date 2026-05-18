@@ -86,6 +86,11 @@ struct NJReconstructedManualView: View {
             if handle.isRunningProgrammaticUpdate { return }
             persistence.enqueueEditorChange(id, source: "recon.manual.onUserTyped.\(handle.userEditSourceHint)")
         }
+        h.onEndEditing = { [weak persistence, weak h] _, _ in
+            guard let persistence, let handle = h, let id = handle.ownerBlockUUID else { return }
+            if handle.isRunningProgrammaticUpdate { return }
+            persistence.forceEndEditingAndCommitNow(id)
+        }
         h.onSnapshot = { _, _ in
             // Passive snapshots can be emitted by layout/hydration on idle devices.
             // Only explicit user edits should enqueue a save.
@@ -112,7 +117,11 @@ struct NJReconstructedManualView: View {
         .overlay(NJHiddenShortcuts(getHandle: { focusedHandle() }))
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if let h = focusedHandle() {
-                NJProtonFloatingFormatBar(handle: h, pickedPhotoItem: $pickedPhotoItem)
+                NJProtonFloatingFormatBar(
+                    handle: h,
+                    pickedPhotoItem: $pickedPhotoItem,
+                    currentHandle: { focusedHandle() }
+                )
                     .padding(.horizontal, 8)
                     .padding(.vertical, 6)
                     .background(.ultraThinMaterial)

@@ -10,6 +10,9 @@ import SQLite3
 private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
 final class DBNoteTable {
+    private static let noteProjection = "note_id, created_at_ms, updated_at_ms, notebook, tab_domain, title, note_type, dominance_mode, is_checklist, card_id, card_category, card_area, card_context, card_status, card_priority, pinned, favorited, pinned_updated_at_ms, favorited_updated_at_ms, deleted"
+    private static let visibleNotePredicate = "notebook <> '_SYSTEM' AND lower(tab_domain) NOT GLOB '_system.*'"
+
     let db: SQLiteDB
     let enqueueDirty: (String, String, String, Int64) -> Void
     let loadRTF: (String) -> Data?
@@ -37,9 +40,10 @@ final class DBNoteTable {
         let prefix = exact + ".%"
 
         let sql = """
-        SELECT note_id, created_at_ms, updated_at_ms, notebook, tab_domain, title, note_type, dominance_mode, is_checklist, card_id, card_category, card_area, card_context, card_status, card_priority, pinned, favorited, deleted
+        SELECT \(Self.noteProjection)
         FROM nj_note
         WHERE deleted = 0
+          AND \(Self.visibleNotePredicate)
           AND (tab_domain = ? OR tab_domain LIKE ?)
         ORDER BY pinned DESC, updated_at_ms \(order);
         """
@@ -90,7 +94,9 @@ final class DBNoteTable {
                 let cardPriority = String(cString: sqlite3_column_text(stmt, 14))
                 let pinned = sqlite3_column_int64(stmt, 15)
                 let favorited = sqlite3_column_int64(stmt, 16)
-                let deleted = sqlite3_column_int64(stmt, 17)
+                let pinnedUpdatedAtMs = sqlite3_column_int64(stmt, 17)
+                let favoritedUpdatedAtMs = sqlite3_column_int64(stmt, 18)
+                let deleted = sqlite3_column_int64(stmt, 19)
 
                 let rtf = loadRTF(noteID) ?? emptyRTF()
 
@@ -105,6 +111,8 @@ final class DBNoteTable {
                     deleted: deleted,
                     pinned: pinned,
                     favorited: favorited,
+                    pinnedUpdatedAtMs: pinnedUpdatedAtMs,
+                    favoritedUpdatedAtMs: favoritedUpdatedAtMs,
                     noteTypeRaw: noteTypeRaw,
                     dominanceModeRaw: dominanceModeRaw,
                     isChecklist: isChecklist,
@@ -127,7 +135,7 @@ final class DBNoteTable {
         return db.withDB { dbp in
             var stmt: OpaquePointer?
             let rc0 = sqlite3_prepare_v2(dbp, """
-            SELECT note_id, created_at_ms, updated_at_ms, notebook, tab_domain, title, note_type, dominance_mode, is_checklist, card_id, card_category, card_area, card_context, card_status, card_priority, pinned, favorited, deleted
+            SELECT \(Self.noteProjection)
             FROM nj_note
             WHERE note_id = ?;
             """, -1, &stmt, nil)
@@ -153,7 +161,9 @@ final class DBNoteTable {
             let cardPriority = String(cString: sqlite3_column_text(stmt, 14))
             let pinned = sqlite3_column_int64(stmt, 15)
             let favorited = sqlite3_column_int64(stmt, 16)
-            let deleted = sqlite3_column_int64(stmt, 17)
+            let pinnedUpdatedAtMs = sqlite3_column_int64(stmt, 17)
+            let favoritedUpdatedAtMs = sqlite3_column_int64(stmt, 18)
+            let deleted = sqlite3_column_int64(stmt, 19)
 
             let rtf = loadRTF(noteID) ?? emptyRTF()
 
@@ -168,6 +178,8 @@ final class DBNoteTable {
                 deleted: deleted,
                 pinned: pinned,
                 favorited: favorited,
+                pinnedUpdatedAtMs: pinnedUpdatedAtMs,
+                favoritedUpdatedAtMs: favoritedUpdatedAtMs,
                 noteTypeRaw: noteTypeRaw,
                 dominanceModeRaw: dominanceModeRaw,
                 isChecklist: isChecklist,
@@ -186,17 +198,19 @@ final class DBNoteTable {
         let sql: String
         if notebookFilter.isEmpty {
             sql = """
-            SELECT note_id, created_at_ms, updated_at_ms, notebook, tab_domain, title, note_type, dominance_mode, is_checklist, card_id, card_category, card_area, card_context, card_status, card_priority, pinned, favorited, deleted
+            SELECT \(Self.noteProjection)
             FROM nj_note
             WHERE deleted = 0
+              AND \(Self.visibleNotePredicate)
               AND favorited > 0
             ORDER BY pinned DESC, updated_at_ms DESC;
             """
         } else {
             sql = """
-            SELECT note_id, created_at_ms, updated_at_ms, notebook, tab_domain, title, note_type, dominance_mode, is_checklist, card_id, card_category, card_area, card_context, card_status, card_priority, pinned, favorited, deleted
+            SELECT \(Self.noteProjection)
             FROM nj_note
             WHERE deleted = 0
+              AND \(Self.visibleNotePredicate)
               AND favorited > 0
               AND notebook = ?
             ORDER BY pinned DESC, updated_at_ms DESC;
@@ -232,7 +246,9 @@ final class DBNoteTable {
                 let cardPriority = String(cString: sqlite3_column_text(stmt, 14))
                 let pinned = sqlite3_column_int64(stmt, 15)
                 let favorited = sqlite3_column_int64(stmt, 16)
-                let deleted = sqlite3_column_int64(stmt, 17)
+                let pinnedUpdatedAtMs = sqlite3_column_int64(stmt, 17)
+                let favoritedUpdatedAtMs = sqlite3_column_int64(stmt, 18)
+                let deleted = sqlite3_column_int64(stmt, 19)
 
                 let rtf = loadRTF(noteID) ?? emptyRTF()
 
@@ -247,6 +263,8 @@ final class DBNoteTable {
                     deleted: deleted,
                     pinned: pinned,
                     favorited: favorited,
+                    pinnedUpdatedAtMs: pinnedUpdatedAtMs,
+                    favoritedUpdatedAtMs: favoritedUpdatedAtMs,
                     noteTypeRaw: noteTypeRaw,
                     dominanceModeRaw: dominanceModeRaw,
                     isChecklist: isChecklist,
@@ -264,9 +282,10 @@ final class DBNoteTable {
 
     func listNotesByDateRange(startMs: Int64, endMs: Int64) -> [NJNote] {
         let sql = """
-        SELECT note_id, created_at_ms, updated_at_ms, notebook, tab_domain, title, note_type, dominance_mode, is_checklist, card_id, card_category, card_area, card_context, card_status, card_priority, pinned, favorited, deleted
+        SELECT \(Self.noteProjection)
         FROM nj_note
         WHERE deleted = 0
+          AND \(Self.visibleNotePredicate)
           AND created_at_ms >= ?
           AND created_at_ms <= ?
         ORDER BY created_at_ms DESC;
@@ -300,7 +319,9 @@ final class DBNoteTable {
                 let cardPriority = String(cString: sqlite3_column_text(stmt, 14))
                 let pinned = sqlite3_column_int64(stmt, 15)
                 let favorited = sqlite3_column_int64(stmt, 16)
-                let deleted = sqlite3_column_int64(stmt, 17)
+                let pinnedUpdatedAtMs = sqlite3_column_int64(stmt, 17)
+                let favoritedUpdatedAtMs = sqlite3_column_int64(stmt, 18)
+                let deleted = sqlite3_column_int64(stmt, 19)
 
                 let rtf = loadRTF(noteID) ?? emptyRTF()
 
@@ -315,6 +336,8 @@ final class DBNoteTable {
                     deleted: deleted,
                     pinned: pinned,
                     favorited: favorited,
+                    pinnedUpdatedAtMs: pinnedUpdatedAtMs,
+                    favoritedUpdatedAtMs: favoritedUpdatedAtMs,
                     noteTypeRaw: noteTypeRaw,
                     dominanceModeRaw: dominanceModeRaw,
                     isChecklist: isChecklist,
@@ -380,9 +403,9 @@ final class DBNoteTable {
             let rc0 = sqlite3_prepare_v2(dbp, """
             INSERT INTO nj_note(
               note_id, created_at_ms, updated_at_ms,
-              notebook, tab_domain, title, note_type, dominance_mode, is_checklist, card_id, card_category, card_area, card_context, card_status, card_priority, pinned, favorited, deleted
+              notebook, tab_domain, title, note_type, dominance_mode, is_checklist, card_id, card_category, card_area, card_context, card_status, card_priority, pinned, favorited, pinned_updated_at_ms, favorited_updated_at_ms, deleted
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(note_id) DO UPDATE SET
               created_at_ms = CASE
                 WHEN nj_note.created_at_ms IS NULL OR nj_note.created_at_ms = 0 THEN excluded.created_at_ms
@@ -403,6 +426,8 @@ final class DBNoteTable {
               card_priority=excluded.card_priority,
               pinned=excluded.pinned,
               favorited=excluded.favorited,
+              pinned_updated_at_ms=excluded.pinned_updated_at_ms,
+              favorited_updated_at_ms=excluded.favorited_updated_at_ms,
               deleted=excluded.deleted;
             """, -1, &stmt, nil)
             if rc0 != SQLITE_OK { db.dbgErr(dbp, "upsertNote.prepare", rc0); return }
@@ -425,7 +450,9 @@ final class DBNoteTable {
             sqlite3_bind_text(stmt, 15, note.cardPriority, -1, SQLITE_TRANSIENT)
             sqlite3_bind_int64(stmt, 16, note.pinned)
             sqlite3_bind_int64(stmt, 17, note.favorited)
-            sqlite3_bind_int64(stmt, 18, note.deleted)
+            sqlite3_bind_int64(stmt, 18, note.pinnedUpdatedAtMs)
+            sqlite3_bind_int64(stmt, 19, note.favoritedUpdatedAtMs)
+            sqlite3_bind_int64(stmt, 20, note.deleted)
 
             let rc1 = sqlite3_step(stmt)
             if rc1 != SQLITE_DONE { db.dbgErr(dbp, "upsertNote.step", rc1) }
@@ -455,8 +482,8 @@ final class DBNoteTable {
         enqueueDirty("note", noteID.raw, "upsert", now)
     }
 
-    func markNoteDeleted(noteID: String) {
-        let now = nowMs()
+    func markNoteDeleted(noteID: String, nowMs: Int64? = nil) {
+        let now = nowMs ?? self.nowMs()
         db.withDB { dbp in
             var stmt: OpaquePointer?
             let rc0 = sqlite3_prepare_v2(dbp, """
@@ -484,7 +511,8 @@ final class DBNoteTable {
             let rc0 = sqlite3_prepare_v2(dbp, """
             UPDATE nj_note
             SET pinned = ?,
-                updated_at_ms = ?
+                updated_at_ms = ?,
+                pinned_updated_at_ms = ?
             WHERE note_id = ?;
             """, -1, &stmt, nil)
             if rc0 != SQLITE_OK { db.dbgErr(dbp, "setPinned.prepare", rc0); return }
@@ -492,7 +520,8 @@ final class DBNoteTable {
 
             sqlite3_bind_int64(stmt, 1, val)
             sqlite3_bind_int64(stmt, 2, now)
-            sqlite3_bind_text(stmt, 3, noteID, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int64(stmt, 3, now)
+            sqlite3_bind_text(stmt, 4, noteID, -1, SQLITE_TRANSIENT)
 
             let rc1 = sqlite3_step(stmt)
             if rc1 != SQLITE_DONE { db.dbgErr(dbp, "setPinned.step", rc1) }
@@ -508,7 +537,8 @@ final class DBNoteTable {
             let rc0 = sqlite3_prepare_v2(dbp, """
             UPDATE nj_note
             SET favorited = ?,
-                updated_at_ms = ?
+                updated_at_ms = ?,
+                favorited_updated_at_ms = ?
             WHERE note_id = ?;
             """, -1, &stmt, nil)
             if rc0 != SQLITE_OK { db.dbgErr(dbp, "setFavorited.prepare", rc0); return }
@@ -516,7 +546,8 @@ final class DBNoteTable {
 
             sqlite3_bind_int64(stmt, 1, val)
             sqlite3_bind_int64(stmt, 2, now)
-            sqlite3_bind_text(stmt, 3, noteID, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_int64(stmt, 3, now)
+            sqlite3_bind_text(stmt, 4, noteID, -1, SQLITE_TRANSIENT)
 
             let rc1 = sqlite3_step(stmt)
             if rc1 != SQLITE_DONE { db.dbgErr(dbp, "setFavorited.step", rc1) }
